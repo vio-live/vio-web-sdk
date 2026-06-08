@@ -1,15 +1,14 @@
 /**
- * Commerce GraphQL client — talks to Vio Commerce (Reachu-style schema).
+ * Commerce GraphQL client — talks to Vio Commerce.
  *
- * Mirrors the iOS SDK's `SdkClient.channel.product` surface and the
- * Reachu npm package's class structure, but uses `graphql-request`
- * (lightweight) instead of Apollo. Auth header: `Authorization: <apiKey>`
+ * Mirrors the iOS SDK's `SdkClient.channel.product` surface, but uses
+ * `graphql-request` (lightweight) instead of Apollo. Auth header: `Authorization: <apiKey>`
  * (per-sponsor commerce apiKey, NOT the top-level Vio apiKey).
  *
  * Usage:
  *   const commerce = createCommerceClient({
  *     endpoint: 'https://graph-ql-dev.vio.live',
- *     apiKey: '5HPHWJY-89CMKV3-...',  // sponsor's commerce apiKey
+ *     apiKey: '<sponsor-commerce-apiKey>',  // sponsor's commerce apiKey
  *   })
  *   const products = await commerce.channel.product.getByIds({
  *     product_ids: [408895, 408896],
@@ -148,7 +147,7 @@ class Channel {
   }
 }
 
-/** CommerceClient — namespaced facade, mirrors the iOS/Reachu SdkClient. */
+/** CommerceClient — namespaced facade, mirrors the iOS SdkClient. */
 export class CommerceClient {
   readonly channel: Channel
   /** Underlying graphql-request client (escape hatch for custom queries). */

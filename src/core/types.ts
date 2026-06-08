@@ -1,7 +1,7 @@
 /**
  * Vio types — Product / Sponsor / Bootstrap shapes.
  *
- * Product types are ported from the Reachu / Vio Commerce GraphQL schema.
+ * Product types mirror the Vio Commerce GraphQL schema.
  * Sponsor / Bootstrap shapes mirror the iOS SDK's bootstrap response so
  * we stay aligned cross-platform.
  */

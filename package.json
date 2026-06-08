@@ -1,11 +1,15 @@
 {
-  "name": "vio",
-  "version": "0.0.1",
+  "name": "@vio-live/web-sdk",
+  "version": "0.1.0",
   "description": "Vio Web SDK — in-site shoppable + native checkout, designed for editorial commerce sites",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "sideEffects": [
+    "./dist/ui/**",
+    "./dist/index.js"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -18,37 +22,28 @@
     "./ui": {
       "types": "./dist/ui/index.d.ts",
       "import": "./dist/ui/index.js"
-    },
-    "./react": {
-      "types": "./dist/react/index.d.ts",
-      "import": "./dist/react/index.js"
     }
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "vite build",
+    "build": "tsup",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "graphql-request": "^7.1.0",
     "lit": "^3.2.0"
   },
-  "peerDependencies": {
-    "react": ">=18.0.0",
-    "react-dom": ">=18.0.0"
-  },
-  "peerDependenciesMeta": {
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
-  },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "tsup": "^8.5.1",
     "typescript": "^5.6.3",
     "vite": "^6.0.0",
     "vitest": "^2.1.0"
@@ -56,6 +51,27 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "UNLICENSED",
-  "private": true
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vio-live/vio-web-sdk.git"
+  },
+  "homepage": "https://github.com/vio-live/vio-web-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/vio-live/vio-web-sdk/issues"
+  },
+  "keywords": [
+    "vio",
+    "commerce",
+    "shoppable",
+    "checkout",
+    "web-components",
+    "lit",
+    "klarna",
+    "editorial-commerce"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "private": false
 }

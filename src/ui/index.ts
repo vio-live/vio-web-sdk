@@ -25,4 +25,4 @@ export { VioProductDetail } from './components/vio-product-detail.js'
 export { VioCart } from './components/vio-cart.js'
 export { VioCheckout } from './components/vio-checkout.js'
 
-export const VIO_UI_VERSION = '0.0.1'
+export const VIO_UI_VERSION = '0.1.0'

@@ -513,21 +513,6 @@ export class VioCart extends LitElement {
     return 'NOK'
   }
 
-  private onCheckout(): void {
-    if (this.itemCount === 0) return
-    // For multi-sponsor: pick the first sponsor with items. Real multi-checkout
-    // sequencing (chain through each sponsor) lands later.
-    const firstSponsorId = [...this.carts.keys()][0]
-    if (firstSponsorId === undefined) return
-    this.dispatchEvent(
-      new CustomEvent('vio:checkout-open', {
-        bubbles: true,
-        composed: true,
-        detail: { sponsorId: firstSponsorId },
-      }),
-    )
-  }
-
   private onIncrement(item: { id: string; sponsorId: number; quantity: number }): void {
     Vio.cart.updateQuantity(item.id, item.sponsorId, item.quantity + 1)
   }
@@ -646,10 +631,6 @@ export class VioCart extends LitElement {
                     src="https://x.klarnacdn.net/payment-method/assets/badges/generic/klarna.svg"
                     alt="Klarna"
                   />
-                </button>
-                <div class="express-divider">eller</div>
-                <button class="checkout-btn" @click=${this.onCheckout}>
-                  ${this.checkoutLabel}
                 </button>
               </div>
             `}

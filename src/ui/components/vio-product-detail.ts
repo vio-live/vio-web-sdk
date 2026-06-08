@@ -114,32 +114,30 @@ export class VioProductDetail extends LitElement {
       }
     }
 
-    /* Desktop: a compact centered modal (~half the screen) instead of the
-       full-screen overlay, so the product info doesn't dominate the page. */
+    /* Desktop: right-side drawer (matches the cart/checkout), so the product
+       shows "al lado" instead of a centered modal. Info stacks in one column. */
     @media (min-width: 601px) {
       .modal {
-        inset: auto;
-        top: 50%;
-        left: 50%;
-        width: min(90vw, 760px);
-        max-width: 760px;
-        height: auto;
-        max-height: 88vh;
-        border-radius: 14px;
-        box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.45);
-        transform: translate(-50%, -50%) translateY(18px);
-        opacity: 0;
-        transition: opacity 0.26s ease, transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
+        inset: 0 0 0 auto;
+        width: min(440px, 100%);
+        max-width: 440px;
+        border-radius: 0;
+        box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
+        transform: translateX(100%);
+        transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
       }
-      :host([open]) .modal {
-        transform: translate(-50%, -50%);
-        opacity: 1;
-      }
-      .body {
+      :host([open]) .modal { transform: translateX(0); }
+      /* Content overrides are prefixed with .modal so they beat the base
+         .body / .name / .gallery-main rules defined LATER in this stylesheet
+         (equal specificity, later wins; the extra class tips the cascade). */
+      .modal .body {
         max-width: none;
-        gap: 28px;
-        padding: 28px 28px 36px;
+        grid-template-columns: 1fr;
+        gap: 20px;
+        padding: 20px 24px 40px;
       }
+      .modal .name { font-size: 26px; line-height: 1.2; }
+      .modal .gallery-main { width: 100%; }
     }
 
     .topbar {
@@ -403,11 +401,41 @@ export class VioProductDetail extends LitElement {
       margin-bottom: 8px;
     }
 
-    .loading {
-      padding: 80px 24px;
-      text-align: center;
-      color: var(--vio-color-text-secondary, #666);
-      font-size: 14px;
+    /* Skeleton loader: shimmer placeholders mirroring the product layout
+       (image, brand, title, price, CTA) for a smooth load-in. */
+    .skeleton {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      padding: 20px 24px 40px;
+    }
+    .skeleton > * {
+      background: linear-gradient(
+        100deg,
+        var(--vio-color-surface-muted, #f1f1f1) 30%,
+        rgba(255, 255, 255, 0.65) 50%,
+        var(--vio-color-surface-muted, #f1f1f1) 70%
+      );
+      background-size: 200% 100%;
+      animation: vio-skeleton-shimmer 1.4s ease-in-out infinite;
+      border-radius: 8px;
+    }
+    .sk-image { width: 100%; aspect-ratio: 1; border-radius: 12px; }
+    .sk-line { height: 14px; }
+    .sk-brand { width: 38%; height: 10px; margin-top: 6px; }
+    .sk-title { width: 85%; height: 26px; }
+    .sk-title-2 { width: 55%; height: 26px; }
+    .sk-price { width: 30%; height: 20px; margin-top: 6px; }
+    .sk-button { width: 100%; height: 54px; border-radius: 0; margin-top: 10px; }
+    @keyframes vio-skeleton-shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .skeleton > * {
+        animation: none;
+        background: var(--vio-color-surface-muted, #f1f1f1);
+      }
     }
     .error {
       padding: 80px 24px;
@@ -651,7 +679,16 @@ export class VioProductDetail extends LitElement {
 
   private renderBody() {
     if (this.isLoading && !this.product) {
-      return html`<div class="loading">Laster produkt…</div>`
+      return html`
+        <div class="skeleton" role="status" aria-busy="true" aria-label="Laster produkt">
+          <div class="sk-image"></div>
+          <div class="sk-line sk-brand"></div>
+          <div class="sk-line sk-title"></div>
+          <div class="sk-line sk-title-2"></div>
+          <div class="sk-line sk-price"></div>
+          <div class="sk-button"></div>
+        </div>
+      `
     }
     if (this.fetchError) {
       return html`<div class="error">Kunne ikke laste produkt: ${this.fetchError}</div>`

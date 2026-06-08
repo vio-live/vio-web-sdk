@@ -831,7 +831,7 @@ export class VioCheckout extends LitElement {
     return html`
       <div class="backdrop" @click=${this.close}></div>
       <div
-        class="modal ${this.orderConfirmed ? 'as-confirm' : this.express ? 'as-side' : ''}"
+        class="modal ${this.express ? 'as-side' : this.orderConfirmed ? 'as-confirm' : ''}"
         role="dialog"
         aria-label=${this.heading}
       >

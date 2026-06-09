@@ -22,10 +22,9 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   treeshake: true,
-  // No code-splitting: keep each entry self-contained so the `sideEffects`
-  // paths (./dist/ui/**, ./dist/index.js) fully cover the custom-element
-  // registration — otherwise it lands in hashed root chunks a consumer's
-  // bundler could tree-shake away.
-  splitting: false,
+  // Code-splitting stays ON (esm default): the Vio client is a singleton
+  // shared across entries, so it must live in ONE shared chunk. Disabling
+  // splitting duplicates it and breaks Vio.init() reaching the components.
+  // Custom-element registration stays side-effectful via package.json sideEffects.
   external: ['lit', /^lit\//, 'graphql-request'],
 })

@@ -11,7 +11,7 @@
  */
 
 import { LitElement, css, html } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import {
   formatPrice,
@@ -25,7 +25,6 @@ interface SelectedOptions {
   [optionName: string]: string
 }
 
-@customElement('vio-product-detail')
 export class VioProductDetail extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String, attribute: 'product-id' }) productId = ''

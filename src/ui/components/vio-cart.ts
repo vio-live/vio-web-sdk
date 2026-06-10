@@ -2,27 +2,25 @@
  * <vio-cart> — slide-in cart drawer, reactively bound to `Vio.cart`.
  *
  * Subscribes to CartManager's `change` events on connect; auto-renders
- * the current multi-sponsor state. Tap "Til kassen" → opens the
- * <vio-checkout> overlay for the relevant sponsor and dispatches
- * `vio:checkout-open`.
+ * the current multi-sponsor state. Express-only checkout: Apple Pay pays
+ * the whole cart in-drawer; the Klarna button dispatches `vio:checkout-open`
+ * (express) for the host to open <vio-checkout>.
  *
  * For the visual demo without `Vio.init`, the CartManager works standalone
  * (state is purely local + localStorage).
  */
 
 import { LitElement, css, html } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 
-@customElement('vio-cart')
 export class VioCart extends LitElement {
   /** Drawer visibility. Reflects to attribute for `:host([open])`. */
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String }) heading = 'Handlekurv'
-  @property({ type: String, attribute: 'checkout-label' }) checkoutLabel = 'Til kassen'
   @property({ type: String, attribute: 'empty-label' }) emptyLabel = 'Handlekurven er tom'
   @property({ type: String, attribute: 'subtotal-label' }) subtotalLabel = 'Sum'
 
@@ -238,27 +236,7 @@ export class VioCart extends LitElement {
     .subtotal-label { color: var(--vio-color-text-secondary, #666); }
     .subtotal-value { font-weight: 700; font-size: 16px; }
 
-    .checkout-btn {
-      width: 100%;
-      padding: 18px;
-      background: var(--vio-color-text, #0a0a0a);
-      color: var(--vio-color-text-on-primary, #fff);
-      border: none;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: var(--vio-tracking-label, 0.1em);
-      cursor: pointer;
-      font-weight: 600;
-      font-family: var(--vio-font-sans, -apple-system, sans-serif);
-      transition: background 0.15s;
-    }
-    .checkout-btn:hover:not(:disabled) { background: #222; }
-    .checkout-btn:disabled {
-      background: var(--vio-color-text-tertiary, #999);
-      cursor: not-allowed;
-    }
-
-    /* Apple Pay express — pay the whole cart directly, above "Til kassen". */
+    /* Apple Pay express — pay the whole cart directly. */
     .applepay-btn {
       width: 100%;
       padding: 15px;
@@ -301,23 +279,6 @@ export class VioCart extends LitElement {
     }
     .klarna-btn:hover { background: #ffa1ba; }
     .klarna-btn .klarna-logo { height: 15px; width: auto; display: inline-block; }
-    .express-divider {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin: 4px 0 12px;
-      color: var(--vio-color-text-tertiary, #999);
-      font-size: 11px;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-    }
-    .express-divider::before,
-    .express-divider::after {
-      content: '';
-      flex: 1;
-      height: 1px;
-      background: var(--vio-color-border, #e5e5e5);
-    }
 
     /* In-drawer confirmation after Apple Pay (nothing else is shown). */
     .confirm {

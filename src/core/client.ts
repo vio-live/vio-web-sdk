@@ -129,4 +129,8 @@ class VioFacade {
   }
 }
 
-export const Vio = new VioFacade()
+// @__PURE__ lets bundlers drop the singleton when a consumer imports only
+// tree-shakeable helpers (e.g. `formatPrice`) from `@vio-live/web-sdk/core`.
+// The constructor only sets fields (managers are created lazily), so eliding
+// an unused `Vio` has no observable effect.
+export const Vio = /* @__PURE__ */ new VioFacade()

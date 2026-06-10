@@ -7,10 +7,9 @@
  */
 
 import { LitElement, css, html } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 
-@customElement('vio-product')
 export class VioProduct extends LitElement {
   /** Brand label shown at the top (uppercase, gray, small). */
   @property({ type: String }) brand = ''

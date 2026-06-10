@@ -9,7 +9,7 @@
  */
 
 import { LitElement, css, html } from 'lit'
-import { customElement, property, state } from 'lit/decorators.js'
+import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import type { CartLineItem } from '../../core/cart/types.js'
@@ -24,7 +24,6 @@ import type {
   PaymentMethod,
 } from '../../core/checkout/types.js'
 
-@customElement('vio-checkout')
 export class VioCheckout extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String }) heading = 'Kasse'

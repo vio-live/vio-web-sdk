@@ -4,25 +4,29 @@
  * Importing this file (directly or via the main `vio` entry) has two
  * side-effects:
  *   1. Injects design tokens as CSS custom properties on `:root`
- *   2. Registers all `<vio-*>` custom elements
+ *   2. Registers all `<vio-*>` custom elements (via `registerVioElements()`)
+ *
+ * Registration goes through an explicit function call (see ./elements) so it
+ * survives tree-shaking while keeping `./core` tree-shakeable.
  *
  * SSR-safe: every side-effect guards on `typeof document !== 'undefined'`.
  */
 
 import './tokens.js'
+import { registerVioElements } from './elements.js'
 
-// Register custom elements (each side-effect imports its decorator)
-import './components/vio-product.js'
-import './components/vio-product-carousel.js'
-import './components/vio-product-detail.js'
-import './components/vio-cart.js'
-import './components/vio-checkout.js'
+// Auto-register on import, so the conventional `import '@vio-live/web-sdk/ui'`
+// keeps working. This call is what pins the registration into this entry.
+registerVioElements()
 
 export { VioTokens } from './tokens.js'
-export { VioProduct } from './components/vio-product.js'
-export { VioProductCarousel } from './components/vio-product-carousel.js'
-export { VioProductDetail } from './components/vio-product-detail.js'
-export { VioCart } from './components/vio-cart.js'
-export { VioCheckout } from './components/vio-checkout.js'
+export {
+  registerVioElements,
+  VioProduct,
+  VioProductCarousel,
+  VioProductDetail,
+  VioCart,
+  VioCheckout,
+} from './elements.js'
 
-export const VIO_UI_VERSION = '0.1.0'
+export const VIO_UI_VERSION = '0.2.0'

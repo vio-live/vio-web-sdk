@@ -18,7 +18,7 @@
  */
 
 import { LitElement, css, html } from 'lit'
-import { customElement, property, query, state } from 'lit/decorators.js'
+import { property, query, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import {
   displayPrice,
@@ -26,7 +26,6 @@ import {
   type Product,
 } from '../../core/types.js'
 
-@customElement('vio-product-carousel')
 export class VioProductCarousel extends LitElement {
   /** Small uppercase label in accent color (e.g. "REDAKSJONENS FAVORITTER"). */
   @property({ type: String }) label = ''

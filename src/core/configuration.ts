@@ -120,4 +120,4 @@ class ConfigurationSingleton {
   }
 }
 
-export const Configuration = new ConfigurationSingleton()
+export const Configuration = /* @__PURE__ */ new ConfigurationSingleton()

@@ -27,7 +27,12 @@ export { VioProduct, VioProductCarousel, VioProductDetail, VioCart, VioCheckout 
  * (no-op when `customElements` is undefined).
  */
 export function registerVioElements(): void {
-  if (typeof customElements === 'undefined') return
+  if (
+    typeof customElements === 'undefined' ||
+    typeof customElements.get !== 'function' ||
+    typeof customElements.define !== 'function'
+  )
+    return
   const defs: Array<[string, CustomElementConstructor]> = [
     ['vio-product', VioProduct],
     ['vio-product-carousel', VioProductCarousel],

@@ -101,6 +101,9 @@ class VioFacade {
    * Throws if bootstrap hasn't been called or the sponsor is unknown.
    */
   commerceFor(sponsorId: number): CommerceClient {
+    // Coacción a número: los web-components pasan sponsorId como string
+    // (atributo), y findSponsor compara con `===` contra el id numérico.
+    sponsorId = Number(sponsorId) as number
     const existing = this.commerceClients.get(sponsorId)
     if (existing) return existing
     const sponsor = this.findSponsor(sponsorId)
@@ -124,13 +127,18 @@ class VioFacade {
   private findSponsor(sponsorId: number): Sponsor | undefined {
     const boot = this.cachedBootstrap
     if (!boot) return undefined
-    if (boot.primarySponsor?.id === sponsorId) return boot.primarySponsor
-    return boot.secondarySponsors?.find((s) => s.id === sponsorId)
+    const id = Number(sponsorId)
+    if (Number(boot.primarySponsor?.id) === id) return boot.primarySponsor
+    return boot.secondarySponsors?.find((s) => Number(s.id) === id)
   }
 }
 
-// @__PURE__ lets bundlers drop the singleton when a consumer imports only
-// tree-shakeable helpers (e.g. `formatPrice`) from `@vio-live/web-sdk/core`.
-// The constructor only sets fields (managers are created lazily), so eliding
-// an unused `Vio` has no observable effect.
-export const Vio = /* @__PURE__ */ new VioFacade()
+// Cross-bundle singleton. Some hosts (e.g. Vev) bundle each component into its
+// own chunk, so a plain module-level instance would give EACH chunk its own
+// `Vio` — separate cart + bootstrap cache. That breaks shared state (one chunk
+// bootstraps, another reads an empty cache → "Sponsor not found"). Anchoring the
+// facade on `globalThis` means every copy resolves to the SAME instance within a
+// page. SSR-safe: `globalThis` exists in Node too.
+const _vioGlobal = globalThis as unknown as { __VIO_FACADE__?: VioFacade }
+export const Vio: VioFacade =
+  _vioGlobal.__VIO_FACADE__ ?? (_vioGlobal.__VIO_FACADE__ = new VioFacade())

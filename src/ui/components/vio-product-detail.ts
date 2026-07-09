@@ -362,6 +362,35 @@ export class VioProductDetail extends LitElement {
     .buy-klarna .klarna-badge { height: 22px; width: auto; display: block; }
     .buy-klarna:hover:not(:disabled) { background: #ffa0b9; }
     .buy-klarna:disabled { opacity: 0.5; cursor: not-allowed; }
+    .buy-applepay .ap-logo { width: 20px; height: 20px; }
+    /* Vipps — brand orange buy button. */
+    .buy-vipps {
+      width: 100%;
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      background: #ff5b24;
+      color: #fff;
+      border: none;
+      padding: 14px 24px;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: var(--vio-tracking-label, 0.1em);
+      font-weight: 700;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+    .buy-vipps .vipps-badge {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      text-transform: none;
+    }
+    .buy-vipps:hover:not(:disabled) { background: #ec4f1c; }
+    .buy-vipps:disabled { opacity: 0.5; cursor: not-allowed; }
     /* Apple Pay express button — black, per Apple's button guidelines. Only
        shown in Safari (canApplePay). The  glyph is the Apple logo (Safari). */
     .buy-applepay {
@@ -637,6 +666,20 @@ export class VioProductDetail extends LitElement {
     }
   }
 
+  /** Buy with Vipps — opens the checkout with Vipps preselected. */
+  private buyWithVipps(): void {
+    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    this.addCurrentToCart()
+    this.close()
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false },
+      }),
+    )
+  }
+
   /**
    * Express buy with Apple Pay. Runs synchronously inside the click so the
    * Apple Pay sheet keeps the user gesture: add to cart → open checkout (sets
@@ -787,7 +830,9 @@ export class VioProductDetail extends LitElement {
                   ?disabled=${this.adding}
                   aria-label="Kjøp nå med Apple Pay"
                 >
-                  Kjøp nå med  Pay
+                  <span>Kjøp nå med</span>
+                  <svg class="ap-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+                  <span>Apple Pay</span>
                 </button>
               `
             : ''}
@@ -804,6 +849,20 @@ export class VioProductDetail extends LitElement {
                     src="https://x.klarnacdn.net/payment-method/assets/badges/generic/klarna.svg"
                     alt="Klarna"
                   />
+                </button>
+              `
+            : ''}
+
+          ${this.availableQuantity > 0
+            ? html`
+                <button
+                  class="buy-vipps"
+                  @click=${this.buyWithVipps}
+                  ?disabled=${this.adding}
+                  aria-label="Kjøp nå med Vipps"
+                >
+                  <span>Kjøp nå med</span>
+                  <span class="vipps-badge">vipps</span>
                 </button>
               `
             : ''}

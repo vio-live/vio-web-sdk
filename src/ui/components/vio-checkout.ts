@@ -177,6 +177,21 @@ export class VioCheckout extends LitElement {
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
     }
     :host([open]) .modal.as-side { transform: translateX(0); }
+
+    /* Desktop: the checkout ALWAYS lives as a right-side panel (like the cart,
+       product detail and express drawer) — never a full-width overlay. Only the
+       compact confirmation card stays centered. */
+    @media (min-width: 601px) {
+      .modal:not(.as-confirm) {
+        inset: 0 0 0 auto;
+        width: min(440px, 100%);
+        max-width: 440px;
+        transform: translateX(100%);
+        border-radius: 0;
+        box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
+      }
+      :host([open]) .modal:not(.as-confirm) { transform: translateX(0); }
+    }
     @media (max-width: 600px) {
       /* On phones, keep it a bottom sheet for reachability. */
       .modal.as-side {
@@ -1061,7 +1076,9 @@ export class VioCheckout extends LitElement {
                       ?disabled=${this.applePayInProgress}
                       aria-pressed=${this.checkoutState?.paymentMethod === 'apple-pay'}
                     >
-                      ${this.applePayInProgress ? 'Åpner…' : ' Pay'}
+                      ${this.applePayInProgress
+                        ? 'Åpner…'
+                        : html`<span style="display:inline-flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:18px;height:18px"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>Apple Pay</span>`}
                     </button>
                   `
                 : ''}
@@ -1081,7 +1098,7 @@ export class VioCheckout extends LitElement {
                 @click=${() => this.onPay('vipps')}
                 aria-pressed=${this.checkoutState?.paymentMethod === 'vipps'}
               >
-                Vipps
+                <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
               </button>
               <button
                 class="payment-btn"

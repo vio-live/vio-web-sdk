@@ -29,6 +29,11 @@ export class VioProduct extends LitElement {
    * opens the detail to pick one instead of adding directly. */
   @property({ type: Boolean, attribute: 'has-variants' }) hasVariants = false
 
+  /** Image-only mode: hide the meta block (brand / name / price / retailer)
+   * and show just the image + the quick-add button. Click still opens the
+   * detail. */
+  @property({ type: Boolean, attribute: 'hide-meta' }) hideMeta = false
+
   /** True when this product currently sits in the cart (persistent mark). */
   @state() private inCart = false
   /** Total units of this product in the cart (shown as a count when > 1). */
@@ -270,12 +275,15 @@ export class VioProduct extends LitElement {
                 </svg>`}
           </button>
         </div>
+        ${this.hideMeta
+          ? ''
+          : html`
         <div class="meta">
           ${this.brand ? html`<div class="brand">${this.brand}</div>` : ''}
           ${this.name ? html`<div class="name">${this.name}</div>` : ''}
           ${this.price ? html`<div class="price">${this.price}</div>` : ''}
           ${this.retailer ? html`<div class="retailer">${this.retailer}</div>` : ''}
-        </div>
+        </div>`}
       </div>
     `
   }

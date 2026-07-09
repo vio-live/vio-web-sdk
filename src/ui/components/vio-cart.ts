@@ -257,7 +257,7 @@ export class VioCart extends LitElement {
       transition: opacity 0.15s;
     }
     .applepay-btn:hover { opacity: 0.86; }
-    .applepay-btn .ap-logo { font-size: 19px; line-height: 1; }
+    .applepay-btn .ap-logo { width: 20px; height: 20px; }
     /* Klarna express — pink brand button, same express row as Apple Pay. */
     .klarna-btn {
       width: 100%;
@@ -279,6 +279,29 @@ export class VioCart extends LitElement {
     }
     .klarna-btn:hover { background: #ffa1ba; }
     .klarna-btn .klarna-logo { height: 15px; width: auto; display: inline-block; }
+    /* Vipps — brand orange button, same express row. */
+    .vipps-btn {
+      width: 100%;
+      padding: 15px;
+      margin-bottom: 10px;
+      background: #ff5b24;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--vio-font-sans, -apple-system, sans-serif);
+      transition: background 0.15s;
+    }
+    .vipps-btn:hover { background: #ec4f1c; }
+    .vipps-btn .vipps-logo {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
 
     /* In-drawer confirmation after Apple Pay (nothing else is shown). */
     .confirm {
@@ -461,6 +484,20 @@ export class VioCart extends LitElement {
     )
   }
 
+  /** Vipps — opens the checkout with Vipps preselected. */
+  private onVipps(): void {
+    if (this.itemCount === 0) return
+    const firstSponsorId = [...this.carts.keys()][0]
+    if (firstSponsorId === undefined) return
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false },
+      }),
+    )
+  }
+
   private get totalAcrossSponsors(): number {
     let sum = 0
     for (const cart of this.carts.values()) {
@@ -577,7 +614,8 @@ export class VioCart extends LitElement {
                         @click=${this.onApplePay}
                         aria-label="Betal med Apple Pay"
                       >
-                        <span class="ap-logo">${''}</span> Pay
+                        <svg class="ap-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+                        Apple Pay
                       </button>
                     `
                   : ''}
@@ -592,6 +630,13 @@ export class VioCart extends LitElement {
                     src="https://x.klarnacdn.net/payment-method/assets/badges/generic/klarna.svg"
                     alt="Klarna"
                   />
+                </button>
+                <button
+                  class="vipps-btn"
+                  @click=${this.onVipps}
+                  aria-label="Betal med Vipps"
+                >
+                  <span class="vipps-logo">vipps</span>
                 </button>
               </div>
             `}

@@ -293,6 +293,13 @@ export class VioProductDetail extends LitElement {
       background: var(--vio-color-text, #0a0a0a);
       color: var(--vio-color-text-on-primary, #fff);
     }
+    .option-pill.unavailable {
+      opacity: 0.4;
+      cursor: not-allowed;
+      text-decoration: line-through;
+      background: repeating-linear-gradient(-45deg, #fafafa, #fafafa 5px, #f0f0f0 5px, #f0f0f0 10px);
+    }
+    .option-pill.unavailable:hover { border-color: var(--vio-color-border, #e5e5e5); }
 
     /* Qty + CTA row */
     .qty-cta-row {
@@ -571,19 +578,51 @@ export class VioProductDetail extends LitElement {
     this.isLoading = false
   }
 
-  /** Resolve the active variant from the selected option values. */
+  /** Option values a variant represents — variant titles join them with " / "
+   * (or "|"). Exact parts, lowercased, so matching is combination-accurate
+   * (avoids "M" matching "Medium"). */
+  private variantOptionValues(v: ProductVariant): string[] {
+    return (v.title ?? '')
+      .split(/\s*[/|]\s*/)
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean)
+  }
+
+  /** Does a variant satisfy every currently-selected option value (exact part match)? */
+  private variantMatchesSelection(v: ProductVariant, selection: SelectedOptions): boolean {
+    const wanted = Object.values(selection).map((s) => s.trim().toLowerCase())
+    if (wanted.length === 0) return true
+    const parts = new Set(this.variantOptionValues(v))
+    return wanted.every((w) => parts.has(w))
+  }
+
+  /** Resolve the active variant from the selected combination. Prefers an EXACT
+   * full-combination match, then a partial match, then the first variant. */
   private selectedVariant(): ProductVariant | null {
     if (!this.product || this.product.variants.length === 0) return null
-    const vals = Object.values(this.selectedOptions)
-    if (vals.length === 0) return this.product.variants[0] ?? null
-    // Variant titles typically join option values with " / ". Match all.
-    const found = this.product.variants.find((v) => {
-      if (!v.title) return false
-      return vals.every((val) =>
-        v.title!.toLowerCase().includes(val.toLowerCase()),
-      )
+    const sel = this.selectedOptions
+    const wanted = Object.values(sel).map((s) => s.trim().toLowerCase())
+    if (wanted.length === 0) return this.product.variants[0] ?? null
+    const exact = this.product.variants.find((v) => {
+      const parts = new Set(this.variantOptionValues(v))
+      return parts.size === wanted.length && wanted.every((w) => parts.has(w))
     })
-    return found ?? this.product.variants[0] ?? null
+    if (exact) return exact
+    const partial = this.product.variants.find((v) => this.variantMatchesSelection(v, sel))
+    return partial ?? this.product.variants[0] ?? null
+  }
+
+  /** True if picking `value` for `optionName` (with the rest of the current
+   * selection) still yields an in-stock variant. When no variant reports stock
+   * (missing data), never disables — lets the backend be the source of truth. */
+  private isValueAvailable(optionName: string, value: string): boolean {
+    if (!this.product) return true
+    const anyStock = this.product.variants.some((v) => (v.quantity ?? 0) > 0)
+    if (!anyStock) return true
+    const trial = { ...this.selectedOptions, [optionName]: value }
+    return this.product.variants.some(
+      (v) => this.variantMatchesSelection(v, trial) && (v.quantity ?? 0) > 0,
+    )
   }
 
   private get unitPrice(): number {
@@ -916,17 +955,20 @@ export class VioProductDetail extends LitElement {
         <div class="option-group">
           <div class="option-label">${opt.name}</div>
           <div class="option-values">
-            ${values.map(
-              (val) => html`
+            ${values.map((val) => {
+              const available = this.isValueAvailable(opt.name, val)
+              return html`
                 <button
-                  class="option-pill"
+                  class="option-pill ${available ? '' : 'unavailable'}"
                   @click=${() => this.selectOption(opt.name, val)}
                   aria-pressed=${this.selectedOptions[opt.name] === val}
+                  ?disabled=${!available}
+                  title=${available ? '' : 'Utsolgt'}
                 >
                   ${val}
                 </button>
-              `,
-            )}
+              `
+            })}
           </div>
         </div>
       `

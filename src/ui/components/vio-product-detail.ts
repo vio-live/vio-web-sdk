@@ -588,26 +588,32 @@ export class VioProductDetail extends LitElement {
       .filter(Boolean)
   }
 
-  /** Does a variant satisfy every currently-selected option value (exact part match)? */
+  /** Does a variant part represent this option value? Whole-token match, so the
+   * value "30" matches the part "30 ml" but "M" does NOT match "Medium". */
+  private partMatchesValue(part: string, value: string): boolean {
+    if (part === value) return true
+    return part.split(/\s+/).includes(value)
+  }
+
+  /** Does a variant satisfy every currently-selected option value? */
   private variantMatchesSelection(v: ProductVariant, selection: SelectedOptions): boolean {
     const wanted = Object.values(selection).map((s) => s.trim().toLowerCase())
     if (wanted.length === 0) return true
-    const parts = new Set(this.variantOptionValues(v))
-    return wanted.every((w) => parts.has(w))
+    const parts = this.variantOptionValues(v)
+    return wanted.every((w) => parts.some((part) => this.partMatchesValue(part, w)))
   }
 
-  /** Resolve the active variant from the selected combination. Prefers an EXACT
-   * full-combination match, then a partial match, then the first variant. */
+  /** Resolve the active variant from the selected combination. Prefers a FULL
+   * match (all options accounted for), then a partial match, then the first. */
   private selectedVariant(): ProductVariant | null {
     if (!this.product || this.product.variants.length === 0) return null
     const sel = this.selectedOptions
     const wanted = Object.values(sel).map((s) => s.trim().toLowerCase())
     if (wanted.length === 0) return this.product.variants[0] ?? null
-    const exact = this.product.variants.find((v) => {
-      const parts = new Set(this.variantOptionValues(v))
-      return parts.size === wanted.length && wanted.every((w) => parts.has(w))
-    })
-    if (exact) return exact
+    const full = this.product.variants.find(
+      (v) => this.variantOptionValues(v).length === wanted.length && this.variantMatchesSelection(v, sel),
+    )
+    if (full) return full
     const partial = this.product.variants.find((v) => this.variantMatchesSelection(v, sel))
     return partial ?? this.product.variants[0] ?? null
   }
@@ -628,13 +634,15 @@ export class VioProductDetail extends LitElement {
   private get unitPrice(): number {
     const v = this.selectedVariant()
     const price = v?.price ?? this.product?.price
-    return price?.amount_incl_taxes ?? price?.amount ?? 0
+    // Use `amount` (matches the card / catalog display). Some feeds ship a broken
+    // `amount_incl_taxes`, so it's only a fallback.
+    return price?.amount ?? price?.amount_incl_taxes ?? 0
   }
 
   private get compareAt(): number | null {
     const v = this.selectedVariant()
     const price = v?.price ?? this.product?.price
-    return price?.compare_at_incl_taxes ?? price?.compare_at ?? null
+    return price?.compare_at ?? price?.compare_at_incl_taxes ?? null
   }
 
   private get availableQuantity(): number {

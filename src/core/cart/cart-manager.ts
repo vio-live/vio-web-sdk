@@ -57,18 +57,31 @@ export class CartManager extends EventTarget {
 
   // MARK: - Mutations
 
-  /** Add a Product DTO to a sponsor's cart. Bumps quantity if already present. */
+  /** Add a Product DTO to a sponsor's cart. Bumps quantity if already present.
+   * When a variantId is given, the line uses the VARIANT's price / image / title
+   * (not the product base), so different combinations are priced correctly. */
   addProduct(opts: AddProductOptions): CartLineItem {
-    const unitPrice = opts.product.price.amount_incl_taxes ?? opts.product.price.amount
+    const variant =
+      opts.variantId != null
+        ? opts.product.variants?.find((v) => v.id === opts.variantId)
+        : undefined
+    const price = variant?.price ?? opts.product.price
+    // Prefer `amount` (matches the catalog / detail display); some feeds ship a
+    // broken `amount_incl_taxes`.
+    const unitPrice = price.amount ?? price.amount_incl_taxes ?? 0
+    const imageUrl = variant?.images?.[0]?.url ?? primaryImageUrl(opts.product) ?? ''
+    const name = variant?.title
+      ? `${opts.product.title} — ${variant.title}`
+      : opts.product.title
     return this.addManual({
       productId: opts.product.id,
       sponsorId: opts.sponsorId,
       sponsorName: opts.sponsorName,
       brand: opts.product.brand ?? '',
-      name: opts.product.title,
+      name,
       unitPrice,
-      currency: opts.product.price.currency_code,
-      imageUrl: primaryImageUrl(opts.product) ?? '',
+      currency: price.currency_code,
+      imageUrl,
       quantity: opts.quantity,
       variantId: opts.variantId,
     })

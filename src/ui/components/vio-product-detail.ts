@@ -55,7 +55,6 @@ export class VioProductDetail extends LitElement {
     if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) return
     this.productId = ev.detail.productId
     this.sponsorId = sponsorIdNum
-    console.log("[VioDetail] product-click →", { productId: this.productId, sponsorId: this.sponsorId })
     this.show()
     void this.fetchProduct()
   }
@@ -544,13 +543,6 @@ export class VioProductDetail extends LitElement {
     }
 
     this.product = products?.[0] ?? null
-    console.log('[VioDetail] fetched →', {
-      count: products?.length ?? 0,
-      hasProduct: !!this.product,
-      options: this.product?.options?.length,
-      variants: this.product?.variants?.length,
-      images: this.product?.images?.length,
-    })
 
     if (this.product) {
       // Auto-select the first value of each option (so qty + add fire correctly

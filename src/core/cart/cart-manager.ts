@@ -66,9 +66,8 @@ export class CartManager extends EventTarget {
         ? opts.product.variants?.find((v) => v.id === opts.variantId)
         : undefined
     const price = variant?.price ?? opts.product.price
-    // Prefer `amount` (matches the catalog / detail display); some feeds ship a
-    // broken `amount_incl_taxes`.
-    const unitPrice = price.amount ?? price.amount_incl_taxes ?? 0
+    // Tax-inclusive is the consumer-facing price; `amount` is the fallback.
+    const unitPrice = price.amount_incl_taxes ?? price.amount ?? 0
     const imageUrl = variant?.images?.[0]?.url ?? primaryImageUrl(opts.product) ?? ''
     const name = variant?.title
       ? `${opts.product.title} — ${variant.title}`

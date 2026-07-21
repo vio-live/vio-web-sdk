@@ -626,15 +626,15 @@ export class VioProductDetail extends LitElement {
   private get unitPrice(): number {
     const v = this.selectedVariant()
     const price = v?.price ?? this.product?.price
-    // Use `amount` (matches the card / catalog display). Some feeds ship a broken
-    // `amount_incl_taxes`, so it's only a fallback.
-    return price?.amount ?? price?.amount_incl_taxes ?? 0
+    // Tax-inclusive is the consumer-facing price (NO convention); `amount` is the
+    // fallback when the feed doesn't ship it.
+    return price?.amount_incl_taxes ?? price?.amount ?? 0
   }
 
   private get compareAt(): number | null {
     const v = this.selectedVariant()
     const price = v?.price ?? this.product?.price
-    return price?.compare_at ?? price?.compare_at_incl_taxes ?? null
+    return price?.compare_at_incl_taxes ?? price?.compare_at ?? null
   }
 
   private get availableQuantity(): number {

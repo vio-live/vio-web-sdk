@@ -11,18 +11,27 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
-import { formatPrice } from '../../core/types.js'
+import { formatPrice, getGlobalCurrency } from '../../core/types.js'
 import type { CartLineItem } from '../../core/cart/types.js'
 import {
   KLARNA_SHIPPING_OPTIONS,
   type CheckoutChangeDetail,
   type KlarnaPaymentsHandle,
+  type KlarnaShippingOption,
 } from '../../core/checkout/checkout-manager.js'
 import type {
   CheckoutAddress,
   CheckoutState,
   PaymentMethod,
 } from '../../core/checkout/types.js'
+
+/** Stripe wordmark, inlined so the published article needs no asset path.
+ * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
+const STRIPE_LOGO_SRC =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 25" fill="none"><path d="M5.4 12.8c0-1.8 1.4-2.8 3.8-2.8 1.5 0 2.9.4 3.7.8V7.4c-.8-.3-2.1-.6-3.5-.6-3.8 0-6.4 2-6.4 5.9 0 5.4 7.2 4.5 7.2 6.9 0 1.9-1.5 2.8-3.9 2.8-1.8 0-3.3-.4-4.2-1v3.5c1 .5 2.4.8 4 .8 4 0 6.6-2 6.6-6 0-5.8-7.3-4.7-7.3-6.9zM19.1 7.2c-1.3 0-2.1.6-2.5 1.1v-6.7h-2.5v17.4h2.5V11c0-1.6 1.1-2.4 2.4-2.4 1.3 0 2.2.8 2.2 2.4v8h2.5v-8.3c0-2.3-1.6-3.5-4.7-3.5zM27 7.2h-2.5v11.8H27V7.2zM27 3.3h-2.5v2.5H27V3.3zM34.9 7.2c-1.4 0-2.3.6-2.8 1.3V7.2h-2.5v16.1h2.5v-4.5c.5.7 1.4 1.3 2.8 1.3 2.9 0 5-2.2 5-6.6s-2.1-6.3-5-6.3zm-.6 9.8c-1.4 0-2.3-1-2.3-2.6s.9-2.6 2.3-2.6c1.4 0 2.4 1 2.4 2.6s-1 2.6-2.4 2.6zM46.7 13c-.3-.2-1.3-.7-2.4-.7-1.5 0-2.4.9-2.4 2.2 0 1.3 1.1 1.9 2.7 2.3 2.2.6 4.3 1.3 4.3 4.1 0 3.3-2.7 4.8-6.1 4.8-1.9 0-3.7-.5-4.8-1.2v-3.4c1.1.7 2.7 1.2 4.4 1.2 1.7 0 2.8-.7 2.8-2 0-1.4-1.1-1.9-2.9-2.3-2.4-.6-4.1-1.5-4.1-4 0-3 2.4-4.5 5.5-4.5 1.7 0 3.1.4 4 .9V13z" fill="#635BFF"/></svg>',
+  )
 
 export class VioCheckout extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
@@ -60,6 +69,11 @@ export class VioCheckout extends LitElement {
   /** Chosen shipping option id (express flow) — drives the Klarna order total. */
   @state() private selectedShipping =
     KLARNA_SHIPPING_OPTIONS.find((o) => o.preselected)?.id ?? KLARNA_SHIPPING_OPTIONS[0]?.id ?? ''
+  /** Real per-supplier shippings from the backend (empty → static fallback). */
+  @state() private availableShippingsList: KlarnaShippingOption[] = []
+  /** Payment method names enabled for the sponsor (backend-configured).
+   * Empty = not loaded yet → all buttons render (graceful default). */
+  @state() private availableMethods: string[] = []
   @state() private form: CheckoutAddress = {
     firstName: '',
     lastName: '',
@@ -78,6 +92,7 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState) {
       this.refreshApplePay()
       this.refreshKlarna()
+      void this.loadAvailablePaymentMethods()
     } else {
       this.applePayAvailable = false
       this.klarnaAvailable = false
@@ -86,6 +101,7 @@ export class VioCheckout extends LitElement {
       this.confirmedOrder = null
       this.paymentError = null
       this.express = false
+      this.availableMethods = []
       this.unmountKlarna()
     }
   }
@@ -587,6 +603,7 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState) {
       void this.refreshApplePay()
       void this.refreshKlarna()
+      void this.loadAvailablePaymentMethods()
     }
   }
 
@@ -612,6 +629,33 @@ export class VioCheckout extends LitElement {
   }
 
   show(): void { this.open = true }
+
+  /** Which payment buttons to render — backend-configured per sponsor. */
+  private async loadAvailablePaymentMethods(): Promise<void> {
+    if (!this.checkoutState) return
+    try {
+      const methods = (await Vio.checkout.getAvailablePaymentMethods(
+        this.checkoutState.sponsorId,
+      )) as Array<{ name: string }> | unknown
+      if (Array.isArray(methods)) {
+        this.availableMethods = methods.map((m) => m.name)
+      } else {
+        this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] Failed to load payment methods:', err)
+      }
+      this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+    }
+  }
+
+  private methodEnabled(name: string): boolean {
+    return (
+      this.availableMethods.length === 0 ||
+      this.availableMethods.some((m) => m.toLowerCase() === name)
+    )
+  }
 
   private async refreshApplePay(): Promise<void> {
     Vio.checkout.clearApplePayCache()
@@ -664,6 +708,16 @@ export class VioCheckout extends LitElement {
       this.klarnaMountedShipping = this.selectedShipping
       this.klarnaCategories = handle.categories
       this.klarnaSelectedCat = handle.selected
+      // Adopt the backend shippings the mount resolved; keep the selection valid.
+      if (Array.isArray(handle.shippings) && handle.shippings.length > 0) {
+        this.availableShippingsList = handle.shippings
+        if (
+          !this.selectedShipping ||
+          !handle.shippings.some((s) => s.id === this.selectedShipping)
+        ) {
+          this.selectedShipping = handle.shippings[0]!.id
+        }
+      }
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Klarna Payments mount failed:', err)
@@ -688,15 +742,37 @@ export class VioCheckout extends LitElement {
     this.klarnaAuthorizing = false
   }
 
-  /** Selected shipping option (express flow). */
-  private get shippingOption() {
-    return KLARNA_SHIPPING_OPTIONS.find((o) => o.id === this.selectedShipping) ?? null
+  /** Shippings in effect: backend per-supplier when loaded, static otherwise. */
+  private get shippingList(): KlarnaShippingOption[] {
+    return this.availableShippingsList.length > 0
+      ? this.availableShippingsList
+      : KLARNA_SHIPPING_OPTIONS
   }
 
-  /** Pick a shipping option → re-mounts the Klarna widget with the new total. */
-  private onSelectShipping(id: string): void {
+  /** Selected shipping option (express flow). */
+  private get shippingOption() {
+    const list = this.shippingList
+    return list.find((o) => o.id === this.selectedShipping) ?? list[0] ?? null
+  }
+
+  /** Pick a shipping option → re-mounts the Klarna widget with the new total.
+   * Also persists the choice on the backend cart (per supplier). */
+  private async onSelectShipping(id: string): Promise<void> {
     if (this.selectedShipping === id || this.klarnaMounting) return
     this.selectedShipping = id
+    const selectedOpt = this.shippingList.find((s) => s.id === id)
+    if (selectedOpt?.supplierId) {
+      try {
+        await Vio.checkout.updateShippingsBySupplier(
+          [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+          this.checkoutState?.sponsorId,
+        )
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[VioCheckout] updateShippingsBySupplier failed:', err)
+        }
+      }
+    }
   }
 
   /** Switch the Klarna widget to a different payment_method_category. */
@@ -904,25 +980,27 @@ export class VioCheckout extends LitElement {
 
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
   private renderKlarnaPanel() {
-    const currency = this.checkoutState?.currency ?? 'NOK'
+    const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
       <div class="klarna-panel">
         ${this.express
           ? html`
               <div class="ship-select" role="radiogroup" aria-label="Frakt">
-                ${KLARNA_SHIPPING_OPTIONS.map(
+                ${this.shippingList.map(
                   (o) => html`
                     <button
                       class="ship-opt ${this.selectedShipping === o.id ? 'active' : ''}"
                       role="radio"
                       aria-checked=${this.selectedShipping === o.id}
                       ?disabled=${this.klarnaMounting}
-                      @click=${() => this.onSelectShipping(o.id)}
+                      @click=${() => void this.onSelectShipping(o.id)}
                     >
                       <span class="ship-meta">
-                        <b>${o.method}</b><span>${o.description}</span>
+                        <b>${o.method || o.name}</b><span>${o.description}</span>
                       </span>
-                      <span class="ship-price">${formatPrice(o.price / 100, currency)}</span>
+                      <span class="ship-price">
+                        ${formatPrice(o.priceMajor ?? o.price / 100, o.currency || currency)}
+                      </span>
                     </button>
                   `,
                 )}
@@ -945,13 +1023,24 @@ export class VioCheckout extends LitElement {
               </div>
             `
           : ''}
+        ${this.klarnaMounting
+          ? html`
+              <div style="padding: 20px; text-align: center; color: var(--vio-color-text-secondary, #666); font-size: 14px;">
+                Klargjør Klarna-betaling…
+              </div>
+            `
+          : ''}
         <div class="klarna-widget" id="vio-klarna-payments-container"></div>
         <button
           class="payment-btn primary complete-cta"
           @click=${() => void this.onKlarnaAuthorize()}
           ?disabled=${this.klarnaAuthorizing || !this.klarnaHandle || this.klarnaMounting}
         >
-          ${this.klarnaAuthorizing ? 'Behandler…' : `Betal ${this.payTotalLabel()} med Klarna`}
+          ${this.klarnaAuthorizing
+            ? 'Behandler…'
+            : this.klarnaMounting
+              ? 'Klargjør Klarna…'
+              : `Betal ${this.payTotalLabel()} med Klarna`}
         </button>
       </div>
     `
@@ -959,6 +1048,7 @@ export class VioCheckout extends LitElement {
 
   /** Express layout — only the Klarna widget + a compact order summary. */
   private renderKlarnaExpress() {
+    const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
       <section class="section">
         <h3 class="section-heading">Kjøp med Klarna</h3>
@@ -969,13 +1059,13 @@ export class VioCheckout extends LitElement {
                   (item) => html`
                     <div class="order-row">
                       <span>${item.brand ? `${item.brand} ` : ''}${item.name} ×${item.quantity}</span>
-                      <span>${formatPrice(item.unitPrice * item.quantity, item.currency)}</span>
+                      <span>${formatPrice(item.unitPrice * item.quantity, item.currency || currency)}</span>
                     </div>
                   `,
                 )}
                 <div class="order-row">
                   <span>Frakt${this.shippingOption ? ` – ${this.shippingOption.method}` : ''}</span>
-                  <span>${formatPrice(this.shippingMajor(), this.checkoutState?.currency ?? 'NOK')}</span>
+                  <span>${formatPrice(this.shippingMajor(), currency)}</span>
                 </div>
                 <div class="order-row total">
                   <span>Totalt</span><span>${this.payTotalLabel()}</span>
@@ -1082,7 +1172,18 @@ export class VioCheckout extends LitElement {
                     </button>
                   `
                 : ''}
-              ${this.klarnaAvailable
+              ${this.methodEnabled('stripe')
+                ? html`
+                    <button
+                      class="payment-btn"
+                      @click=${() => this.onPay('stripe')}
+                      aria-pressed=${this.checkoutState?.paymentMethod === 'stripe'}
+                    >
+                      <img src=${STRIPE_LOGO_SRC} style="height: 20px; display: block;" alt="Stripe" />
+                    </button>
+                  `
+                : ''}
+              ${this.methodEnabled('klarna') && this.klarnaAvailable
                 ? html`
                     <button
                       class="payment-btn"
@@ -1093,20 +1194,17 @@ export class VioCheckout extends LitElement {
                     </button>
                   `
                 : ''}
-              <button
-                class="payment-btn"
-                @click=${() => this.onPay('vipps')}
-                aria-pressed=${this.checkoutState?.paymentMethod === 'vipps'}
-              >
-                <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
-              </button>
-              <button
-                class="payment-btn"
-                @click=${() => this.onPay('card')}
-                aria-pressed=${this.checkoutState?.paymentMethod === 'card'}
-              >
-                Kort
-              </button>
+              ${this.methodEnabled('vipps')
+                ? html`
+                    <button
+                      class="payment-btn"
+                      @click=${() => this.onPay('vipps')}
+                      aria-pressed=${this.checkoutState?.paymentMethod === 'vipps'}
+                    >
+                      <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
+                    </button>
+                  `
+                : ''}
               ${!this.applePayAvailable
                 ? html`
                     <div class="apple-pay-note">

@@ -15,6 +15,7 @@ import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import {
   formatPrice,
+  getGlobalCurrency,
   type Product,
   type ProductImage,
   type ProductOption,
@@ -47,7 +48,7 @@ export class VioProductDetail extends LitElement {
 
   private boundProductClick = (e: Event): void => {
     if (!this.autoOpen) return
-    const ev = e as CustomEvent<{ productId: string; sponsorId: string }>
+    const ev = e as CustomEvent<{ productId: string; sponsorId: string; currency?: string }>
     const productIdNum = parseInt(ev.detail.productId, 10)
     // Skip non-numeric IDs (affiliate products) — host handles those.
     if (Number.isNaN(productIdNum)) return
@@ -55,6 +56,8 @@ export class VioProductDetail extends LitElement {
     if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) return
     this.productId = ev.detail.productId
     this.sponsorId = sponsorIdNum
+    // The event may carry the page currency; otherwise use the global one.
+    this.currency = ev.detail.currency || getGlobalCurrency()
     this.show()
     void this.fetchProduct()
   }
@@ -521,10 +524,14 @@ export class VioProductDetail extends LitElement {
     let lastError: unknown = null
     for (let attempt = 0; attempt < 4; attempt++) {
       try {
+        // Re-resolve the page currency on every fetch — the host may have
+        // switched it since this element was mounted.
+        const activeCurrency = getGlobalCurrency() || this.currency
+        this.currency = activeCurrency
         const commerce = Vio.commerceFor(this.sponsorId)
         products = await commerce.channel.product.getByIds({
           product_ids: [productIdNum],
-          currency: this.currency,
+          currency: activeCurrency,
           image_size: 'large',
         })
         lastError = null

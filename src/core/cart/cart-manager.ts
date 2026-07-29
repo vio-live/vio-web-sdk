@@ -11,8 +11,19 @@
  * this manager is purely client-side state for now.
  */
 
-import { formatPrice, primaryImageUrl, type Product } from '../types.js'
+import { formatPrice, getGlobalCurrency, primaryImageUrl, type Product } from '../types.js'
 import type { CartLineItem, SponsorCartState } from './types.js'
+import {
+  addItem as gqlAddItem,
+  createCart as gqlCreateCart,
+  deleteItem as gqlDeleteItem,
+  getCart as gqlGetCart,
+  getCartGraphQLOptions,
+  getCustomerSessionId,
+  getLineItemsBySupplier as gqlGetLineItemsBySupplier,
+  updateItem as gqlUpdateItem,
+  updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
+} from '../api/cart-queries.js'
 
 const STORAGE_KEY = 'vio.cart.v1'
 
@@ -53,6 +64,102 @@ export class CartManager extends EventTarget {
   constructor() {
     super()
     this.cartsBySponsor = this.loadFromStorage()
+  }
+
+  // MARK: - Backend cart sync (Vio Commerce GraphQL)
+
+  /** Ensure the sponsor cart exists server-side; returns its backend cart id. */
+  async ensureCartId(
+    sponsorId: number,
+    currency?: string,
+    shippingCountry = 'NO',
+  ): Promise<string | undefined> {
+    const activeCurrency = currency || getGlobalCurrency()
+    let cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart) {
+      cart = { sponsorId, items: [], currency: activeCurrency }
+      this.cartsBySponsor.set(sponsorId, cart)
+    }
+    if (!cart.cartId) {
+      const opts = getCartGraphQLOptions(sponsorId)
+      const customerSessionId = getCustomerSessionId()
+      try {
+        const backendCart = await gqlCreateCart(
+          customerSessionId,
+          activeCurrency,
+          shippingCountry,
+          opts,
+        )
+        if (backendCart?.cart_id) {
+          cart.cartId = backendCart.cart_id
+          this.updateFromBackendCart(sponsorId, backendCart)
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') console.warn('[CartManager] createCart failed:', err)
+      }
+    }
+    return cart.cartId
+  }
+
+  /** Overwrite local cart state with the backend cart response (source of truth). */
+  updateFromBackendCart(
+    sponsorId: number,
+    backendCart: {
+      cart_id?: string
+      currency?: string
+      shipping_country?: string
+      subtotal?: number
+      shipping?: number
+      available_shipping_countries?: string[]
+      line_items?: Array<{
+        id: string
+        product_id: number
+        variant_id?: number | string | null
+        variant_title?: string | null
+        brand?: string | null
+        title?: string | null
+        quantity: number
+        image?: { url?: string } | null
+        price?: {
+          amount?: number
+          amount_incl_taxes?: number | null
+          currency_code?: string
+        } | null
+        shipping?: unknown
+        available_shippings?: unknown[]
+      }>
+    },
+  ): void {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart) return
+    if (backendCart.cart_id) cart.cartId = backendCart.cart_id
+    if (backendCart.currency) cart.currency = backendCart.currency
+    if (backendCart.shipping_country) cart.shippingCountry = backendCart.shipping_country
+    if (backendCart.subtotal != null) cart.subtotal = backendCart.subtotal
+    if (backendCart.shipping != null) cart.shipping = backendCart.shipping
+    if (backendCart.available_shipping_countries) {
+      cart.availableShippingCountries = backendCart.available_shipping_countries
+    }
+
+    if (Array.isArray(backendCart.line_items)) {
+      cart.items = backendCart.line_items.map((li): CartLineItem => ({
+        id: li.id,
+        cartItemId: li.id,
+        productId: li.product_id,
+        sponsorId,
+        variantId: li.variant_id != null ? Number(li.variant_id) : undefined,
+        brand: li.brand || '',
+        name: li.title ? (li.variant_title ? `${li.title} — ${li.variant_title}` : li.title) : '',
+        unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? 0,
+        currency: li.price?.currency_code || backendCart.currency || cart.currency,
+        imageUrl: li.image?.url || '',
+        quantity: li.quantity,
+        shipping: li.shipping,
+        availableShippings: li.available_shippings,
+      }))
+    }
+    this.persist()
+    this.emit()
   }
 
   // MARK: - Mutations
@@ -107,42 +214,89 @@ export class CartManager extends EventTarget {
     )
     if (existing) {
       existing.quantity += qty
-      this.persist()
-      this.emit()
-      return existing
+    } else {
+      const item: CartLineItem = {
+        id: lineId(),
+        productId: opts.productId,
+        sponsorId: opts.sponsorId,
+        variantId: opts.variantId,
+        brand: opts.brand,
+        name: opts.name,
+        unitPrice: opts.unitPrice,
+        currency: opts.currency,
+        imageUrl: opts.imageUrl,
+        quantity: qty,
+      }
+      cart.items.push(item)
     }
-
-    const item: CartLineItem = {
-      id: lineId(),
-      productId: opts.productId,
-      sponsorId: opts.sponsorId,
-      variantId: opts.variantId,
-      brand: opts.brand,
-      name: opts.name,
-      unitPrice: opts.unitPrice,
-      currency: opts.currency,
-      imageUrl: opts.imageUrl,
-      quantity: qty,
-    }
-    cart.items.push(item)
     this.persist()
     this.emit()
-    return item
+
+    const addedItem = existing ?? cart.items[cart.items.length - 1]!
+
+    // Async sync with the backend cart (fire-and-forget; local state is
+    // optimistic and gets overwritten by the backend response when it lands).
+    void (async () => {
+      try {
+        const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
+        if (cartId) {
+          const gqlOpts = getCartGraphQLOptions(opts.sponsorId)
+          const lineItemsInput = [
+            {
+              product_id: Number(opts.productId || 0),
+              quantity: qty,
+              variant_id: opts.variantId != null ? Number(opts.variantId) : null,
+            },
+          ]
+          const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
+          if (resCart && Array.isArray(resCart.line_items)) {
+            this.updateFromBackendCart(opts.sponsorId, resCart)
+          }
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CartManager] GraphQL AddItem failed:', err)
+        }
+      }
+    })()
+
+    return addedItem
   }
 
   updateQuantity(lineItemId: string, sponsorId: number, quantity: number): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
-    const item = cart.items.find((i) => i.id === lineItemId)
+    const item = cart.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
     if (!item) return
+    const targetItemId = item.cartItemId ?? item.id
     if (quantity <= 0) {
-      cart.items = cart.items.filter((i) => i.id !== lineItemId)
+      cart.items = cart.items.filter((i) => i !== item)
     } else {
       item.quantity = quantity
     }
     if (cart.items.length === 0) this.cartsBySponsor.delete(sponsorId)
     this.persist()
     this.emit()
+
+    if (cart.cartId) {
+      const backendCartId = cart.cartId
+      const gqlOpts = getCartGraphQLOptions(sponsorId)
+      void (async () => {
+        try {
+          const resCart =
+            quantity <= 0
+              ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
+              : await gqlUpdateItem(backendCartId, targetItemId, null, quantity, gqlOpts)
+          if (resCart && Array.isArray(resCart.line_items)) {
+            this.updateFromBackendCart(sponsorId, resCart)
+          }
+        } catch (err) {
+          if (typeof console !== 'undefined') {
+            console.warn('[CartManager] GraphQL Update/DeleteItem failed:', err)
+          }
+        }
+      })()
+    }
   }
 
   removeItem(lineItemId: string, sponsorId: number): void {
@@ -161,6 +315,39 @@ export class CartManager extends EventTarget {
     this.cartsBySponsor.clear()
     this.persist()
     this.emit()
+  }
+
+  /** Refresh the local cart from the backend (source of truth). */
+  async fetchCartFromBackend(sponsorId: number): Promise<unknown> {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart?.cartId) return null
+    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    const resCart = await gqlGetCart(cart.cartId, gqlOpts)
+    if (resCart) this.updateFromBackendCart(sponsorId, resCart)
+    return resCart
+  }
+
+  /** Line items grouped by supplier (shipping is per-supplier server-side). */
+  async fetchLineItemsBySupplier(sponsorId: number): Promise<unknown> {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart?.cartId) return null
+    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    return gqlGetLineItemsBySupplier(cart.cartId, gqlOpts)
+  }
+
+  /** Set the chosen shipping option per supplier on the backend cart. */
+  async updateShippingsBySupplier(
+    sponsorId: number,
+    data: Array<{ shipping_id: string; supplier_id: number }>,
+  ): Promise<unknown> {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart?.cartId) return null
+    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    const resCart = await gqlUpdateShippingsBySupplier(cart.cartId, data, gqlOpts)
+    if (resCart && Array.isArray(resCart.line_items)) {
+      this.updateFromBackendCart(sponsorId, resCart)
+    }
+    return resCart
   }
 
   // MARK: - Read accessors

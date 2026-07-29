@@ -8,6 +8,8 @@
 export interface CartLineItem {
   /** Unique local id for this line item (used for update/remove). */
   id: string
+  /** Backend cart item id (set once the server-side cart is synced). */
+  cartItemId?: string
   /** Vio Commerce product id. */
   productId: number
   /** Sponsor (merchant) id this line item belongs to. */
@@ -26,6 +28,10 @@ export interface CartLineItem {
   imageUrl: string
   /** Quantity. */
   quantity: number
+  /** Selected shipping for this line (backend cart). */
+  shipping?: unknown
+  /** Shipping options offered by the backend for this line. */
+  availableShippings?: unknown[]
 }
 
 export interface SponsorCartState {
@@ -33,4 +39,10 @@ export interface SponsorCartState {
   sponsorName?: string
   items: CartLineItem[]
   currency: string
+  /** Backend (Vio Commerce) cart id, once created. */
+  cartId?: string
+  shippingCountry?: string
+  subtotal?: number
+  shipping?: number
+  availableShippingCountries?: string[]
 }

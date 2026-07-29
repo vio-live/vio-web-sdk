@@ -6,7 +6,7 @@
  * sequential checkouts.
  */
 
-export type PaymentMethod = 'apple-pay' | 'klarna' | 'vipps' | 'card'
+export type PaymentMethod = 'apple-pay' | 'klarna' | 'vipps' | 'card' | 'stripe'
 
 export interface CheckoutAddress {
   firstName: string
@@ -31,4 +31,12 @@ export interface CheckoutState {
   subtotal: number
   /** Currency code. */
   currency: string
+  /** Backend checkout id (Vio Commerce CreateCheckout). */
+  checkoutId?: string
+  /** Full backend checkout payload (untyped upstream). */
+  checkout?: unknown
+  /** Klarna Payments session id (native GraphQL flow). */
+  sessionId?: string
+  /** Klarna Payments client token (native GraphQL flow). */
+  clientToken?: string
 }

@@ -123,6 +123,8 @@ function loadKpLib(): Promise<KlarnaGlobal> {
 
 export interface KlarnaPaymentsWidgetInput {
   clientToken: string
+  /** Klarna session id (native GraphQL flow) — informational, for callers/logs. */
+  sessionId?: string
   categories: KlarnaPaymentsCategory[]
   container: HTMLElement
   /** Category to load first. Defaults to the first available. */

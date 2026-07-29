@@ -35,6 +35,17 @@ import {
   isKlarnaPaymentsAvailable,
   type KlarnaPaymentsCategory,
 } from './payments/klarna-payments.js'
+import {
+  createCheckout as gqlCreateCheckout,
+  executeCartGraphQL,
+  getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
+  getCartGraphQLOptions,
+  getCheckout as gqlGetCheckout,
+  getLineItemsBySupplier as gqlGetLineItemsBySupplier,
+  updateCheckout as gqlUpdateCheckout,
+  updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
+} from '../api/cart-queries.js'
+import { getGlobalCurrency } from '../types.js'
 
 /**
  * Best-effort human-readable string for an unknown thrown/rejected value.
@@ -75,6 +86,12 @@ interface KlarnaPendingContext {
     /** Klarna line type, e.g. "shipping_fee". */
     type?: string
   }>
+  /** Backend checkout id (native GraphQL flow). */
+  checkoutId?: string
+  /** Klarna Payments session id (native GraphQL flow). */
+  sessionId?: string
+  /** Klarna Payments client token (native GraphQL flow). */
+  clientToken?: string
 }
 
 /** A shipping option offered in the checkout. `price` in minor units (øre). */
@@ -86,6 +103,14 @@ export interface KlarnaShippingOption {
   tax_amount: number
   tax_rate: number
   preselected: boolean
+  /** Backend supplier the option belongs to (server-side shippings). */
+  supplierId?: string
+  /** Display name from the backend (mirror of `method`). */
+  name?: string
+  country_code?: string
+  /** Price in MAJOR units, as delivered by the backend. */
+  priceMajor?: number
+  currency?: string
 }
 
 /**
@@ -116,6 +141,182 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
 
+// MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
+
+const CREATE_PAYMENT_KLARNA_NATIVE_MUTATION = `
+mutation CreatePaymentKlarnaNative($checkoutId: String!, $countryCode: String, $currency: String, $locale: String, $returnUrl: String, $intent: String, $customer: KlarnaNativeCustomerInput, $billingAddress: KlarnaNativeAddressInput, $shippingAddress: KlarnaNativeAddressInput, $autoCapture: Boolean) {
+  Payment {
+    CreatePaymentKlarnaNative(checkout_id: $checkoutId, country_code: $countryCode, currency: $currency, locale: $locale, return_url: $returnUrl, intent: $intent, customer: $customer, billing_address: $billingAddress, shipping_address: $shippingAddress, auto_capture: $autoCapture) {
+      client_token
+      session_id
+      purchase_country
+      purchase_currency
+      cart_id
+      checkout_id
+      payment_method_categories {
+        identifier
+        name
+        asset_urls {
+          descriptive
+          standard
+        }
+      }
+    }
+  }
+}
+`
+
+const CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION = `
+mutation ConfirmPaymentKlarnaNative($checkoutId: String!, $authorizationToken: String!, $autoCapture: Boolean, $billingAddress: KlarnaNativeAddressInput, $shippingAddress: KlarnaNativeAddressInput, $customer: KlarnaNativeCustomerInput) {
+  Payment {
+    ConfirmPaymentKlarnaNative(checkout_id: $checkoutId, authorization_token: $authorizationToken, auto_capture: $autoCapture, billing_address: $billingAddress, shipping_address: $shippingAddress, customer: $customer) {
+      order_id
+      checkout_id
+      fraud_status
+      order {
+        order_id
+        status
+        purchase_country
+        purchase_currency
+        locale
+        billing_address {
+          given_name
+          family_name
+          email
+          street_address
+          postal_code
+          city
+          country
+        }
+        shipping_address {
+          given_name
+          family_name
+          email
+          street_address
+          postal_code
+          city
+          country
+        }
+        order_amount
+        order_tax_amount
+        total_line_items_price
+        order_lines {
+          type
+          name
+          quantity
+          unit_price
+          tax_rate
+          total_amount
+          total_discount_amount
+          total_tax_amount
+          merchant_data
+        }
+        merchant_urls {
+          terms
+          checkout
+          confirmation
+          push
+        }
+        html_snippet
+        started_at
+        last_modified_at
+        options {
+          allow_separate_shipping_address
+          date_of_birth_mandatory
+          require_validate_callback_success
+          phone_mandatory
+          auto_capture
+        }
+        shipping_options {
+          id
+          name
+          price
+          tax_amount
+          tax_rate
+          preselected
+        }
+        merchant_data
+        selected_shipping_option {
+          id
+          name
+          price
+          tax_amount
+          tax_rate
+          preselected
+        }
+      }
+    }
+  }
+}
+`
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+function buildKlarnaCustomer(address: any): Record<string, unknown> | null {
+  if (!address) return null
+  return {
+    dob: address.dob || address.date_of_birth || null,
+    email: address.email || null,
+    organization_registration_id:
+      address.organization_registration_id || address.org_id || null,
+    phone: address.phone || address.telephone || null,
+    type: address.type || 'person',
+  }
+}
+
+function buildKlarnaAddress(address: any): Record<string, unknown> | null {
+  if (!address) return null
+  return {
+    city: address.city || null,
+    country: address.country || address.countryCode || 'NO',
+    email: address.email || null,
+    family_name:
+      address.familyName || address.family_name || address.last_name || address.lastName || null,
+    given_name:
+      address.givenName || address.given_name || address.first_name || address.firstName || null,
+    phone: address.phone || null,
+    postal_code: address.postalCode || address.postal_code || address.zip || null,
+    region: address.region || address.state || null,
+    street_address:
+      address.streetAddress ||
+      address.street_address ||
+      address.address1 ||
+      address.street ||
+      address.address || // CheckoutAddress uses plain `address` for the street
+      null,
+    street_address2:
+      address.streetAddress2 || address.street_address2 || address.address2 || null,
+  }
+}
+
+/** Klarna requires an https return_url — normalise whatever the page has. */
+function resolveHttpsReturnUrl(overrideUrl?: string): string {
+  let url = overrideUrl
+  if (!url && typeof window !== 'undefined' && window.location) {
+    url = window.location.href
+  }
+  if (!url || typeof url !== 'string' || url.startsWith('about:') || url.startsWith('file:')) {
+    return 'https://vev.design/checkout/confirmation'
+  }
+  if (url.startsWith('http://')) {
+    url = 'https://' + url.slice(7)
+  } else if (!url.startsWith('https://')) {
+    url = 'https://' + url.replace(/^[a-zA-Z]+:\/\//, '')
+  }
+  return url
+}
+
+/** Execute a Payment.* mutation with the sponsor's commerce key. */
+async function executeKlarnaGraphQL(
+  query: string,
+  variables: Record<string, unknown>,
+  sponsorId?: number,
+): Promise<any> {
+  return executeCartGraphQL(query, variables, getCartGraphQLOptions(sponsorId))
+}
+
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
 export interface CheckoutChangeDetail {
   state: CheckoutState | null
 }
@@ -140,6 +341,8 @@ export interface PaymentErrorDetail {
 export interface KlarnaPaymentsHandle {
   /** Categories offered by the session (pay_now / pay_later / pay_over_time). */
   categories: KlarnaPaymentsCategory[]
+  /** Shipping options in effect (backend per-supplier, or the static fallback). */
+  shippings: KlarnaShippingOption[]
   /** Currently selected category. */
   readonly selected: string
   /** (Re)load the widget for a category. */
@@ -155,6 +358,8 @@ export class CheckoutManager extends EventTarget {
   private applePayAvailableCache: boolean | null = null
   private klarnaAvailableCache: boolean | null = null
   private klarnaOrderInFlight = false
+  /** Last backend shippings fetched (per-supplier), for UI reuse. */
+  private lastFetchedShippings: KlarnaShippingOption[] = []
 
   constructor(private readonly cartManager: CartManager) {
     super()
@@ -168,7 +373,9 @@ export class CheckoutManager extends EventTarget {
     this.state = {
       sponsorId,
       subtotal: this.cartManager.subtotalForSponsor(sponsorId),
-      currency: cart.currency,
+      // Page-level currency wins over whatever the persisted cart carries —
+      // the host may have switched currency since the cart was created.
+      currency: getGlobalCurrency(),
     }
     this.emit()
     return this.state
@@ -180,6 +387,154 @@ export class CheckoutManager extends EventTarget {
     this.klarnaAvailableCache = null
     this.emit()
   }
+
+  // MARK: - Backend checkout (Vio Commerce GraphQL)
+
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+
+  /** Create the backend checkout for the sponsor's cart (auto-accepts terms). */
+  async createCheckout(sponsorId: number): Promise<any> {
+    const cart = this.cartManager.getCart(sponsorId)
+    let cartId = cart?.cartId
+    if (!cartId) {
+      cartId = await this.cartManager.ensureCartId(sponsorId, cart?.currency)
+      if (!cartId) {
+        throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${sponsorId}`)
+      }
+    }
+    const opts = getCartGraphQLOptions(sponsorId)
+    const checkout = await gqlCreateCheckout(cartId, opts)
+    if (checkout?.id) {
+      this.state = {
+        ...(this.state ?? { sponsorId, subtotal: 0, currency: getGlobalCurrency() }),
+        sponsorId,
+        checkoutId: checkout.id,
+        checkout,
+      }
+      this.emit()
+      try {
+        const updated = await gqlUpdateCheckout(
+          {
+            checkoutId: checkout.id,
+            buyerAcceptsPurchaseConditions: true,
+            buyerAcceptsTermsConditions: true,
+          },
+          opts,
+        )
+        if (updated?.id) {
+          this.state = { ...this.state, checkout: updated }
+          this.emit()
+          return updated
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CheckoutManager] Failed to auto-accept terms & purchase conditions:', err)
+        }
+      }
+    }
+    return checkout
+  }
+
+  /** Update the backend checkout (terms are re-asserted unless overridden). */
+  async updateCheckout(variables: Record<string, unknown>, sponsorId?: number): Promise<any> {
+    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const fullVars = {
+      buyerAcceptsPurchaseConditions: true,
+      buyerAcceptsTermsConditions: true,
+      ...variables,
+    }
+    const updated = await gqlUpdateCheckout(fullVars, opts)
+    if (updated?.id && this.state) {
+      this.state = { ...this.state, checkoutId: updated.id, checkout: updated }
+      this.emit()
+    }
+    return updated
+  }
+
+  async getCheckout(checkoutId: string, sponsorId?: number): Promise<any> {
+    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetCheckout(checkoutId, opts)
+  }
+
+  /** Payment methods enabled for the sponsor (backend-configured). */
+  async getAvailablePaymentMethods(sponsorId?: number): Promise<any> {
+    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetAvailablePaymentMethods(opts)
+  }
+
+  /**
+   * Real shipping options from the backend cart (per supplier), mapped to the
+   * KlarnaShippingOption shape (minor units). Empty array on failure — callers
+   * fall back to the static KLARNA_SHIPPING_OPTIONS.
+   */
+  async fetchAvailableShippings(sponsorId?: number): Promise<KlarnaShippingOption[]> {
+    try {
+      const spId = sponsorId ?? this.state?.sponsorId
+      if (!spId) return []
+      const cart = this.cartManager.getCart(spId)
+      let cartId = cart?.cartId
+      if (!cartId) {
+        cartId = await this.cartManager.ensureCartId(spId)
+      }
+      if (!cartId) return []
+      const opts = getCartGraphQLOptions(spId)
+      const supplierGroups = await gqlGetLineItemsBySupplier(cartId, opts)
+      const firstGroup = Array.isArray(supplierGroups) ? supplierGroups[0] : null
+      const shippings = firstGroup?.available_shippings ?? []
+      if (Array.isArray(shippings) && shippings.length > 0) {
+        const supplierId = firstGroup?.supplier?.id
+        const mapped: KlarnaShippingOption[] = shippings.map((s: any, idx: number) => {
+          const priceObj = s.price ?? {}
+          const amount =
+            typeof priceObj.amount_incl_taxes === 'number'
+              ? priceObj.amount_incl_taxes
+              : typeof priceObj.amount === 'number'
+                ? priceObj.amount
+                : 0
+          return {
+            id: String(s.id),
+            supplierId: supplierId != null ? String(supplierId) : undefined,
+            method: s.name || 'Default Shipping',
+            name: s.name || 'Default Shipping',
+            description: s.description || '',
+            country_code: s.country_code || 'NO',
+            price: Math.round(amount * 100),
+            priceMajor: amount,
+            currency: priceObj.currency_code || getGlobalCurrency(),
+            tax_amount: Math.round((priceObj.tax_amount ?? 0) * 100),
+            tax_rate: Math.round((priceObj.tax_rate ?? 0) * 100),
+            preselected: idx === 0,
+          }
+        })
+        this.lastFetchedShippings = mapped
+        return mapped
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[CheckoutManager] fetchAvailableShippings failed:', err)
+      }
+    }
+    return []
+  }
+
+  /** Set the chosen shipping per supplier on the backend cart. */
+  async updateShippingsBySupplier(
+    data: Array<{ shipping_id: string; supplier_id: number }>,
+    sponsorId?: number,
+  ): Promise<any> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) return null
+    const cart = this.cartManager.getCart(spId)
+    if (!cart?.cartId) return null
+    const opts = getCartGraphQLOptions(spId)
+    const updated = await gqlUpdateShippingsBySupplier(cart.cartId, data, opts)
+    if (updated) {
+      this.cartManager.updateFromBackendCart(spId, updated)
+    }
+    return updated
+  }
+
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   setAddress(address: CheckoutAddress): void {
     if (!this.state) return
@@ -481,46 +836,99 @@ export class CheckoutManager extends EventTarget {
     opts?: { withShipping?: boolean; shippingId?: string },
   ): Promise<KlarnaPaymentsHandle> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
-    const cfg = Configuration.get()
+    const sponsorId = this.state.sponsorId
+
+    // 1. Real per-supplier shippings from the backend cart (static fallback).
+    const fetchedShippings = await this.fetchAvailableShippings(sponsorId)
+    const shippings = fetchedShippings.length > 0 ? fetchedShippings : KLARNA_SHIPPING_OPTIONS
+
     // With shipping: add the CHOSEN shipping option as a shipping_fee line +
     // bump the total. (Klarna Payments doesn't render a picker; ours lives in
     // the checkout UI and re-mounts this widget with the new total on change.)
-    const { ctx, shippingOptions } = opts?.withShipping
-      ? this.buildKlarnaInstantContext(opts.shippingId)
-      : { ctx: this.buildKlarnaPendingContext(), shippingOptions: undefined }
+    const { ctx } = opts?.withShipping
+      ? this.buildKlarnaInstantContext(opts.shippingId, shippings)
+      : { ctx: this.buildKlarnaPendingContext() }
 
-    // 1. Create the Payments session on the backend (it holds the API key).
-    const res = await fetch(`${cfg.apiBase}/v2/commerce/klarna/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': cfg.apiKey },
-      body: JSON.stringify({
-        currency: ctx.currency,
-        purchaseCountry: 'NO',
-        locale: 'nb-NO',
-        orderAmount: ctx.orderAmount,
-        orderLines: ctx.orderLines,
-        ...(shippingOptions ? { shippingOptions } : {}),
-      }),
-    })
-    const json = (await res.json().catch(() => ({}))) as {
-      error?: string
-      clientToken?: string
-      paymentMethodCategories?: KlarnaPaymentsCategory[]
-    }
-    if (!res.ok || !json.clientToken) {
-      throw new Error(json?.error ?? `Klarna session failed (HTTP ${res.status})`)
+    // 2. Persist the chosen shipping on the backend cart.
+    const selectedOpt = shippings.find((s) => s.id === opts?.shippingId) ?? shippings[0]
+    if (selectedOpt?.id && selectedOpt?.supplierId) {
+      try {
+        await this.updateShippingsBySupplier(
+          [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+          sponsorId,
+        )
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CheckoutManager] updateShippingsBySupplier failed during mount:', err)
+        }
+      }
     }
 
-    // 2. Mount the inline widget and load the first category.
+    // 3. Backend checkout (CreatePaymentKlarnaNative requires a checkout_id).
+    let checkoutId = ctx.checkoutId ?? this.state.checkoutId
+    try {
+      const checkoutRes = await this.createCheckout(sponsorId)
+      if (checkoutRes?.id) {
+        checkoutId = checkoutRes.id
+        ctx.checkoutId = checkoutRes.id
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[CheckoutManager] CreateCheckout before Klarna init failed:', err)
+      }
+    }
+    if (!checkoutId) checkoutId = String(sponsorId)
+
+    // 4. Klarna Payments session via the commerce GraphQL (native flow).
+    const address = this.state.address
+    const activeCurrency = getGlobalCurrency()
+    if (this.state) this.state = { ...this.state, currency: activeCurrency }
+    ctx.currency = activeCurrency
+    const variables = {
+      checkoutId,
+      countryCode: 'NO',
+      currency: activeCurrency,
+      locale: 'nb-NO',
+      returnUrl: resolveHttpsReturnUrl(),
+      intent: 'buy',
+      customer: buildKlarnaCustomer(address),
+      billingAddress: buildKlarnaAddress(address),
+      shippingAddress: buildKlarnaAddress(address),
+      autoCapture: true,
+    }
+
+    const json = await executeKlarnaGraphQL(
+      CREATE_PAYMENT_KLARNA_NATIVE_MUTATION,
+      variables,
+      sponsorId,
+    )
+    const nativeRes = json?.data?.Payment?.CreatePaymentKlarnaNative
+    if (!nativeRes || !nativeRes.client_token) {
+      throw new Error('Klarna session creation failed: missing client_token')
+    }
+    if (nativeRes.checkout_id) {
+      ctx.checkoutId = nativeRes.checkout_id
+      this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+    }
+    if (nativeRes.session_id) {
+      ctx.sessionId = nativeRes.session_id
+      this.state = { ...this.state, sessionId: nativeRes.session_id }
+    }
+    ctx.clientToken = nativeRes.client_token
+    this.state = { ...this.state, clientToken: nativeRes.client_token }
+
+    // 5. Mount the inline widget and load the first category.
     const widget = await createKlarnaPaymentsWidget({
-      clientToken: json.clientToken,
-      categories: json.paymentMethodCategories ?? [],
+      clientToken: nativeRes.client_token,
+      sessionId: nativeRes.session_id,
+      categories: nativeRes.payment_method_categories ?? [],
       container,
     })
     await widget.load()
 
     return {
       categories: widget.categories,
+      shippings,
       get selected() {
         return widget.selected
       },
@@ -559,19 +967,23 @@ export class CheckoutManager extends EventTarget {
   }
 
   /** Cart snapshot + chosen shipping line/amount, for express purchases. */
-  private buildKlarnaInstantContext(shippingId?: string): {
+  private buildKlarnaInstantContext(
+    shippingId?: string,
+    availableShippings: KlarnaShippingOption[] = [],
+  ): {
     ctx: KlarnaPendingContext
-    shippingOptions: typeof KLARNA_SHIPPING_OPTIONS
+    shippingOptions: KlarnaShippingOption[]
   } {
     const base = this.buildKlarnaPendingContext()
+    const options = availableShippings.length > 0 ? availableShippings : KLARNA_SHIPPING_OPTIONS
     const shipping =
-      (shippingId ? KLARNA_SHIPPING_OPTIONS.find((o) => o.id === shippingId) : undefined) ??
-      KLARNA_SHIPPING_OPTIONS.find((o) => o.preselected) ??
-      KLARNA_SHIPPING_OPTIONS[0]
+      (shippingId ? options.find((o) => o.id === shippingId) : undefined) ??
+      options.find((o) => o.preselected) ??
+      options[0]
     const orderLines = [...base.orderLines]
     if (shipping) {
       orderLines.push({
-        name: `Frakt – ${shipping.method}`,
+        name: `Frakt – ${shipping.method || shipping.name}`,
         quantity: 1,
         unit_price: shipping.price,
         total_amount: shipping.price,
@@ -585,7 +997,7 @@ export class CheckoutManager extends EventTarget {
         orderLines,
         orderAmount: base.orderAmount + (shipping?.price ?? 0),
       },
-      shippingOptions: KLARNA_SHIPPING_OPTIONS,
+      shippingOptions: options,
     }
   }
 
@@ -598,35 +1010,67 @@ export class CheckoutManager extends EventTarget {
    */
   async startKlarnaInstant(): Promise<void> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
-    const cfg = Configuration.get()
-    const { ctx, shippingOptions } = this.buildKlarnaInstantContext()
+    const sponsorId = this.state.sponsorId
+    const fetchedShippings = await this.fetchAvailableShippings(sponsorId)
+    const shippings = fetchedShippings.length > 0 ? fetchedShippings : KLARNA_SHIPPING_OPTIONS
+    const { ctx } = this.buildKlarnaInstantContext(undefined, shippings)
 
-    // 1. Session on the backend (it holds the API key) — includes shipping.
+    // 1. Backend checkout + Klarna Payments session via commerce GraphQL.
     let clientToken: string
     let categories: KlarnaPaymentsCategory[]
     try {
-      const res = await fetch(`${cfg.apiBase}/v2/commerce/klarna/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': cfg.apiKey },
-        body: JSON.stringify({
-          currency: ctx.currency,
-          purchaseCountry: 'NO',
-          locale: 'nb-NO',
-          orderAmount: ctx.orderAmount,
-          orderLines: ctx.orderLines,
-          shippingOptions,
-        }),
-      })
-      const json = (await res.json().catch(() => ({}))) as {
-        error?: string
-        clientToken?: string
-        paymentMethodCategories?: KlarnaPaymentsCategory[]
+      let checkoutId = ctx.checkoutId ?? this.state.checkoutId
+      try {
+        const checkoutRes = await this.createCheckout(sponsorId)
+        if (checkoutRes?.id) {
+          checkoutId = checkoutRes.id
+          ctx.checkoutId = checkoutRes.id
+        }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CheckoutManager] CreateCheckout before Klarna instant failed:', err)
+        }
       }
-      if (!res.ok || !json.clientToken) {
-        throw new Error(json?.error ?? `Klarna session failed (HTTP ${res.status})`)
+      if (!checkoutId) checkoutId = String(sponsorId)
+
+      const address = this.state.address
+      const activeCurrency = getGlobalCurrency()
+      this.state = { ...this.state, currency: activeCurrency }
+      ctx.currency = activeCurrency
+      const variables = {
+        checkoutId,
+        countryCode: 'NO',
+        currency: activeCurrency,
+        locale: 'nb-NO',
+        returnUrl: resolveHttpsReturnUrl(),
+        intent: 'buy',
+        customer: buildKlarnaCustomer(address),
+        billingAddress: buildKlarnaAddress(address),
+        shippingAddress: buildKlarnaAddress(address),
+        autoCapture: true,
       }
-      clientToken = json.clientToken
-      categories = json.paymentMethodCategories ?? []
+
+      const json = await executeKlarnaGraphQL(
+        CREATE_PAYMENT_KLARNA_NATIVE_MUTATION,
+        variables,
+        sponsorId,
+      )
+      const nativeRes = json?.data?.Payment?.CreatePaymentKlarnaNative
+      if (!nativeRes || !nativeRes.client_token) {
+        throw new Error('Klarna instant session failed: missing client_token')
+      }
+      if (nativeRes.checkout_id) {
+        ctx.checkoutId = nativeRes.checkout_id
+        this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+      }
+      if (nativeRes.session_id) {
+        ctx.sessionId = nativeRes.session_id
+        this.state = { ...this.state, sessionId: nativeRes.session_id }
+      }
+      ctx.clientToken = nativeRes.client_token
+      this.state = { ...this.state, clientToken: nativeRes.client_token }
+      clientToken = nativeRes.client_token
+      categories = nativeRes.payment_method_categories ?? []
     } catch (err) {
       this.dispatchEvent(
         new CustomEvent<PaymentErrorDetail>('payment-error', {
@@ -643,7 +1087,12 @@ export class CheckoutManager extends EventTarget {
       'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;'
     document.body.appendChild(container)
     try {
-      const widget = await createKlarnaPaymentsWidget({ clientToken, categories, container })
+      const widget = await createKlarnaPaymentsWidget({
+        clientToken,
+        sessionId: ctx.sessionId,
+        categories,
+        container,
+      })
       await widget.load()
       const token = await widget.authorize()
       await this.completeKlarnaOrder(token, ctx, { authorizationToken: token })
@@ -753,22 +1202,29 @@ export class CheckoutManager extends EventTarget {
       this.klarnaOrderInFlight = true
       sessionStorage.removeItem(KLARNA_PENDING_KEY)
     }
-    const cfg = Configuration.get()
     try {
-      const res = await fetch(`${cfg.apiBase}/v2/commerce/klarna/orders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-API-Key': cfg.apiKey },
-        body: JSON.stringify({
-          authorizationToken,
-          purchaseCountry: 'NO',
-          currency: ctx.currency,
-          locale: 'nb-NO',
-          orderAmount: ctx.orderAmount,
-          orderLines: ctx.orderLines,
-        }),
-      })
-      const json = (await res.json().catch(() => ({}))) as { error?: string; orderId?: string }
-      if (!res.ok) throw new Error(json?.error ?? `Klarna order failed (HTTP ${res.status})`)
+      const checkoutId =
+        ctx?.checkoutId ?? this.state?.checkoutId ?? String(ctx?.sponsorId ?? this.state?.sponsorId ?? '')
+      const address = this.state?.address
+      const variables = {
+        checkoutId,
+        authorizationToken,
+        autoCapture: true,
+        billingAddress: buildKlarnaAddress(address),
+        shippingAddress: buildKlarnaAddress(address),
+        customer: buildKlarnaCustomer(address),
+      }
+
+      const json = await executeKlarnaGraphQL(
+        CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION,
+        variables,
+        ctx?.sponsorId ?? this.state?.sponsorId,
+      )
+      const confirmRes = json?.data?.Payment?.ConfirmPaymentKlarnaNative
+      if (!confirmRes) {
+        throw new Error('Klarna order confirmation failed: missing response data')
+      }
+      const orderData = confirmRes.order || confirmRes
 
       // Synthesize a checkout state for the confirmation if the live one was
       // lost to a redirect reload.
@@ -781,7 +1237,7 @@ export class CheckoutManager extends EventTarget {
             state,
             // chargedTotal in MAJOR units (incl. shipping for express) for the
             // confirmation screen. ctx.orderAmount is minor (øre) → /100.
-            result: { ...result, order: json, chargedTotal: ctx.orderAmount / 100 },
+            result: { ...result, order: orderData, chargedTotal: ctx.orderAmount / 100 },
           },
         }),
       )

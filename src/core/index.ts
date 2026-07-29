@@ -14,6 +14,36 @@ export {
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
 export { CommerceClient, createCommerceClient } from './api/commerce.js'
 
+// Server-side cart / checkout GraphQL (Vio Commerce)
+export {
+  createCart,
+  addItem,
+  deleteItem,
+  updateItem,
+  getCart,
+  getLineItemsBySupplier,
+  updateShippingsBySupplier,
+  createCheckout,
+  updateCheckout,
+  getCheckout,
+  getAvailablePaymentMethods,
+  executeCartGraphQL,
+  getCartGraphQLOptions,
+  getCustomerSessionId,
+  CREATE_CART_MUTATION,
+  ADD_ITEM_MUTATION,
+  DELETE_ITEM_MUTATION,
+  UPDATE_ITEM_MUTATION,
+  GET_CART_QUERY,
+  GET_LINE_ITEMS_BY_SUPPLIER_QUERY,
+  UPDATE_SHIPPINGS_BY_SUPPLIER_MUTATION,
+  CREATE_CHECKOUT_MUTATION,
+  UPDATE_CHECKOUT_MUTATION,
+  GET_CHECKOUT_QUERY,
+  GET_AVAILABLE_PAYMENT_METHODS_QUERY,
+  type CartQueryOptions,
+} from './api/cart-queries.js'
+
 // Cart
 export { CartManager } from './cart/cart-manager.js'
 export type {
@@ -54,4 +84,4 @@ export type {
   PlacementComponent,
   ImageSize,
 } from './types.js'
-export { displayPrice, primaryImageUrl, formatPrice } from './types.js'
+export { displayPrice, primaryImageUrl, formatPrice, getGlobalCurrency } from './types.js'

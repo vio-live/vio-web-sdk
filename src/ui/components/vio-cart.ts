@@ -17,6 +17,13 @@ import { formatPrice } from '../../core/types.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 
+/** Stripe wordmark, inlined so the published article needs no asset path. */
+const STRIPE_LOGO_SRC =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 25" fill="none"><path d="M5.4 12.8c0-1.8 1.4-2.8 3.8-2.8 1.5 0 2.9.4 3.7.8V7.4c-.8-.3-2.1-.6-3.5-.6-3.8 0-6.4 2-6.4 5.9 0 5.4 7.2 4.5 7.2 6.9 0 1.9-1.5 2.8-3.9 2.8-1.8 0-3.3-.4-4.2-1v3.5c1 .5 2.4.8 4 .8 4 0 6.6-2 6.6-6 0-5.8-7.3-4.7-7.3-6.9zM19.1 7.2c-1.3 0-2.1.6-2.5 1.1v-6.7h-2.5v17.4h2.5V11c0-1.6 1.1-2.4 2.4-2.4 1.3 0 2.2.8 2.2 2.4v8h2.5v-8.3c0-2.3-1.6-3.5-4.7-3.5zM27 7.2h-2.5v11.8H27V7.2zM27 3.3h-2.5v2.5H27V3.3zM34.9 7.2c-1.4 0-2.3.6-2.8 1.3V7.2h-2.5v16.1h2.5v-4.5c.5.7 1.4 1.3 2.8 1.3 2.9 0 5-2.2 5-6.6s-2.1-6.3-5-6.3zm-.6 9.8c-1.4 0-2.3-1-2.3-2.6s.9-2.6 2.3-2.6c1.4 0 2.4 1 2.4 2.6s-1 2.6-2.4 2.6zM46.7 13c-.3-.2-1.3-.7-2.4-.7-1.5 0-2.4.9-2.4 2.2 0 1.3 1.1 1.9 2.7 2.3 2.2.6 4.3 1.3 4.3 4.1 0 3.3-2.7 4.8-6.1 4.8-1.9 0-3.7-.5-4.8-1.2v-3.4c1.1.7 2.7 1.2 4.4 1.2 1.7 0 2.8-.7 2.8-2 0-1.4-1.1-1.9-2.9-2.3-2.4-.6-4.1-1.5-4.1-4 0-3 2.4-4.5 5.5-4.5 1.7 0 3.1.4 4 .9V13z" fill="#635BFF"/></svg>',
+  )
+
 export class VioCart extends LitElement {
   /** Drawer visibility. Reflects to attribute for `:host([open])`. */
   @property({ type: Boolean, reflect: true }) open = false
@@ -28,6 +35,9 @@ export class VioCart extends LitElement {
   @state() private itemCount = 0
   /** True when Apple Pay is usable (Safari + device + Stripe configured). */
   @state() private applePayAvailable = false
+  /** Payment method names enabled for the sponsor (backend-configured).
+   * Empty = not loaded yet → all buttons render (graceful default). */
+  @state() private availableMethods: string[] = []
   /** Set after an Apple Pay express purchase — switches the drawer to the
    * confirmation screen (so the rest of the cart/checkout is not shown). */
   @state() private confirmedOrder: {
@@ -51,6 +61,7 @@ export class VioCart extends LitElement {
     const detail = (e as CustomEvent<CartChangeDetail>).detail
     this.carts = detail.cartsBySponsor
     this.itemCount = detail.itemCount
+    void this.loadAvailablePaymentMethods()
   }
 
   static override styles = css`
@@ -302,6 +313,27 @@ export class VioCart extends LitElement {
       letter-spacing: -0.02em;
       line-height: 1;
     }
+    /* Stripe — brand blurple button, same express row. */
+    .stripe-btn {
+      width: 100%;
+      padding: 15px;
+      margin-bottom: 10px;
+      background: #635bff;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      font-family: var(--vio-font-sans, -apple-system, sans-serif);
+      transition: background 0.15s;
+    }
+    .stripe-btn:hover { background: #5248ff; }
+    .stripe-btn .stripe-logo { height: 20px; width: auto; display: inline-block; filter: brightness(0) invert(1); }
 
     /* In-drawer confirmation after Apple Pay (nothing else is shown). */
     .confirm {
@@ -377,6 +409,7 @@ export class VioCart extends LitElement {
     this.carts = Vio.cart.getAllCarts()
     this.itemCount = Vio.cart.itemCount
     Vio.cart.addEventListener('change', this.boundOnCartChange)
+    void this.loadAvailablePaymentMethods()
   }
 
   override disconnectedCallback(): void {
@@ -385,7 +418,41 @@ export class VioCart extends LitElement {
   }
 
   close(): void { this.open = false }
-  show(): void { this.open = true }
+  show(): void {
+    this.open = true
+    void this.loadAvailablePaymentMethods()
+  }
+
+  /** Which payment buttons to render — backend-configured per sponsor.
+   * Falls back to showing everything if the query fails or none is set. */
+  private async loadAvailablePaymentMethods(): Promise<void> {
+    const firstSponsorId =
+      [...this.carts.keys()][0] ??
+      (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
+    if (firstSponsorId === undefined) return
+    try {
+      const methods = (await Vio.checkout.getAvailablePaymentMethods(firstSponsorId)) as
+        | Array<{ name: string }>
+        | unknown
+      if (Array.isArray(methods)) {
+        this.availableMethods = methods.map((m) => m.name)
+      } else {
+        this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCart] Failed to load payment methods:', err)
+      }
+      this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+    }
+  }
+
+  private methodEnabled(name: string): boolean {
+    return (
+      this.availableMethods.length === 0 ||
+      this.availableMethods.some((m) => m.toLowerCase() === name)
+    )
+  }
 
   override updated(changed: Map<string, unknown>): void {
     // Fresh open → drop any previous confirmation, force an Apple Pay re-prep.
@@ -494,6 +561,20 @@ export class VioCart extends LitElement {
         bubbles: true,
         composed: true,
         detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false },
+      }),
+    )
+  }
+
+  /** Stripe — opens the checkout with Stripe preselected. */
+  private onStripe(): void {
+    if (this.itemCount === 0) return
+    const firstSponsorId = [...this.carts.keys()][0]
+    if (firstSponsorId === undefined) return
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'stripe', express: false },
       }),
     )
   }
@@ -619,25 +700,44 @@ export class VioCart extends LitElement {
                       </button>
                     `
                   : ''}
-                <button
-                  class="klarna-btn"
-                  @click=${this.onKlarnaExpress}
-                  aria-label="Betal med Klarna"
-                >
-                  Kjøp med
-                  <img
-                    class="klarna-logo"
-                    src="https://x.klarnacdn.net/payment-method/assets/badges/generic/klarna.svg"
-                    alt="Klarna"
-                  />
-                </button>
-                <button
-                  class="vipps-btn"
-                  @click=${this.onVipps}
-                  aria-label="Betal med Vipps"
-                >
-                  <span class="vipps-logo">vipps</span>
-                </button>
+                ${this.methodEnabled('stripe')
+                  ? html`
+                      <button
+                        class="stripe-btn"
+                        @click=${this.onStripe}
+                        aria-label="Betal med Stripe"
+                      >
+                        <img class="stripe-logo" src=${STRIPE_LOGO_SRC} alt="Stripe" />
+                      </button>
+                    `
+                  : ''}
+                ${this.methodEnabled('klarna')
+                  ? html`
+                      <button
+                        class="klarna-btn"
+                        @click=${this.onKlarnaExpress}
+                        aria-label="Betal med Klarna"
+                      >
+                        Kjøp med
+                        <img
+                          class="klarna-logo"
+                          src="https://x.klarnacdn.net/payment-method/assets/badges/generic/klarna.svg"
+                          alt="Klarna"
+                        />
+                      </button>
+                    `
+                  : ''}
+                ${this.methodEnabled('vipps')
+                  ? html`
+                      <button
+                        class="vipps-btn"
+                        @click=${this.onVipps}
+                        aria-label="Betal med Vipps"
+                      >
+                        <span class="vipps-logo">vipps</span>
+                      </button>
+                    `
+                  : ''}
               </div>
             `}
       </aside>

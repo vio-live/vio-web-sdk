@@ -119,15 +119,35 @@ export function displayPrice(product: Product): string {
   return formatPrice(amount, p.currency_code)
 }
 
+/**
+ * Active display currency for the page. The host (e.g. the Vev Config block)
+ * sets `globalThis.__VIO_CURRENCY__` / localStorage `vio.currency`; falls back
+ * to NOK.
+ */
+export function getGlobalCurrency(): string {
+  const g = globalThis as { __VIO_CURRENCY__?: string }
+  if (g.__VIO_CURRENCY__) return g.__VIO_CURRENCY__
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const v = localStorage.getItem('vio.currency')
+      if (v) return v
+    } catch {
+      /* privacy mode */
+    }
+  }
+  return 'NOK'
+}
+
 /** Format a numeric amount + currency for Norwegian style: "1 299 kr". */
-export function formatPrice(amount: number, currency: string): string {
+export function formatPrice(amount: number, currency?: string): string {
+  const activeCurrency = currency || getGlobalCurrency()
   // Use Norwegian locale grouping (space as thousands separator).
   const formatted = amount
     .toLocaleString('no-NO', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
     // Normalize non-breaking space to regular space for predictable rendering.
     .replace(/ /g, ' ')
   // Some currency codes display nicer lowercase: NOK → kr.
-  const symbol = currency === 'NOK' ? 'kr' : currency
+  const symbol = activeCurrency === 'NOK' ? 'kr' : activeCurrency
   return `${formatted} ${symbol}`
 }
 

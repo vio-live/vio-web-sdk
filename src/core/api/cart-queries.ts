@@ -941,19 +941,36 @@ export interface CartQueryOptions {
 }
 
 /**
- * Resolve endpoint + keys for cart GraphQL calls. Uses the sponsor's commerce
- * apiKey (via the Vio facade on globalThis, avoiding an import cycle) when a
- * sponsorId is given; falls back to the host apiKey.
+ * Resolve endpoint + keys for cart GraphQL calls. Awaits Vio.bootstrap() once
+ * if it hasn't run yet (the sponsor commerce keys come from bootstrap), then
+ * uses the sponsor's commerce apiKey (via the Vio facade on globalThis,
+ * avoiding an import cycle); falls back to the host apiKey.
  */
-export function getCartGraphQLOptions(sponsorId?: number): CartQueryOptions {
+export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQueryOptions> {
+  const facade = (
+    globalThis as {
+      __VIO_FACADE__?: {
+        findSponsor?: (id: number) => unknown
+        bootstrap?: () => Promise<unknown>
+        bootstrapCache?: unknown
+      }
+    }
+  ).__VIO_FACADE__
+  if (facade && typeof facade.bootstrap === 'function' && !facade.bootstrapCache) {
+    try {
+      await facade.bootstrap()
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[Vio] getCartGraphQLOptions bootstrap await failed:', err)
+      }
+    }
+  }
+
   const cfg = Configuration.isInitialized
     ? Configuration.get()
     : { apiKey: undefined, graphQLBase: 'https://graph-ql-dev.vio.live' }
   const anyCfg = cfg as { apiKey?: string; graphQLBase?: string }
   let commerceKey = anyCfg.apiKey
-  const facade = (
-    globalThis as { __VIO_FACADE__?: { findSponsor?: (id: number) => unknown } }
-  ).__VIO_FACADE__
   if (sponsorId && typeof facade?.findSponsor === 'function') {
     const sponsor = facade.findSponsor(sponsorId) as
       | { commerce?: { apiKey?: string } }
@@ -1107,4 +1124,41 @@ export async function getCheckout(checkoutId: string, options?: CartQueryOptions
 export async function getAvailablePaymentMethods(options?: CartQueryOptions): Promise<any> {
   const json = await executeCartGraphQL(GET_AVAILABLE_PAYMENT_METHODS_QUERY, {}, options)
   return json?.data?.Payment?.GetAvailablePaymentMethods
+}
+
+export const CREATE_PAYMENT_STRIPE_MUTATION = `
+mutation CreatePaymentStripe($checkoutId: String!, $successUrl: String!, $paymentMethod: String!, $email: String!) {
+  Payment {
+    CreatePaymentStripe(checkout_id: $checkoutId, success_url: $successUrl, payment_method: $paymentMethod, email: $email) {
+      order_id
+      checkout_url
+    }
+  }
+}
+`
+
+export async function createPaymentStripe(
+  variables: Record<string, unknown>,
+  options?: CartQueryOptions,
+): Promise<any> {
+  const json = await executeCartGraphQL(CREATE_PAYMENT_STRIPE_MUTATION, variables, options)
+  return json?.data?.Payment?.CreatePaymentStripe
+}
+
+export const CREATE_PAYMENT_VIPPS_MUTATION = `
+mutation CreatePaymentVipps($checkoutId: String!, $email: String!, $returnUrl: String!) {
+  Payment {
+    CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl) {
+      payment_url
+    }
+  }
+}
+`
+
+export async function createPaymentVipps(
+  variables: Record<string, unknown>,
+  options?: CartQueryOptions,
+): Promise<any> {
+  const json = await executeCartGraphQL(CREATE_PAYMENT_VIPPS_MUTATION, variables, options)
+  return json?.data?.Payment?.CreatePaymentVipps
 }

@@ -151,9 +151,35 @@ export function formatPrice(amount: number, currency?: string): string {
   return `${formatted} ${symbol}`
 }
 
-/** Helper: pick the first image URL (variant first, then product). */
+/**
+ * Helper: pick the first image URL (variant first, then product). Defensive:
+ * accepts loose shapes (backend cart rows, catalog rows) where images may be
+ * plain strings or live under image / imageUrl / image_url / primaryImage.
+ */
 export function primaryImageUrl(product: Product): string | undefined {
-  const variantImage = product.variants[0]?.images[0]?.url
-  if (variantImage) return variantImage
-  return product.images[0]?.url
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  const p = product as any
+  if (!p || typeof p !== 'object') return undefined
+  if (Array.isArray(p.variants) && p.variants.length > 0) {
+    const vImages = p.variants[0]?.images
+    if (Array.isArray(vImages) && vImages.length > 0) {
+      const vUrl = typeof vImages[0] === 'string' ? vImages[0] : vImages[0]?.url
+      if (vUrl) return vUrl
+    }
+  }
+  if (Array.isArray(p.images) && p.images.length > 0) {
+    const img0 = p.images[0]
+    const url = typeof img0 === 'string' ? img0 : img0?.url
+    if (url) return url
+  }
+  if (typeof p.image === 'string' && p.image) return p.image
+  if (p.image && typeof p.image === 'object' && p.image.url) return p.image.url
+  if (typeof p.imageUrl === 'string' && p.imageUrl) return p.imageUrl
+  if (typeof p.image_url === 'string' && p.image_url) return p.image_url
+  if (typeof p.primaryImage === 'string' && p.primaryImage) return p.primaryImage
+  if (p.primaryImage && typeof p.primaryImage === 'object' && p.primaryImage.url) {
+    return p.primaryImage.url
+  }
+  return undefined
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 }

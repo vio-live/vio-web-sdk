@@ -74,6 +74,9 @@ export class VioCheckout extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * Empty = not loaded yet → all buttons render (graceful default). */
   @state() private availableMethods: string[] = []
+  /** Redirecting to the Stripe / Vipps hosted page. */
+  @state() private stripeLoading = false
+  @state() private vippsLoading = false
   @state() private form: CheckoutAddress = {
     firstName: '',
     lastName: '',
@@ -82,17 +85,23 @@ export class VioCheckout extends LitElement {
     postalCode: '',
     city: '',
   }
+  /** In-flight guard for loadAvailablePaymentMethods. */
+  private loadingPaymentMethods = false
 
   private boundOnCheckoutChange = (e: Event): void => {
     const detail = (e as CustomEvent<CheckoutChangeDetail>).detail
+    const prevSponsorId = this.checkoutState?.sponsorId
+    const sponsorChanged = !prevSponsorId || prevSponsorId !== detail.state?.sponsorId
     this.checkoutState = detail.state
     this.items = Vio.checkout.items
-    // Re-check vendor availability when state changes (e.g. checkout reopens
-    // with a different sponsor / amount).
+    // Re-check vendor availability when the sponsor changes (state changes fire
+    // on every selection — refetching each time hammers the backend).
     if (this.checkoutState) {
-      this.refreshApplePay()
-      this.refreshKlarna()
-      void this.loadAvailablePaymentMethods()
+      if (sponsorChanged || this.availableMethods.length === 0) {
+        void this.refreshApplePay()
+        void this.refreshKlarna()
+        void this.loadAvailablePaymentMethods()
+      }
     } else {
       this.applePayAvailable = false
       this.klarnaAvailable = false
@@ -605,6 +614,92 @@ export class VioCheckout extends LitElement {
       void this.refreshKlarna()
       void this.loadAvailablePaymentMethods()
     }
+    // Landing back from a Stripe/Vipps/Klarna redirect? Show the confirmation.
+    this.checkReturnPaymentStatus()
+  }
+
+  /**
+   * Detect the redirect return from a hosted payment page (Stripe / Vipps /
+   * Klarna): the return URL carries vio_payment/vio_method/vio_sponsor. On
+   * success: clear that sponsor's cart, show the confirmation drawer, emit
+   * vio:payment-success (analytics/host hooks) and scrub the URL params.
+   */
+  private checkReturnPaymentStatus(): void {
+    if (typeof window === 'undefined' || !window.location || !window.location.search) return
+    try {
+      const urlParams = new URLSearchParams(window.location.search)
+      const vioPayment =
+        urlParams.get('vio_payment') || urlParams.get('payment_status') || urlParams.get('payment')
+      const vioMethod =
+        urlParams.get('vio_method') ||
+        urlParams.get('payment_method') ||
+        urlParams.get('method') ||
+        'stripe'
+      const sponsorId = Number(urlParams.get('vio_sponsor') || urlParams.get('sponsor_id') || 0)
+      const orderId = urlParams.get('order_id') || urlParams.get('checkout_id') || ''
+
+      if (vioPayment === 'success') {
+        if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
+
+        this.confirmedOrder = {
+          items: [],
+          currency: getGlobalCurrency(),
+          total: 0,
+          orderId: orderId || undefined,
+        }
+        this.confirmedMethod = vioMethod as PaymentMethod
+        this.orderConfirmed = true
+        this.open = true
+
+        this.dispatchEvent(
+          new CustomEvent('vio:payment-success', {
+            bubbles: true,
+            composed: true,
+            detail: { method: vioMethod, sponsorId, orderId },
+          }),
+        )
+
+        this.cleanReturnQueryParams([
+          'vio_payment', 'payment_status', 'payment',
+          'vio_method', 'payment_method', 'method',
+          'vio_sponsor', 'sponsor_id', 'order_id', 'checkout_id',
+        ])
+      } else if (vioPayment === 'cancel' || vioPayment === 'error') {
+        this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
+        this.open = true
+        this.cleanReturnQueryParams([
+          'vio_payment', 'payment_status', 'payment',
+          'vio_method', 'payment_method', 'method',
+          'vio_sponsor', 'sponsor_id', 'order_id', 'checkout_id',
+        ])
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] checkReturnPaymentStatus failed:', err)
+      }
+    }
+  }
+
+  /** Remove our payment-return params from the URL without a reload. */
+  private cleanReturnQueryParams(keys: string[]): void {
+    try {
+      if (typeof window === 'undefined' || !window.history || !window.location) return
+      const url = new URL(window.location.href)
+      let changed = false
+      keys.forEach((k) => {
+        if (url.searchParams.has(k)) {
+          url.searchParams.delete(k)
+          changed = true
+        }
+      })
+      if (changed) {
+        const newSearch = url.searchParams.toString()
+        const newUrl = url.pathname + (newSearch ? '?' + newSearch : '') + url.hash
+        window.history.replaceState({}, document.title, newUrl)
+      }
+    } catch {
+      // Ignore URL cleanup failures.
+    }
   }
 
   override disconnectedCallback(): void {
@@ -633,6 +728,8 @@ export class VioCheckout extends LitElement {
   /** Which payment buttons to render — backend-configured per sponsor. */
   private async loadAvailablePaymentMethods(): Promise<void> {
     if (!this.checkoutState) return
+    if (this.loadingPaymentMethods) return
+    this.loadingPaymentMethods = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(
         this.checkoutState.sponsorId,
@@ -647,6 +744,8 @@ export class VioCheckout extends LitElement {
         console.warn('[VioCheckout] Failed to load payment methods:', err)
       }
       this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+    } finally {
+      this.loadingPaymentMethods = false
     }
   }
 
@@ -831,18 +930,48 @@ export class VioCheckout extends LitElement {
       return
     }
     Vio.checkout.selectPaymentMethod(method)
+    // Stripe / Vipps: hosted payment pages — mint the link and redirect. The
+    // return trip lands in checkReturnPaymentStatus().
+    if (method === 'stripe') {
+      this.stripeLoading = true
+      void Vio.checkout
+        .startStripePayment(this.checkoutState?.sponsorId, this.form)
+        .catch((err: unknown) => {
+          this.paymentError = `Kunne ikke starte Stripe-betaling: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        })
+        .finally(() => {
+          this.stripeLoading = false
+        })
+    }
+    if (method === 'vipps') {
+      this.vippsLoading = true
+      void Vio.checkout
+        .startVippsPayment(this.checkoutState?.sponsorId, this.form)
+        .catch((err: unknown) => {
+          this.paymentError = `Kunne ikke starte Vipps-betaling: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        })
+        .finally(() => {
+          this.vippsLoading = false
+        })
+    }
   }
 
   /**
-   * Complete the order for the selected method (Vipps / Card / plain Klarna).
-   * Apple Pay and Klarna Express finish inside their own sheet/popup, so they
-   * never reach here. No real PSP is wired for Vipps/Card in this iteration —
-   * the capture happens backend-side in the full flow — so this confirms the
-   * order state-only and shows the confirmation screen.
+   * Complete the order for the selected method. Apple Pay and Klarna Express
+   * finish inside their own sheet/popup; Stripe and Vipps redirect to their
+   * hosted pages (via onPay). Anything else confirms state-only.
    */
   private onCompleteOrder(): void {
     const s = this.checkoutState
     if (!s || !s.paymentMethod) return
+    if (s.paymentMethod === 'stripe' || s.paymentMethod === 'vipps') {
+      this.onPay(s.paymentMethod)
+      return
+    }
     this.confirmOrder(s.paymentMethod, s.sponsorId)
   }
 
@@ -885,8 +1014,10 @@ export class VioCheckout extends LitElement {
         return 'Klarna'
       case 'vipps':
         return 'Vipps'
+      case 'stripe':
+        return 'Stripe'
       case 'card':
-        return 'kort'
+        return 'Kort'
       default:
         return ''
     }
@@ -1156,77 +1287,125 @@ export class VioCheckout extends LitElement {
 
           <section class="section">
             <div class="section-label">Steg 2</div>
-            <h3 class="section-heading">Velg betalingsmåte</h3>
-            <div class="payment-grid">
-              ${this.applePayAvailable
-                ? html`
+            ${method
+              ? html`
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                    <h3 class="section-heading" style="margin:0;">
+                      Betalingsmåte: <b>${this.methodLabel(method)}</b>
+                    </h3>
                     <button
-                      class="payment-btn primary"
-                      @click=${() => this.onPay('apple-pay')}
-                      ?disabled=${this.applePayInProgress}
-                      aria-pressed=${this.checkoutState?.paymentMethod === 'apple-pay'}
+                      type="button"
+                      style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
+                      @click=${() => Vio.checkout.selectPaymentMethod('' as PaymentMethod)}
                     >
-                      ${this.applePayInProgress
-                        ? 'Åpner…'
-                        : html`<span style="display:inline-flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:18px;height:18px"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>Apple Pay</span>`}
+                      Endre
                     </button>
-                  `
-                : ''}
-              ${this.methodEnabled('stripe')
-                ? html`
-                    <button
-                      class="payment-btn"
-                      @click=${() => this.onPay('stripe')}
-                      aria-pressed=${this.checkoutState?.paymentMethod === 'stripe'}
-                    >
-                      <img src=${STRIPE_LOGO_SRC} style="height: 20px; display: block;" alt="Stripe" />
-                    </button>
-                  `
-                : ''}
-              ${this.methodEnabled('klarna') && this.klarnaAvailable
-                ? html`
-                    <button
-                      class="payment-btn"
-                      @click=${() => this.onPay('klarna')}
-                      aria-pressed=${this.checkoutState?.paymentMethod === 'klarna'}
-                    >
-                      Klarna
-                    </button>
-                  `
-                : ''}
-              ${this.methodEnabled('vipps')
-                ? html`
-                    <button
-                      class="payment-btn"
-                      @click=${() => this.onPay('vipps')}
-                      aria-pressed=${this.checkoutState?.paymentMethod === 'vipps'}
-                    >
-                      <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
-                    </button>
-                  `
-                : ''}
-              ${!this.applePayAvailable
-                ? html`
-                    <div class="apple-pay-note">
-                       Pay krever Safari på iOS eller macOS med Apple Pay konfigurert.
-                    </div>
-                  `
-                : ''}
-              ${showCompleteCta
-                ? html`
-                    <button
-                      class="payment-btn primary complete-cta"
-                      @click=${this.onCompleteOrder}
-                    >
-                      Betal ${this.orderTotal()} med ${this.methodLabel(method ?? null)}
-                    </button>
-                  `
-                : ''}
-              ${method === 'klarna' ? this.renderKlarnaPanel() : ''}
-              ${this.paymentError
-                ? html`<div class="payment-error">${this.paymentError}</div>`
-                : ''}
-            </div>
+                  </div>
+
+                  ${method === 'klarna' ? this.renderKlarnaPanel() : ''}
+                  ${method === 'stripe'
+                    ? html`
+                        <button
+                          class="payment-btn primary complete-cta"
+                          @click=${() => this.onPay('stripe')}
+                          ?disabled=${this.stripeLoading}
+                        >
+                          ${this.stripeLoading
+                            ? 'Går til Stripe…'
+                            : `Betal ${this.orderTotal()} med Stripe`}
+                        </button>
+                      `
+                    : ''}
+                  ${method === 'vipps'
+                    ? html`
+                        <button
+                          class="payment-btn primary complete-cta"
+                          @click=${() => this.onPay('vipps')}
+                          ?disabled=${this.vippsLoading}
+                        >
+                          ${this.vippsLoading
+                            ? 'Går til Vipps…'
+                            : `Betal ${this.orderTotal()} med Vipps`}
+                        </button>
+                      `
+                    : ''}
+                  ${method === 'apple-pay'
+                    ? html`
+                        <button
+                          class="payment-btn primary complete-cta"
+                          @click=${() => this.onPay('apple-pay')}
+                          ?disabled=${this.applePayInProgress}
+                        >
+                          ${this.applePayInProgress
+                            ? 'Åpner…'
+                            : `Betal ${this.orderTotal()} med Apple Pay`}
+                        </button>
+                      `
+                    : ''}
+                  ${showCompleteCta && method !== 'stripe' && method !== 'vipps'
+                    ? html`
+                        <button
+                          class="payment-btn primary complete-cta"
+                          @click=${this.onCompleteOrder}
+                        >
+                          Betal ${this.orderTotal()} med ${this.methodLabel(method ?? null)}
+                        </button>
+                      `
+                    : ''}
+                `
+              : html`
+                  <h3 class="section-heading">Velg betalingsmåte</h3>
+                  <div class="payment-grid">
+                    ${this.applePayAvailable
+                      ? html`
+                          <button
+                            class="payment-btn primary"
+                            @click=${() => this.onPay('apple-pay')}
+                            ?disabled=${this.applePayInProgress}
+                          >
+                            ${this.applePayInProgress
+                              ? 'Åpner…'
+                              : html`<span style="display:inline-flex;align-items:center;gap:6px"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:18px;height:18px"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>Apple Pay</span>`}
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('stripe')
+                      ? html`
+                          <button
+                            class="payment-btn"
+                            @click=${() => this.onPay('stripe')}
+                            ?disabled=${this.stripeLoading}
+                          >
+                            <img src=${STRIPE_LOGO_SRC} style="height: 20px; display: block;" alt="Stripe" />
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('klarna') && this.klarnaAvailable
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('klarna')}>
+                            Klarna
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('vipps')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('vipps')}>
+                            <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
+                          </button>
+                        `
+                      : ''}
+                    ${!this.applePayAvailable
+                      ? html`
+                          <div class="apple-pay-note">
+                             Pay krever Safari på iOS eller macOS med Apple Pay konfigurert.
+                          </div>
+                        `
+                      : ''}
+                  </div>
+                `}
+            ${this.paymentError
+              ? html`<div class="payment-error">${this.paymentError}</div>`
+              : ''}
           </section>
 
           ${this.items.length > 0

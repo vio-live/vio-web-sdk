@@ -58,6 +58,14 @@ function lineId(): string {
   return 'li_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
 
+/** Normalise an id-ish value for matching: null/0/'null' → '' (no id). */
+function normId(val: unknown): string {
+  if (val === null || val === undefined || val === 0 || val === '0' || val === 'null' || val === 'undefined') {
+    return ''
+  }
+  return String(val).trim()
+}
+
 export class CartManager extends EventTarget {
   private cartsBySponsor: Map<number, SponsorCartState>
 
@@ -81,7 +89,7 @@ export class CartManager extends EventTarget {
       this.cartsBySponsor.set(sponsorId, cart)
     }
     if (!cart.cartId) {
-      const opts = getCartGraphQLOptions(sponsorId)
+      const opts = await getCartGraphQLOptions(sponsorId)
       const customerSessionId = getCustomerSessionId()
       try {
         const backendCart = await gqlCreateCart(
@@ -92,7 +100,21 @@ export class CartManager extends EventTarget {
         )
         if (backendCart?.cart_id) {
           cart.cartId = backendCart.cart_id
-          this.updateFromBackendCart(sponsorId, backendCart)
+          if (Array.isArray(backendCart.line_items) && backendCart.line_items.length > 0) {
+            this.updateFromBackendCart(sponsorId, backendCart)
+          } else {
+            // Fresh backend cart (no lines yet) — adopt the meta only. Calling
+            // updateFromBackendCart here would wipe the optimistic local items.
+            if (backendCart.currency) cart.currency = backendCart.currency
+            if (backendCart.shipping_country) cart.shippingCountry = backendCart.shipping_country
+            if (backendCart.subtotal != null) cart.subtotal = backendCart.subtotal
+            if (backendCart.shipping != null) cart.shipping = backendCart.shipping
+            if (backendCart.available_shipping_countries) {
+              cart.availableShippingCountries = backendCart.available_shipping_countries
+            }
+            this.persist()
+            this.emit()
+          }
         }
       } catch (err) {
         if (typeof console !== 'undefined') console.warn('[CartManager] createCart failed:', err)
@@ -119,7 +141,9 @@ export class CartManager extends EventTarget {
         brand?: string | null
         title?: string | null
         quantity: number
-        image?: { url?: string } | null
+        image?: string | { url?: string } | null
+        imageUrl?: string | null
+        image_url?: string | null
         price?: {
           amount?: number
           amount_incl_taxes?: number | null
@@ -142,21 +166,57 @@ export class CartManager extends EventTarget {
     }
 
     if (Array.isArray(backendCart.line_items)) {
-      cart.items = backendCart.line_items.map((li): CartLineItem => ({
-        id: li.id,
-        cartItemId: li.id,
-        productId: li.product_id,
-        sponsorId,
-        variantId: li.variant_id != null ? Number(li.variant_id) : undefined,
-        brand: li.brand || '',
-        name: li.title ? (li.variant_title ? `${li.title} — ${li.variant_title}` : li.title) : '',
-        unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? 0,
-        currency: li.price?.currency_code || backendCart.currency || cart.currency,
-        imageUrl: li.image?.url || '',
-        quantity: li.quantity,
-        shipping: li.shipping,
-        availableShippings: li.available_shippings,
-      }))
+      const existingItems = cart.items || []
+      if (backendCart.line_items.length === 0 && existingItems.length > 0) {
+        // Backend says empty while we have optimistic local lines (add still
+        // in flight) — keep the local view; a later sync will reconcile.
+        this.persist()
+        this.emit()
+        return
+      }
+      cart.items = backendCart.line_items.map((li): CartLineItem => {
+        const urlFromBackend =
+          (typeof li.image === 'string' ? li.image : li.image?.url) ||
+          li.imageUrl ||
+          li.image_url ||
+          ''
+        // Match the backend line to a local one to preserve display fields the
+        // backend may omit (image, brand, name, price).
+        const matchedLocal = existingItems.find((existing) => {
+          const p1 = normId(existing.productId)
+          const p2 = normId(li.product_id)
+          const v1 = normId(existing.variantId)
+          const v2 = normId(li.variant_id)
+          if (p1 && p2 && p1 === p2 && v1 === v2) return true
+          if (v1 && v2 && v1 === v2) return true
+          if (p1 && p2 && p1 === p2 && !v1 && !v2) return true
+          const n1 = (existing.name || '').trim().toLowerCase()
+          const n2 = (li.title || '').trim().toLowerCase()
+          if (n1 && n2 && n1 === n2 && v1 === v2) return true
+          return false
+        })
+        const imageUrl = urlFromBackend || matchedLocal?.imageUrl || ''
+
+        return {
+          id: li.id,
+          cartItemId: li.id,
+          productId: li.product_id,
+          sponsorId,
+          variantId: li.variant_id != null ? Number(li.variant_id) : undefined,
+          brand: li.brand || matchedLocal?.brand || '',
+          name: li.title
+            ? li.variant_title
+              ? `${li.title} — ${li.variant_title}`
+              : li.title
+            : matchedLocal?.name || '',
+          unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? matchedLocal?.unitPrice ?? 0,
+          currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
+          imageUrl,
+          quantity: li.quantity,
+          shipping: li.shipping,
+          availableShippings: li.available_shippings,
+        }
+      })
     }
     this.persist()
     this.emit()
@@ -175,7 +235,7 @@ export class CartManager extends EventTarget {
     const price = variant?.price ?? opts.product.price
     // Tax-inclusive is the consumer-facing price; `amount` is the fallback.
     const unitPrice = price.amount_incl_taxes ?? price.amount ?? 0
-    const imageUrl = variant?.images?.[0]?.url ?? primaryImageUrl(opts.product) ?? ''
+    const imageUrl = variant?.images?.[0]?.url || primaryImageUrl(opts.product) || ''
     const name = variant?.title
       ? `${opts.product.title} — ${variant.title}`
       : opts.product.title
@@ -209,9 +269,21 @@ export class CartManager extends EventTarget {
       cart.sponsorName = opts.sponsorName
     }
 
-    const existing = cart.items.find(
-      (i) => i.productId === opts.productId && i.variantId === opts.variantId,
-    )
+    // Robust dedupe: backend-synced lines may carry ids as strings / omit
+    // fields, so match on normalised product+variant ids with a name fallback.
+    const existing = cart.items.find((i) => {
+      const p1 = normId(i.productId)
+      const p2 = normId(opts.productId)
+      const v1 = normId(i.variantId)
+      const v2 = normId(opts.variantId)
+      if (p1 && p2 && p1 === p2 && v1 === v2) return true
+      if (v1 && v2 && v1 === v2) return true
+      if (p1 && p2 && p1 === p2 && !v1 && !v2) return true
+      const n1 = (i.name || '').trim().toLowerCase()
+      const n2 = (opts.name || '').trim().toLowerCase()
+      if (n1 && n2 && n1 === n2 && v1 === v2) return true
+      return false
+    })
     if (existing) {
       existing.quantity += qty
     } else {
@@ -240,7 +312,7 @@ export class CartManager extends EventTarget {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
         if (cartId) {
-          const gqlOpts = getCartGraphQLOptions(opts.sponsorId)
+          const gqlOpts = await getCartGraphQLOptions(opts.sponsorId)
           const lineItemsInput = [
             {
               product_id: Number(opts.productId || 0),
@@ -280,9 +352,9 @@ export class CartManager extends EventTarget {
 
     if (cart.cartId) {
       const backendCartId = cart.cartId
-      const gqlOpts = getCartGraphQLOptions(sponsorId)
       void (async () => {
         try {
+          const gqlOpts = await getCartGraphQLOptions(sponsorId)
           const resCart =
             quantity <= 0
               ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
@@ -321,7 +393,7 @@ export class CartManager extends EventTarget {
   async fetchCartFromBackend(sponsorId: number): Promise<unknown> {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart?.cartId) return null
-    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    const gqlOpts = await getCartGraphQLOptions(sponsorId)
     const resCart = await gqlGetCart(cart.cartId, gqlOpts)
     if (resCart) this.updateFromBackendCart(sponsorId, resCart)
     return resCart
@@ -331,7 +403,7 @@ export class CartManager extends EventTarget {
   async fetchLineItemsBySupplier(sponsorId: number): Promise<unknown> {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart?.cartId) return null
-    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    const gqlOpts = await getCartGraphQLOptions(sponsorId)
     return gqlGetLineItemsBySupplier(cart.cartId, gqlOpts)
   }
 
@@ -342,7 +414,7 @@ export class CartManager extends EventTarget {
   ): Promise<unknown> {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart?.cartId) return null
-    const gqlOpts = getCartGraphQLOptions(sponsorId)
+    const gqlOpts = await getCartGraphQLOptions(sponsorId)
     const resCart = await gqlUpdateShippingsBySupplier(cart.cartId, data, gqlOpts)
     if (resCart && Array.isArray(resCart.line_items)) {
       this.updateFromBackendCart(sponsorId, resCart)

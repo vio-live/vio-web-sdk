@@ -37,6 +37,8 @@ import {
 } from './payments/klarna-payments.js'
 import {
   createCheckout as gqlCreateCheckout,
+  createPaymentStripe as gqlCreatePaymentStripe,
+  createPaymentVipps as gqlCreatePaymentVipps,
   executeCartGraphQL,
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,
@@ -44,6 +46,7 @@ import {
   getLineItemsBySupplier as gqlGetLineItemsBySupplier,
   updateCheckout as gqlUpdateCheckout,
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
+  type CartQueryOptions,
 } from '../api/cart-queries.js'
 import { getGlobalCurrency } from '../types.js'
 
@@ -284,25 +287,78 @@ function buildKlarnaAddress(address: any): Record<string, unknown> | null {
       address.street ||
       address.address || // CheckoutAddress uses plain `address` for the street
       null,
-    street_address2:
-      address.streetAddress2 || address.street_address2 || address.address2 || null,
+    // street_address2 intentionally omitted — the KlarnaNativeAddressInput
+    // backend type rejects it.
   }
 }
 
-/** Klarna requires an https return_url — normalise whatever the page has. */
-function resolveHttpsReturnUrl(overrideUrl?: string): string {
-  let url = overrideUrl
+/** Map any address-ish object to the backend checkout address input shape. */
+function buildCheckoutAddress(address: any): Record<string, unknown> | null {
+  if (!address) return null
+  const firstName =
+    address.firstName || address.first_name || address.givenName || address.given_name || null
+  const lastName =
+    address.lastName || address.last_name || address.familyName || address.family_name || null
+  const address1 =
+    address.address || address.address1 || address.street || address.street_address || null
+  const city = address.city || null
+  const zip = address.postalCode || address.postal_code || address.zip || null
+  const country_code = address.countryCode || address.country_code || address.country || 'NO'
+
+  if (!firstName && !lastName && !address1 && !city && !zip) return null
+
+  return {
+    first_name: firstName,
+    last_name: lastName,
+    address1: address1,
+    city: city,
+    zip: zip,
+    country_code: country_code,
+  }
+}
+
+/**
+ * Klarna/Stripe/Vipps require an https return_url — normalise whatever the
+ * page has, optionally appending query params (used to detect the redirect
+ * return and show the confirmation).
+ */
+function resolveHttpsReturnUrl(
+  overrideUrl?: string | null,
+  params: Record<string, unknown> | null = null,
+): string {
+  let url = overrideUrl ?? undefined
   if (!url && typeof window !== 'undefined' && window.location) {
     url = window.location.href
   }
   if (!url || typeof url !== 'string' || url.startsWith('about:') || url.startsWith('file:')) {
-    return 'https://vev.design/checkout/confirmation'
+    url = 'https://vev.design/checkout/confirmation'
   }
   if (url.startsWith('http://')) {
     url = 'https://' + url.slice(7)
   } else if (!url.startsWith('https://')) {
     url = 'https://' + url.replace(/^[a-zA-Z]+:\/\//, '')
   }
+
+  if (params && typeof params === 'object') {
+    try {
+      const parsed = new URL(url)
+      Object.keys(params).forEach((k) => {
+        if (params[k] !== undefined && params[k] !== null) {
+          parsed.searchParams.set(k, String(params[k]))
+        }
+      })
+      return parsed.toString()
+    } catch {
+      const queryStr = Object.keys(params)
+        .filter((k) => params[k] !== undefined && params[k] !== null)
+        .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(params[k]))}`)
+        .join('&')
+      if (queryStr) {
+        url += (url.includes('?') ? '&' : '?') + queryStr
+      }
+    }
+  }
+
   return url
 }
 
@@ -312,7 +368,7 @@ async function executeKlarnaGraphQL(
   variables: Record<string, unknown>,
   sponsorId?: number,
 ): Promise<any> {
-  return executeCartGraphQL(query, variables, getCartGraphQLOptions(sponsorId))
+  return executeCartGraphQL(query, variables, await getCartGraphQLOptions(sponsorId))
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -360,6 +416,11 @@ export class CheckoutManager extends EventTarget {
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
   private lastFetchedShippings: KlarnaShippingOption[] = []
+  /** Per-sponsor payment methods cache + in-flight dedupe. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private paymentMethodsCache = new Map<number, any>()
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private paymentMethodsPromises = new Map<number, Promise<any>>()
 
   constructor(private readonly cartManager: CartManager) {
     super()
@@ -402,7 +463,7 @@ export class CheckoutManager extends EventTarget {
         throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${sponsorId}`)
       }
     }
-    const opts = getCartGraphQLOptions(sponsorId)
+    const opts = await getCartGraphQLOptions(sponsorId)
     const checkout = await gqlCreateCheckout(cartId, opts)
     if (checkout?.id) {
       this.state = {
@@ -437,7 +498,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Update the backend checkout (terms are re-asserted unless overridden). */
   async updateCheckout(variables: Record<string, unknown>, sponsorId?: number): Promise<any> {
-    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     const fullVars = {
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
@@ -452,14 +513,42 @@ export class CheckoutManager extends EventTarget {
   }
 
   async getCheckout(checkoutId: string, sponsorId?: number): Promise<any> {
-    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetCheckout(checkoutId, opts)
   }
 
-  /** Payment methods enabled for the sponsor (backend-configured). */
+  /**
+   * Payment methods enabled for the sponsor (backend-configured). Memoised per
+   * sponsor with in-flight dedupe — several UI components ask on every open.
+   */
   async getAvailablePaymentMethods(sponsorId?: number): Promise<any> {
-    const opts = getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
-    return gqlGetAvailablePaymentMethods(opts)
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) return null
+
+    if (this.paymentMethodsCache.has(spId)) {
+      return this.paymentMethodsCache.get(spId)
+    }
+    const inFlight = this.paymentMethodsPromises.get(spId)
+    if (inFlight) return inFlight
+
+    const promise = (async () => {
+      try {
+        const opts = await getCartGraphQLOptions(spId)
+        const res = await gqlGetAvailablePaymentMethods(opts)
+        this.paymentMethodsCache.set(spId, res)
+        return res
+      } finally {
+        this.paymentMethodsPromises.delete(spId)
+      }
+    })()
+
+    this.paymentMethodsPromises.set(spId, promise)
+    return promise
+  }
+
+  clearPaymentMethodsCache(): void {
+    this.paymentMethodsCache.clear()
+    this.paymentMethodsPromises.clear()
   }
 
   /**
@@ -477,7 +566,7 @@ export class CheckoutManager extends EventTarget {
         cartId = await this.cartManager.ensureCartId(spId)
       }
       if (!cartId) return []
-      const opts = getCartGraphQLOptions(spId)
+      const opts = await getCartGraphQLOptions(spId)
       const supplierGroups = await gqlGetLineItemsBySupplier(cartId, opts)
       const firstGroup = Array.isArray(supplierGroups) ? supplierGroups[0] : null
       const shippings = firstGroup?.available_shippings ?? []
@@ -526,12 +615,152 @@ export class CheckoutManager extends EventTarget {
     if (!spId) return null
     const cart = this.cartManager.getCart(spId)
     if (!cart?.cartId) return null
-    const opts = getCartGraphQLOptions(spId)
+    const opts = await getCartGraphQLOptions(spId)
     const updated = await gqlUpdateShippingsBySupplier(cart.cartId, data, opts)
     if (updated) {
       this.cartManager.updateFromBackendCart(spId, updated)
     }
     return updated
+  }
+
+  /**
+   * Shared setup for the redirect payment links (Stripe / Vipps): ensure the
+   * backend cart + checkout exist, push email/address onto the checkout, and
+   * return everything the payment mutation needs.
+   */
+  private async prepareRedirectPayment(
+    sponsorId: number | undefined,
+    formData: unknown,
+    extraUpdateVars: Record<string, unknown> = {},
+  ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) {
+      cartId = await this.cartManager.ensureCartId(spId)
+    }
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+
+    const opts = await getCartGraphQLOptions(spId)
+    let checkoutId = this.state?.checkoutId
+    if (!checkoutId) {
+      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      checkoutId = checkoutRes?.id
+    }
+    if (!checkoutId) checkoutId = String(spId)
+
+    const addr =
+      typeof formData === 'object' && formData !== null ? formData : this.state?.address
+    const addressObj = buildCheckoutAddress(addr)
+    const emailVal =
+      (typeof formData === 'string'
+        ? formData
+        : (formData as { email?: string } | undefined)?.email) ||
+      this.state?.address?.email ||
+      'customer@example.com'
+
+    const updateVars: Record<string, unknown> = {
+      checkoutId,
+      email: emailVal,
+      buyerAcceptsPurchaseConditions: true,
+      buyerAcceptsTermsConditions: true,
+      ...extraUpdateVars,
+    }
+    if (addressObj) {
+      updateVars.shippingAddress = addressObj
+      updateVars.billingAddress = addressObj
+    }
+
+    try {
+      const updated = await gqlUpdateCheckout(updateVars, opts)
+      if (updated?.id) {
+        this.state = {
+          ...(this.state ?? { sponsorId: spId, subtotal: 0, currency: getGlobalCurrency() }),
+          sponsorId: spId,
+          checkoutId: updated.id,
+          checkout: updated,
+        }
+        this.emit()
+        checkoutId = updated.id
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[CheckoutManager] UpdateCheckout during payment setup failed:', err)
+      }
+    }
+
+    return { spId, checkoutId: checkoutId || String(spId), emailVal, opts }
+  }
+
+  /** Redirect the top window to a payment provider URL. */
+  private static redirectTo(url: string): void {
+    if (typeof window === 'undefined') return
+    try {
+      if (window.top && window.top !== window) {
+        window.top.location.href = url
+      } else {
+        window.location.href = url
+      }
+    } catch {
+      window.open(url, '_top') || window.open(url, '_blank')
+    }
+  }
+
+  /**
+   * Stripe payment link: create/refresh the backend checkout, mint the Stripe
+   * Checkout URL (CreatePaymentStripe) and redirect. The return URL carries
+   * vio_payment/vio_method/checkout_id so the page can show the confirmation.
+   */
+  async startStripePayment(sponsorId?: number, formData?: unknown): Promise<any> {
+    const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
+      sponsorId,
+      formData,
+    )
+    const successUrl = resolveHttpsReturnUrl(null, {
+      vio_payment: 'success',
+      vio_method: 'stripe',
+      vio_sponsor: spId,
+      checkout_id: checkoutId,
+    })
+    const stripeRes = await gqlCreatePaymentStripe(
+      { checkoutId, successUrl, paymentMethod: 'Stripe', email: emailVal },
+      opts,
+    )
+    if (stripeRes?.checkout_url) {
+      CheckoutManager.redirectTo(stripeRes.checkout_url)
+      return stripeRes
+    }
+    throw new Error('Stripe payment link generation failed: missing checkout_url')
+  }
+
+  /**
+   * Vipps payment link: same flow as Stripe — CreatePaymentVipps → redirect to
+   * payment_url.
+   */
+  async startVippsPayment(sponsorId?: number, formData?: unknown): Promise<any> {
+    const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
+      sponsorId,
+      formData,
+      { paymentMethod: 'Vipps' },
+    )
+    const returnUrl = resolveHttpsReturnUrl(null, {
+      vio_payment: 'success',
+      vio_method: 'vipps',
+      vio_sponsor: spId,
+      checkout_id: checkoutId,
+    })
+    const vippsRes = await gqlCreatePaymentVipps(
+      { checkoutId, email: emailVal, returnUrl },
+      opts,
+    )
+    if (vippsRes?.payment_url) {
+      CheckoutManager.redirectTo(vippsRes.payment_url)
+      return vippsRes
+    }
+    throw new Error('Vipps payment link generation failed: missing payment_url')
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -889,7 +1118,12 @@ export class CheckoutManager extends EventTarget {
       countryCode: 'NO',
       currency: activeCurrency,
       locale: 'nb-NO',
-      returnUrl: resolveHttpsReturnUrl(),
+      returnUrl: resolveHttpsReturnUrl(null, {
+        vio_payment: 'success',
+        vio_method: 'klarna',
+        vio_sponsor: sponsorId,
+        checkout_id: checkoutId,
+      }),
       intent: 'buy',
       customer: buildKlarnaCustomer(address),
       billingAddress: buildKlarnaAddress(address),
@@ -1042,7 +1276,12 @@ export class CheckoutManager extends EventTarget {
         countryCode: 'NO',
         currency: activeCurrency,
         locale: 'nb-NO',
-        returnUrl: resolveHttpsReturnUrl(),
+        returnUrl: resolveHttpsReturnUrl(null, {
+          vio_payment: 'success',
+          vio_method: 'klarna',
+          vio_sponsor: sponsorId,
+          checkout_id: checkoutId,
+        }),
         intent: 'buy',
         customer: buildKlarnaCustomer(address),
         billingAddress: buildKlarnaAddress(address),

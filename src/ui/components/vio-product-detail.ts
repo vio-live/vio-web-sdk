@@ -26,6 +26,14 @@ interface SelectedOptions {
   [optionName: string]: string
 }
 
+/** Stripe wordmark, inlined so the published article needs no asset path.
+ * (Also in vio-cart.ts / vio-checkout.ts — tiny constant, no shared module.) */
+const STRIPE_LOGO_SRC =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 25" fill="none"><path d="M5.4 12.8c0-1.8 1.4-2.8 3.8-2.8 1.5 0 2.9.4 3.7.8V7.4c-.8-.3-2.1-.6-3.5-.6-3.8 0-6.4 2-6.4 5.9 0 5.4 7.2 4.5 7.2 6.9 0 1.9-1.5 2.8-3.9 2.8-1.8 0-3.3-.4-4.2-1v3.5c1 .5 2.4.8 4 .8 4 0 6.6-2 6.6-6 0-5.8-7.3-4.7-7.3-6.9zM19.1 7.2c-1.3 0-2.1.6-2.5 1.1v-6.7h-2.5v17.4h2.5V11c0-1.6 1.1-2.4 2.4-2.4 1.3 0 2.2.8 2.2 2.4v8h2.5v-8.3c0-2.3-1.6-3.5-4.7-3.5zM27 7.2h-2.5v11.8H27V7.2zM27 3.3h-2.5v2.5H27V3.3zM34.9 7.2c-1.4 0-2.3.6-2.8 1.3V7.2h-2.5v16.1h2.5v-4.5c.5.7 1.4 1.3 2.8 1.3 2.9 0 5-2.2 5-6.6s-2.1-6.3-5-6.3zm-.6 9.8c-1.4 0-2.3-1-2.3-2.6s.9-2.6 2.3-2.6c1.4 0 2.4 1 2.4 2.6s-1 2.6-2.4 2.6zM46.7 13c-.3-.2-1.3-.7-2.4-.7-1.5 0-2.4.9-2.4 2.2 0 1.3 1.1 1.9 2.7 2.3 2.2.6 4.3 1.3 4.3 4.1 0 3.3-2.7 4.8-6.1 4.8-1.9 0-3.7-.5-4.8-1.2v-3.4c1.1.7 2.7 1.2 4.4 1.2 1.7 0 2.8-.7 2.8-2 0-1.4-1.1-1.9-2.9-2.3-2.4-.6-4.1-1.5-4.1-4 0-3 2.4-4.5 5.5-4.5 1.7 0 3.1.4 4 .9V13z" fill="#635BFF"/></svg>',
+  )
+
 export class VioProductDetail extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String, attribute: 'product-id' }) productId = ''
@@ -43,6 +51,9 @@ export class VioProductDetail extends LitElement {
   @state() private adding = false
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
+  /** Payment method names enabled for the sponsor (backend-configured).
+   * Empty = not loaded yet → all buy buttons render (graceful default). */
+  @state() private availableMethods: string[] = []
   /** Pre-prepared Apple Pay handle — show() fires synchronously on tap. */
   private applePayHandle: { show: () => Promise<void> } | null = null
 
@@ -573,8 +584,39 @@ export class VioProductDetail extends LitElement {
           this.applePayHandle = null
           this.applePayOk = false
         })
+      void this.loadAvailablePaymentMethods()
     }
     this.isLoading = false
+  }
+
+  /** Which buy buttons to render — backend-configured per sponsor. */
+  private async loadAvailablePaymentMethods(): Promise<void> {
+    const spId =
+      this.sponsorId ||
+      (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
+    if (!spId) return
+    try {
+      const methods = (await Vio.checkout.getAvailablePaymentMethods(spId)) as
+        | Array<{ name: string }>
+        | unknown
+      if (Array.isArray(methods)) {
+        this.availableMethods = methods.map((m) => m.name)
+      } else {
+        this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioProductDetail] Failed to load payment methods:', err)
+      }
+      this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+    }
+  }
+
+  private methodEnabled(...names: string[]): boolean {
+    return (
+      this.availableMethods.length === 0 ||
+      this.availableMethods.some((m) => names.includes(m.toLowerCase()))
+    )
   }
 
   /** Option values a variant represents — variant titles join them with " / "
@@ -753,6 +795,20 @@ export class VioProductDetail extends LitElement {
     )
   }
 
+  /** Buy with Stripe — opens the checkout with Stripe preselected. */
+  private buyWithStripe(): void {
+    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    this.addCurrentToCart()
+    this.close()
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false },
+      }),
+    )
+  }
+
   /**
    * Express buy with Apple Pay. Runs synchronously inside the click so the
    * Apple Pay sheet keeps the user gesture: add to cart → open checkout (sets
@@ -895,7 +951,9 @@ export class VioProductDetail extends LitElement {
             </button>
           </div>
 
-          ${this.availableQuantity > 0 && this.applePayOk
+          ${this.availableQuantity > 0 &&
+          this.applePayOk &&
+          this.methodEnabled('apple-pay', 'applepay')
             ? html`
                 <button
                   class="buy-applepay"
@@ -909,7 +967,25 @@ export class VioProductDetail extends LitElement {
                 </button>
               `
             : ''}
-          ${this.availableQuantity > 0
+          ${this.availableQuantity > 0 && this.methodEnabled('stripe')
+            ? html`
+                <button
+                  class="buy-stripe"
+                  @click=${this.buyWithStripe}
+                  ?disabled=${this.adding}
+                  aria-label="Kjøp nå med Stripe"
+                  style="width: 100%; margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #635bff; color: #fff; border: none; padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;"
+                >
+                  <span>Kjøp nå med</span>
+                  <img
+                    src=${STRIPE_LOGO_SRC}
+                    style="height: 20px; display: block; filter: brightness(0) invert(1);"
+                    alt="Stripe"
+                  />
+                </button>
+              `
+            : ''}
+          ${this.availableQuantity > 0 && this.methodEnabled('klarna')
             ? html`
                 <button
                   class="buy-klarna"
@@ -926,7 +1002,7 @@ export class VioProductDetail extends LitElement {
               `
             : ''}
 
-          ${this.availableQuantity > 0
+          ${this.availableQuantity > 0 && this.methodEnabled('vipps')
             ? html`
                 <button
                   class="buy-vipps"

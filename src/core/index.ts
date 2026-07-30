@@ -27,6 +27,8 @@ export {
   updateCheckout,
   getCheckout,
   getAvailablePaymentMethods,
+  createPaymentStripe,
+  createPaymentVipps,
   executeCartGraphQL,
   getCartGraphQLOptions,
   getCustomerSessionId,
@@ -41,6 +43,8 @@ export {
   UPDATE_CHECKOUT_MUTATION,
   GET_CHECKOUT_QUERY,
   GET_AVAILABLE_PAYMENT_METHODS_QUERY,
+  CREATE_PAYMENT_STRIPE_MUTATION,
+  CREATE_PAYMENT_VIPPS_MUTATION,
   type CartQueryOptions,
 } from './api/cart-queries.js'
 

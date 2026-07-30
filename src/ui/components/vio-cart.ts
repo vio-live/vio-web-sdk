@@ -56,12 +56,17 @@ export class VioCart extends LitElement {
   private applePayHandle: { available: boolean; show: () => Promise<unknown> } | null = null
   /** Cart total Apple Pay was last prepared for (avoids redundant prep). */
   private preparedTotal = -1
+  /** In-flight guard for loadAvailablePaymentMethods. */
+  private loadingPaymentMethods = false
 
   private boundOnCartChange = (e: Event): void => {
     const detail = (e as CustomEvent<CartChangeDetail>).detail
     this.carts = detail.cartsBySponsor
     this.itemCount = detail.itemCount
-    void this.loadAvailablePaymentMethods()
+    // Cart changes fire often — only fetch methods if we don't have them yet.
+    if (this.availableMethods.length === 0) {
+      void this.loadAvailablePaymentMethods()
+    }
   }
 
   static override styles = css`
@@ -426,10 +431,15 @@ export class VioCart extends LitElement {
   /** Which payment buttons to render — backend-configured per sponsor.
    * Falls back to showing everything if the query fails or none is set. */
   private async loadAvailablePaymentMethods(): Promise<void> {
+    if (this.loadingPaymentMethods) return
+    this.loadingPaymentMethods = true
     const firstSponsorId =
       [...this.carts.keys()][0] ??
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
-    if (firstSponsorId === undefined) return
+    if (firstSponsorId === undefined) {
+      this.loadingPaymentMethods = false
+      return
+    }
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(firstSponsorId)) as
         | Array<{ name: string }>
@@ -444,6 +454,8 @@ export class VioCart extends LitElement {
         console.warn('[VioCart] Failed to load payment methods:', err)
       }
       this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+    } finally {
+      this.loadingPaymentMethods = false
     }
   }
 

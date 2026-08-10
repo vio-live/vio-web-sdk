@@ -669,7 +669,20 @@ export class VioProductDetail extends LitElement {
       for (const opt of productOptions) {
         const key = opt.name.toLowerCase()
         if (!map[key]) {
-          const rawValues = normalizeValues(opt.values)
+          // Skip values that exist in ANOTHER option too — a title scan can't
+          // tell which option "30" belongs to when Midje and Lengde both have
+          // it, and guessing corrupts the whole map (wrong-variant purchases).
+          // Ambiguous values are resolved by the positional fallback below.
+          const rawValues = normalizeValues(opt.values).filter(
+            (val) =>
+              !productOptions.some(
+                (other) =>
+                  other !== opt &&
+                  normalizeValues(other.values).some(
+                    (ov) => ov.trim().toLowerCase() === val.trim().toLowerCase(),
+                  ),
+              ),
+          )
           const sortedVals = [...rawValues].sort((a, b) => b.length - a.length)
           for (const valStr of sortedVals) {
             const valLower = valStr.trim().toLowerCase()
@@ -709,13 +722,16 @@ export class VioProductDetail extends LitElement {
     return Array.from(set)
   }
 
-  /** Does a variant part represent this option value? Whole-token match, so the
-   * value "30" matches the part "30 ml" but "M" does NOT match "Medium". */
+  /** Does a variant part represent this option value? Exact match, plus a
+   * whole-token match ONLY for numeric values ("30" matches "30 ml") — word
+   * subsets of text values are not matches ("Large" must NOT match
+   * "Extra Large"). */
   private partMatchesValue(part: string, value: string): boolean {
     if (!part || !value) return false
     const p = String(part).trim().toLowerCase()
     const v = String(value).trim().toLowerCase()
     if (p === v) return true
+    if (!/^[\d.,]+$/.test(v)) return false
     return p.split(/\s+/).includes(v)
   }
 
@@ -739,8 +755,10 @@ export class VioProductDetail extends LitElement {
   }
 
   /** Sellable quantity for a variant, across the stock field zoo. Boolean
-   * availability flags win; unknown stock is treated as sellable (999). */
-  private getVariantQty(v: ProductVariant | any): number {
+   * availability flags win; a numeric field wins next; `null` = the feed does
+   * not report stock for this variant (callers fall back to product stock —
+   * never assume "in stock" from absent data). */
+  private getVariantQty(v: ProductVariant | any): number | null {
     if (!v) return 0
     if (v.available === false || v.in_stock === false || v.is_available === false) return 0
     if (v.available === true || v.in_stock === true || v.is_available === true) return 999
@@ -752,7 +770,14 @@ export class VioProductDetail extends LitElement {
       if (!Number.isNaN(parsed)) return parsed
     }
 
-    return 999
+    return null
+  }
+
+  /** Variant stock with the product-level fallback applied (0 = not sellable). */
+  private variantSellableQty(v: ProductVariant | any): number {
+    const q = this.getVariantQty(v)
+    if (q !== null) return q
+    return this.product?.quantity ?? 0
   }
 
   /** Resolve the active variant: full in-stock match → full match → best score
@@ -766,7 +791,7 @@ export class VioProductDetail extends LitElement {
     if (entries.length === 0) return this.product.variants[0] ?? null
 
     const fullInStock = this.product.variants.find(
-      (v) => this.variantMatchesSelection(v, sel) && this.getVariantQty(v) > 0,
+      (v) => this.variantMatchesSelection(v, sel) && this.variantSellableQty(v) > 0,
     )
     if (fullInStock) return fullInStock
 
@@ -791,7 +816,7 @@ export class VioProductDetail extends LitElement {
         }
       }
 
-      if (this.getVariantQty(v) > 0) score += 0.5
+      if (this.variantSellableQty(v) > 0) score += 0.5
 
       if (score > maxScore) {
         maxScore = score
@@ -812,7 +837,7 @@ export class VioProductDetail extends LitElement {
 
     return this.product.variants.some((v) => {
       const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
-      if (this.getVariantQty(v) <= 0) return false
+      if (this.variantSellableQty(v) <= 0) return false
       if (map[key]) return this.partMatchesValue(map[key]!, valLower)
       return titleParts.some((part) => this.partMatchesValue(part.toLowerCase(), valLower))
     })
@@ -834,7 +859,7 @@ export class VioProductDetail extends LitElement {
 
   private get availableQuantity(): number {
     const v = this.selectedVariant()
-    if (v) return this.getVariantQty(v)
+    if (v) return this.variantSellableQty(v)
     return this.product?.quantity ?? 0
   }
 
@@ -851,7 +876,7 @@ export class VioProductDetail extends LitElement {
   private selectOption(optionName: string, value: string): void {
     const newSelection = { ...this.selectedOptions, [optionName]: value }
     const exactInStock = this.product?.variants?.find(
-      (v) => this.variantMatchesSelection(v, newSelection) && this.getVariantQty(v) > 0,
+      (v) => this.variantMatchesSelection(v, newSelection) && this.variantSellableQty(v) > 0,
     )
     if (exactInStock) {
       this.selectedOptions = newSelection
@@ -869,7 +894,7 @@ export class VioProductDetail extends LitElement {
     const key = optionName.trim().toLowerCase()
     const anyInStockWithVal = this.product?.variants?.find((v) => {
       const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
-      if (this.getVariantQty(v) <= 0) return false
+      if (this.variantSellableQty(v) <= 0) return false
       if (map[key]) return this.partMatchesValue(map[key]!, valLower)
       return titleParts.some((p) => this.partMatchesValue(p.toLowerCase(), valLower))
     })

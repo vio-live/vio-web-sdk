@@ -640,15 +640,12 @@ export class VioCheckout extends LitElement {
     if (typeof window === 'undefined' || !window.location || !window.location.search) return
     try {
       const urlParams = new URLSearchParams(window.location.search)
-      const vioPayment =
-        urlParams.get('vio_payment') || urlParams.get('payment_status') || urlParams.get('payment')
-      const vioMethod =
-        urlParams.get('vio_method') ||
-        urlParams.get('payment_method') ||
-        urlParams.get('method') ||
-        'stripe'
-      const sponsorId = Number(urlParams.get('vio_sponsor') || urlParams.get('sponsor_id') || 0)
-      const orderId = urlParams.get('order_id') || urlParams.get('checkout_id') || ''
+      // ONLY our own vio_* params — generic names like ?payment= belong to the
+      // publisher's page and must never trigger our confirmation flow.
+      const vioPayment = urlParams.get('vio_payment')
+      const vioMethod = urlParams.get('vio_method') || 'stripe'
+      const sponsorId = Number(urlParams.get('vio_sponsor') || 0)
+      const orderId = urlParams.get('checkout_id') || ''
 
       if (vioPayment === 'success') {
         if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
@@ -671,19 +668,11 @@ export class VioCheckout extends LitElement {
           }),
         )
 
-        this.cleanReturnQueryParams([
-          'vio_payment', 'payment_status', 'payment',
-          'vio_method', 'payment_method', 'method',
-          'vio_sponsor', 'sponsor_id', 'order_id', 'checkout_id',
-        ])
+        this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
       } else if (vioPayment === 'cancel' || vioPayment === 'error') {
         this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
         this.open = true
-        this.cleanReturnQueryParams([
-          'vio_payment', 'payment_status', 'payment',
-          'vio_method', 'payment_method', 'method',
-          'vio_sponsor', 'sponsor_id', 'order_id', 'checkout_id',
-        ])
+        this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
@@ -1071,6 +1060,12 @@ export class VioCheckout extends LitElement {
       void this.onPay(s.paymentMethod)
       return
     }
+    // Only methods with a real payment flow may confirm. 'card' has no PSP
+    // wired — confirming would show success without charging.
+    if (s.paymentMethod !== 'klarna' && s.paymentMethod !== 'apple-pay') {
+      this.paymentError = 'Betalingsmetoden er ikke tilgjengelig ennå.'
+      return
+    }
     this.confirmOrder(s.paymentMethod, s.sponsorId)
   }
 
@@ -1438,7 +1433,10 @@ export class VioCheckout extends LitElement {
                     <button
                       type="button"
                       style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
-                      @click=${() => Vio.checkout.selectPaymentMethod('' as PaymentMethod)}
+                      @click=${() => {
+                        this.unmountKlarna()
+                        Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+                      }}
                     >
                       Endre
                     </button>

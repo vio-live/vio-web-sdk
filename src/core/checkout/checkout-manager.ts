@@ -1480,7 +1480,16 @@ export class CheckoutManager extends EventTarget {
             state,
             // chargedTotal in MAJOR units (incl. shipping for express) for the
             // confirmation screen. ctx.orderAmount is minor (øre) → /100.
-            result: { ...result, order: orderData, chargedTotal: ctx.orderAmount / 100 },
+            // Prefer the amount Klarna actually charged (includes shipping in
+            // every flow); the local ctx misses shipping outside express.
+            result: {
+              ...result,
+              order: orderData,
+              chargedTotal:
+                typeof orderData?.order_amount === 'number'
+                  ? orderData.order_amount / 100
+                  : ctx.orderAmount / 100,
+            },
           },
         }),
       )

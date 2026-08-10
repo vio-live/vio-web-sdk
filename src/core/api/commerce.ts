@@ -18,7 +18,7 @@
  */
 
 import { GraphQLClient } from 'graphql-request'
-import type { ImageSize, Product } from '../types.js'
+import { getGlobalCountryCode, getGlobalCurrency, type ImageSize, type Product } from '../types.js'
 
 export interface CommerceClientOptions {
   /** Vio Commerce GraphQL endpoint, e.g. `https://graph-ql-dev.vio.live`. */
@@ -125,10 +125,11 @@ class ChannelProduct {
 
     const variables = {
       productIds: options.product_ids,
-      currency: options.currency ?? null,
+      // Page-level currency/country defaults (multi-market support).
+      currency: options.currency ?? getGlobalCurrency(),
       imageSize: options.image_size ?? 'large',
       useCache: options.useCache ?? true,
-      shippingCountryCode: options.shipping_country_code ?? null,
+      shippingCountryCode: options.shipping_country_code ?? getGlobalCountryCode(),
     }
 
     const data = await this.client.request<{

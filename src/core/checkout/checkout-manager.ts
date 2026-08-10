@@ -48,7 +48,7 @@ import {
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
   type CartQueryOptions,
 } from '../api/cart-queries.js'
-import { getGlobalCurrency } from '../types.js'
+import { getGlobalCountryCode, getGlobalCurrency, getGlobalLocale } from '../types.js'
 
 /**
  * Best-effort human-readable string for an unknown thrown/rejected value.
@@ -271,7 +271,7 @@ function buildKlarnaAddress(address: any): Record<string, unknown> | null {
   if (!address) return null
   return {
     city: address.city || null,
-    country: address.country || address.countryCode || 'NO',
+    country: address.country || address.countryCode || getGlobalCountryCode(),
     email: address.email || null,
     family_name:
       address.familyName || address.family_name || address.last_name || address.lastName || null,
@@ -303,7 +303,7 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
     address.address || address.address1 || address.street || address.street_address || null
   const city = address.city || null
   const zip = address.postalCode || address.postal_code || address.zip || null
-  const country_code = address.countryCode || address.country_code || address.country || 'NO'
+  const country_code = address.countryCode || address.country_code || address.country || getGlobalCountryCode()
 
   if (!firstName && !lastName && !address1 && !city && !zip) return null
 
@@ -652,9 +652,12 @@ export class CheckoutManager extends EventTarget {
     }
     if (!checkoutId) checkoutId = String(spId)
 
+    // Vipps collects the address in its own flow — never push one onto the
+    // checkout for it (the backend rejects partial Vipps addresses).
+    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
     const addr =
       typeof formData === 'object' && formData !== null ? formData : this.state?.address
-    const addressObj = buildCheckoutAddress(addr)
+    const addressObj = !isVipps ? buildCheckoutAddress(addr) : null
     const emailVal =
       (typeof formData === 'string'
         ? formData
@@ -718,6 +721,7 @@ export class CheckoutManager extends EventTarget {
     const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
       sponsorId,
       formData,
+      { paymentMethod: 'Stripe' },
     )
     const successUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -967,7 +971,7 @@ export class CheckoutManager extends EventTarget {
     }
     const available = await isKlarnaAvailable({
       clientId,
-      locale: 'nb-NO',
+      locale: getGlobalLocale(),
       environment: cfg?.klarnaEnvironment,
     })
     this.klarnaAvailableCache = available
@@ -1022,7 +1026,7 @@ export class CheckoutManager extends EventTarget {
     return mountKlarnaExpressButton({
       config: {
         clientId: cfg.klarnaClientId,
-        locale: 'nb-NO',
+        locale: getGlobalLocale(),
         environment: cfg.klarnaEnvironment,
       },
       container,
@@ -1115,9 +1119,9 @@ export class CheckoutManager extends EventTarget {
     ctx.currency = activeCurrency
     const variables = {
       checkoutId,
-      countryCode: 'NO',
+      countryCode: getGlobalCountryCode(),
       currency: activeCurrency,
-      locale: 'nb-NO',
+      locale: getGlobalLocale(),
       returnUrl: resolveHttpsReturnUrl(null, {
         vio_payment: 'success',
         vio_method: 'klarna',
@@ -1273,9 +1277,9 @@ export class CheckoutManager extends EventTarget {
       ctx.currency = activeCurrency
       const variables = {
         checkoutId,
-        countryCode: 'NO',
+        countryCode: getGlobalCountryCode(),
         currency: activeCurrency,
-        locale: 'nb-NO',
+        locale: getGlobalLocale(),
         returnUrl: resolveHttpsReturnUrl(null, {
           vio_payment: 'success',
           vio_method: 'klarna',
@@ -1391,7 +1395,7 @@ export class CheckoutManager extends EventTarget {
     const cfg = Configuration.isInitialized ? Configuration.get() : null
     if (!cfg?.klarnaClientId) return
     await listenForKlarnaCompletion({
-      config: { clientId: cfg.klarnaClientId, locale: 'nb-NO', environment: cfg.klarnaEnvironment },
+      config: { clientId: cfg.klarnaClientId, locale: getGlobalLocale(), environment: cfg.klarnaEnvironment },
       onComplete: (result) => {
         void this.completeKlarnaOrder(result.authorizationToken, pending, result)
       },

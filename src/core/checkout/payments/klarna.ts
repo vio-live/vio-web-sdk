@@ -28,6 +28,8 @@
  *   - A server-side Klarna API key for the order-creation step (backend).
  */
 
+import { getGlobalLocale } from '../../types.js'
+
 /** Klarna Web SDK v2 ESM module (loaded from Klarna's CDN at runtime). */
 export const KLARNA_SDK_URL = 'https://js.klarna.com/web-sdk/v2/klarna.mjs'
 
@@ -249,7 +251,7 @@ export async function mountKlarnaExpressButton(opts: {
       currency: opts.paymentRequest.currency,
       paymentAmount: opts.paymentRequest.amount,
       intents: ['PAY'],
-      locale: 'nb-NO',
+      locale: getGlobalLocale(),
       // REDIRECT = full-page navigation to Klarna's hosted journey, then back
       // to `returnUrl` with the result. We force this (vs DEVICE_BEST's desktop
       // popup) because the popup proved unreliable here — it opened and closed

@@ -28,6 +28,10 @@ export class VioProduct extends LitElement {
   /** Whether the product has selectable variants — the quick-add button then
    * opens the detail to pick one instead of adding directly. */
   @property({ type: Boolean, attribute: 'has-variants' }) hasVariants = false
+  /** Optional raw variants/options from the host — extra signal that a
+   * variant must be picked before adding (selection is mandatory). */
+  @property({ attribute: false }) variants: unknown[] | undefined = undefined
+  @property({ attribute: false }) options: unknown[] | undefined = undefined
 
   /** Image-only mode: hide the meta block (brand / name / price / retailer)
    * and show just the image + the quick-add button. Click still opens the
@@ -216,7 +220,11 @@ export class VioProduct extends LitElement {
    * `vio:product-add` so the host adds it (bumping quantity on repeat taps). */
   private onAdd(e: Event): void {
     e.stopPropagation()
-    if (this.hasVariants) {
+    if (
+      this.hasVariants ||
+      (Array.isArray(this.variants) && this.variants.length > 1) ||
+      (Array.isArray(this.options) && this.options.length > 0)
+    ) {
       this.onClick()
       return
     }

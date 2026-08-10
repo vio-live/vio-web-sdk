@@ -120,6 +120,70 @@ export function displayPrice(product: Product): string {
 }
 
 /**
+ * Active shipping/market country for the page. The host (e.g. the Vev Config
+ * block) sets `globalThis.__VIO_COUNTRY__` / localStorage `vio.country`; falls
+ * back to NO.
+ */
+export function getGlobalCountryCode(): string {
+  const g = globalThis as { __VIO_COUNTRY__?: string }
+  if (g.__VIO_COUNTRY__) return g.__VIO_COUNTRY__
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const v = localStorage.getItem('vio.country')
+      if (v) return v
+    } catch {
+      /* privacy mode */
+    }
+  }
+  return 'NO'
+}
+
+/**
+ * Active display locale for the page (number formatting + payment sheets).
+ * Host sets `globalThis.__VIO_LOCALE__` / localStorage `vio.locale`; falls
+ * back to nb-NO.
+ */
+export function getGlobalLocale(): string {
+  const g = globalThis as { __VIO_LOCALE__?: string }
+  if (g.__VIO_LOCALE__) return g.__VIO_LOCALE__
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const v = localStorage.getItem('vio.locale')
+      if (v) return v
+    } catch {
+      /* privacy mode */
+    }
+  }
+  return 'nb-NO'
+}
+
+/**
+ * Currency symbol for display. With no explicit currency, a host-set override
+ * (`__VIO_SYMBOL__` / vio.symbol) wins; otherwise a small per-currency map.
+ */
+export function getGlobalSymbol(currency?: string): string {
+  const activeCurrency = currency || getGlobalCurrency()
+  const g = globalThis as { __VIO_SYMBOL__?: string }
+  if (!currency && g.__VIO_SYMBOL__) return g.__VIO_SYMBOL__
+  if (!currency && typeof localStorage !== 'undefined') {
+    try {
+      const v = localStorage.getItem('vio.symbol')
+      if (v) return v
+    } catch {
+      /* privacy mode */
+    }
+  }
+  const curr = String(activeCurrency).toUpperCase()
+  if (curr === 'NOK' || curr === 'DKK') return 'Kr'
+  if (curr === 'SEK') return 'SEK'
+  if (curr === 'EUR') return '€'
+  if (curr === 'USD' || curr === 'CAD') return '$'
+  if (curr === 'GBP') return '£'
+  if (curr === 'CHF') return 'CHF'
+  return activeCurrency
+}
+
+/**
  * Active display currency for the page. The host (e.g. the Vev Config block)
  * sets `globalThis.__VIO_CURRENCY__` / localStorage `vio.currency`; falls back
  * to NOK.
@@ -138,17 +202,16 @@ export function getGlobalCurrency(): string {
   return 'NOK'
 }
 
-/** Format a numeric amount + currency for Norwegian style: "1 299 kr". */
+/** Format a numeric amount + currency using the page locale and symbol map. */
 export function formatPrice(amount: number, currency?: string): string {
   const activeCurrency = currency || getGlobalCurrency()
-  // Use Norwegian locale grouping (space as thousands separator).
+  const activeLocale = getGlobalLocale()
+  const activeSymbol = getGlobalSymbol(activeCurrency)
   const formatted = amount
-    .toLocaleString('no-NO', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+    .toLocaleString(activeLocale, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
     // Normalize non-breaking space to regular space for predictable rendering.
     .replace(/ /g, ' ')
-  // Some currency codes display nicer lowercase: NOK → kr.
-  const symbol = activeCurrency === 'NOK' ? 'kr' : activeCurrency
-  return `${formatted} ${symbol}`
+  return `${formatted} ${activeSymbol}`
 }
 
 /**

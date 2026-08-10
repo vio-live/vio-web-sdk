@@ -31,7 +31,7 @@ interface SelectedOptions {
 const STRIPE_LOGO_SRC =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 25" fill="none"><path d="M5.4 12.8c0-1.8 1.4-2.8 3.8-2.8 1.5 0 2.9.4 3.7.8V7.4c-.8-.3-2.1-.6-3.5-.6-3.8 0-6.4 2-6.4 5.9 0 5.4 7.2 4.5 7.2 6.9 0 1.9-1.5 2.8-3.9 2.8-1.8 0-3.3-.4-4.2-1v3.5c1 .5 2.4.8 4 .8 4 0 6.6-2 6.6-6 0-5.8-7.3-4.7-7.3-6.9zM19.1 7.2c-1.3 0-2.1.6-2.5 1.1v-6.7h-2.5v17.4h2.5V11c0-1.6 1.1-2.4 2.4-2.4 1.3 0 2.2.8 2.2 2.4v8h2.5v-8.3c0-2.3-1.6-3.5-4.7-3.5zM27 7.2h-2.5v11.8H27V7.2zM27 3.3h-2.5v2.5H27V3.3zM34.9 7.2c-1.4 0-2.3.6-2.8 1.3V7.2h-2.5v16.1h2.5v-4.5c.5.7 1.4 1.3 2.8 1.3 2.9 0 5-2.2 5-6.6s-2.1-6.3-5-6.3zm-.6 9.8c-1.4 0-2.3-1-2.3-2.6s.9-2.6 2.3-2.6c1.4 0 2.4 1 2.4 2.6s-1 2.6-2.4 2.6zM46.7 13c-.3-.2-1.3-.7-2.4-.7-1.5 0-2.4.9-2.4 2.2 0 1.3 1.1 1.9 2.7 2.3 2.2.6 4.3 1.3 4.3 4.1 0 3.3-2.7 4.8-6.1 4.8-1.9 0-3.7-.5-4.8-1.2v-3.4c1.1.7 2.7 1.2 4.4 1.2 1.7 0 2.8-.7 2.8-2 0-1.4-1.1-1.9-2.9-2.3-2.4-.6-4.1-1.5-4.1-4 0-3 2.4-4.5 5.5-4.5 1.7 0 3.1.4 4 .9V13z" fill="#635BFF"/></svg>',
+    '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
 export class VioProductDetail extends LitElement {
@@ -619,57 +619,203 @@ export class VioProductDetail extends LitElement {
     )
   }
 
-  /** Option values a variant represents — variant titles join them with " / "
-   * (or "|"). Exact parts, lowercased, so matching is combination-accurate
-   * (avoids "M" matching "Medium"). */
-  private variantOptionValues(v: ProductVariant): string[] {
-    return (v.title ?? '')
-      .split(/\s*[/|]\s*/)
-      .map((s) => s.trim().toLowerCase())
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+
+  /**
+   * Build an option-name → value map for a variant, from every shape the feeds
+   * ship: option1/2/3 columns, options/selected_options/variant arrays, plain
+   * object maps, and finally the title (value scan first, position fallback).
+   */
+  private getVariantOptionMap(
+    v: ProductVariant | any,
+    productOptions: ProductOption[] | undefined,
+  ): { map: Record<string, string>; titleParts: string[] } {
+    const map: Record<string, string> = {}
+    if (!v) return { map, titleParts: [] }
+
+    if (v.option1 != null && productOptions?.[0]) {
+      map[productOptions[0].name.toLowerCase()] = String(v.option1).trim().toLowerCase()
+    }
+    if (v.option2 != null && productOptions?.[1]) {
+      map[productOptions[1].name.toLowerCase()] = String(v.option2).trim().toLowerCase()
+    }
+    if (v.option3 != null && productOptions?.[2]) {
+      map[productOptions[2].name.toLowerCase()] = String(v.option3).trim().toLowerCase()
+    }
+
+    const optArray = Array.isArray(v.options)
+      ? v.options
+      : Array.isArray(v.selected_options)
+        ? v.selected_options
+        : Array.isArray(v.variant)
+          ? v.variant
+          : null
+    if (optArray) {
+      for (const item of optArray) {
+        const key = (item.name || item.option || '').trim().toLowerCase()
+        const val = (item.value || '').trim().toLowerCase()
+        if (key && val) map[key] = val
+      }
+    } else if (v.options && typeof v.options === 'object') {
+      for (const [k, val] of Object.entries(v.options)) {
+        map[k.trim().toLowerCase()] = String(val).trim().toLowerCase()
+      }
+    }
+
+    const title = String(v.title ?? '').trim()
+    const titleLower = title.toLowerCase()
+
+    if (Array.isArray(productOptions)) {
+      for (const opt of productOptions) {
+        const key = opt.name.toLowerCase()
+        if (!map[key]) {
+          const rawValues = normalizeValues(opt.values)
+          const sortedVals = [...rawValues].sort((a, b) => b.length - a.length)
+          for (const valStr of sortedVals) {
+            const valLower = valStr.trim().toLowerCase()
+            const escaped = valLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const regex = new RegExp(`(?:^|[/|\\-,;\\s])${escaped}(?:$|[/|\\-,;\\s])`, 'i')
+            if (regex.test(titleLower) || titleLower === valLower) {
+              map[key] = valLower
+              break
+            }
+          }
+        }
+      }
+    }
+
+    const titleParts = title
+      .split(/\s*[/|,]\s*|\s+-\s+/)
+      .map((s) => s.trim())
       .filter(Boolean)
+
+    if (Array.isArray(productOptions)) {
+      productOptions.forEach((opt, idx) => {
+        const key = opt.name.toLowerCase()
+        if (!map[key] && titleParts[idx] != null) {
+          map[key] = titleParts[idx]!.toLowerCase()
+        }
+      })
+    }
+
+    return { map, titleParts }
+  }
+
+  /** Option values a variant represents (map values ∪ title parts). */
+  private variantOptionValues(v: ProductVariant): string[] {
+    const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
+    const set = new Set(titleParts.map((s) => s.toLowerCase()))
+    for (const val of Object.values(map)) set.add(val)
+    return Array.from(set)
   }
 
   /** Does a variant part represent this option value? Whole-token match, so the
    * value "30" matches the part "30 ml" but "M" does NOT match "Medium". */
   private partMatchesValue(part: string, value: string): boolean {
-    if (part === value) return true
-    return part.split(/\s+/).includes(value)
+    if (!part || !value) return false
+    const p = String(part).trim().toLowerCase()
+    const v = String(value).trim().toLowerCase()
+    if (p === v) return true
+    return p.split(/\s+/).includes(v)
   }
 
   /** Does a variant satisfy every currently-selected option value? */
   private variantMatchesSelection(v: ProductVariant, selection: SelectedOptions): boolean {
-    const wanted = Object.values(selection).map((s) => s.trim().toLowerCase())
-    if (wanted.length === 0) return true
-    const parts = this.variantOptionValues(v)
-    return wanted.every((w) => parts.some((part) => this.partMatchesValue(part, w)))
+    if (!v || !selection) return false
+    const entries = Object.entries(selection)
+    if (entries.length === 0) return true
+
+    const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
+    const titlePartsLower = titleParts.map((t) => t.toLowerCase())
+
+    return entries.every(([optName, val]) => {
+      const key = optName.trim().toLowerCase()
+      const targetVal = String(val).trim().toLowerCase()
+      if (map[key]) {
+        return this.partMatchesValue(map[key]!, targetVal)
+      }
+      return titlePartsLower.some((part) => this.partMatchesValue(part, targetVal))
+    })
   }
 
-  /** Resolve the active variant from the selected combination. Prefers a FULL
-   * match (all options accounted for), then a partial match, then the first. */
+  /** Sellable quantity for a variant, across the stock field zoo. Boolean
+   * availability flags win; unknown stock is treated as sellable (999). */
+  private getVariantQty(v: ProductVariant | any): number {
+    if (!v) return 0
+    if (v.available === false || v.in_stock === false || v.is_available === false) return 0
+    if (v.available === true || v.in_stock === true || v.is_available === true) return 999
+
+    const rawQty =
+      v.quantity ?? v.inventory_quantity ?? v.stock ?? v.available_quantity ?? v.stock_quantity
+    if (rawQty !== null && rawQty !== undefined && rawQty !== '') {
+      const parsed = Number(rawQty)
+      if (!Number.isNaN(parsed)) return parsed
+    }
+
+    return 999
+  }
+
+  /** Resolve the active variant: full in-stock match → full match → best score
+   * (2 per mapped option match, 1 per title match, +0.5 if in stock). */
   private selectedVariant(): ProductVariant | null {
-    if (!this.product || this.product.variants.length === 0) return null
+    if (!this.product || !Array.isArray(this.product.variants) || this.product.variants.length === 0) {
+      return null
+    }
     const sel = this.selectedOptions
-    const wanted = Object.values(sel).map((s) => s.trim().toLowerCase())
-    if (wanted.length === 0) return this.product.variants[0] ?? null
-    const full = this.product.variants.find(
-      (v) => this.variantOptionValues(v).length === wanted.length && this.variantMatchesSelection(v, sel),
+    const entries = Object.entries(sel)
+    if (entries.length === 0) return this.product.variants[0] ?? null
+
+    const fullInStock = this.product.variants.find(
+      (v) => this.variantMatchesSelection(v, sel) && this.getVariantQty(v) > 0,
     )
+    if (fullInStock) return fullInStock
+
+    const full = this.product.variants.find((v) => this.variantMatchesSelection(v, sel))
     if (full) return full
-    const partial = this.product.variants.find((v) => this.variantMatchesSelection(v, sel))
-    return partial ?? this.product.variants[0] ?? null
+
+    let bestVariant: ProductVariant | null = null
+    let maxScore = -1
+
+    for (const v of this.product.variants) {
+      const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
+      const titlePartsLower = titleParts.map((t) => t.toLowerCase())
+      let score = 0
+
+      for (const [optName, val] of entries) {
+        const key = optName.trim().toLowerCase()
+        const targetVal = String(val).trim().toLowerCase()
+        if (map[key] && this.partMatchesValue(map[key]!, targetVal)) {
+          score += 2
+        } else if (titlePartsLower.some((part) => this.partMatchesValue(part, targetVal))) {
+          score += 1
+        }
+      }
+
+      if (this.getVariantQty(v) > 0) score += 0.5
+
+      if (score > maxScore) {
+        maxScore = score
+        bestVariant = v
+      }
+    }
+
+    return bestVariant ?? this.product.variants[0] ?? null
   }
 
-  /** True if picking `value` for `optionName` (with the rest of the current
-   * selection) still yields an in-stock variant. When no variant reports stock
-   * (missing data), never disables — lets the backend be the source of truth. */
+  /** True if some in-stock variant carries this option value. */
   private isValueAvailable(optionName: string, value: string): boolean {
-    if (!this.product) return true
-    const anyStock = this.product.variants.some((v) => (v.quantity ?? 0) > 0)
-    if (!anyStock) return true
-    const trial = { ...this.selectedOptions, [optionName]: value }
-    return this.product.variants.some(
-      (v) => this.variantMatchesSelection(v, trial) && (v.quantity ?? 0) > 0,
-    )
+    if (!this.product || !Array.isArray(this.product.variants) || this.product.variants.length === 0) {
+      return true
+    }
+    const valLower = String(value).trim().toLowerCase()
+    const key = optionName.trim().toLowerCase()
+
+    return this.product.variants.some((v) => {
+      const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
+      if (this.getVariantQty(v) <= 0) return false
+      if (map[key]) return this.partMatchesValue(map[key]!, valLower)
+      return titleParts.some((part) => this.partMatchesValue(part.toLowerCase(), valLower))
+    })
   }
 
   private get unitPrice(): number {
@@ -688,7 +834,7 @@ export class VioProductDetail extends LitElement {
 
   private get availableQuantity(): number {
     const v = this.selectedVariant()
-    if (v) return v.quantity ?? 0
+    if (v) return this.getVariantQty(v)
     return this.product?.quantity ?? 0
   }
 
@@ -699,9 +845,53 @@ export class VioProductDetail extends LitElement {
     return { text: 'På lager', cls: 'in-stock' }
   }
 
+  /** Pick an option value. If the exact combination doesn't exist, jump to an
+   * in-stock variant that carries the value and adopt its full option map
+   * (keeps the selection always resolvable to a real variant). */
   private selectOption(optionName: string, value: string): void {
-    this.selectedOptions = { ...this.selectedOptions, [optionName]: value }
+    const newSelection = { ...this.selectedOptions, [optionName]: value }
+    const exactInStock = this.product?.variants?.find(
+      (v) => this.variantMatchesSelection(v, newSelection) && this.getVariantQty(v) > 0,
+    )
+    if (exactInStock) {
+      this.selectedOptions = newSelection
+      return
+    }
+    const exactAnyStock = this.product?.variants?.find((v) =>
+      this.variantMatchesSelection(v, newSelection),
+    )
+    if (exactAnyStock) {
+      this.selectedOptions = newSelection
+      return
+    }
+
+    const valLower = String(value).trim().toLowerCase()
+    const key = optionName.trim().toLowerCase()
+    const anyInStockWithVal = this.product?.variants?.find((v) => {
+      const { map, titleParts } = this.getVariantOptionMap(v, this.product?.options)
+      if (this.getVariantQty(v) <= 0) return false
+      if (map[key]) return this.partMatchesValue(map[key]!, valLower)
+      return titleParts.some((p) => this.partMatchesValue(p.toLowerCase(), valLower))
+    })
+
+    if (anyInStockWithVal) {
+      const { map } = this.getVariantOptionMap(anyInStockWithVal, this.product?.options)
+      const updated = { ...newSelection }
+      for (const opt of this.product?.options ?? []) {
+        const k = opt.name.toLowerCase()
+        if (map[k]) {
+          const optValues = normalizeValues(opt.values)
+          const origCase = optValues.find((val) => val.toLowerCase() === map[k]) || map[k]!
+          updated[opt.name] = origCase
+        }
+      }
+      this.selectedOptions = updated
+    } else {
+      this.selectedOptions = newSelection
+    }
   }
+
+  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   private allImages(): ProductImage[] {
     if (!this.product) return []
@@ -1040,11 +1230,14 @@ export class VioProductDetail extends LitElement {
           <div class="option-values">
             ${values.map((val) => {
               const available = this.isValueAvailable(opt.name, val)
+              const currentVal = this.selectedOptions[opt.name] ?? ''
+              const isSelected =
+                String(currentVal).trim().toLowerCase() === String(val).trim().toLowerCase()
               return html`
                 <button
                   class="option-pill ${available ? '' : 'unavailable'}"
                   @click=${() => this.selectOption(opt.name, val)}
-                  aria-pressed=${this.selectedOptions[opt.name] === val}
+                  aria-pressed=${isSelected}
                   ?disabled=${!available}
                   title=${available ? '' : 'Utsolgt'}
                 >

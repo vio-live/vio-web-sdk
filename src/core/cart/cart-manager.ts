@@ -11,7 +11,13 @@
  * this manager is purely client-side state for now.
  */
 
-import { formatPrice, getGlobalCurrency, primaryImageUrl, type Product } from '../types.js'
+import {
+  formatPrice,
+  getGlobalCountryCode,
+  getGlobalCurrency,
+  primaryImageUrl,
+  type Product,
+} from '../types.js'
 import type { CartLineItem, SponsorCartState } from './types.js'
 import {
   addItem as gqlAddItem,
@@ -80,13 +86,16 @@ export class CartManager extends EventTarget {
   async ensureCartId(
     sponsorId: number,
     currency?: string,
-    shippingCountry = 'NO',
+    shippingCountry?: string,
   ): Promise<string | undefined> {
     const activeCurrency = currency || getGlobalCurrency()
+    const activeCountry = shippingCountry || getGlobalCountryCode()
     let cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) {
-      cart = { sponsorId, items: [], currency: activeCurrency }
+      cart = { sponsorId, items: [], currency: activeCurrency, shippingCountry: activeCountry }
       this.cartsBySponsor.set(sponsorId, cart)
+    } else {
+      cart.shippingCountry = activeCountry
     }
     if (!cart.cartId) {
       const opts = await getCartGraphQLOptions(sponsorId)
@@ -95,7 +104,7 @@ export class CartManager extends EventTarget {
         const backendCart = await gqlCreateCart(
           customerSessionId,
           activeCurrency,
-          shippingCountry,
+          activeCountry,
           opts,
         )
         if (backendCart?.cart_id) {

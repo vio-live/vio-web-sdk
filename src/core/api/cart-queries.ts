@@ -931,6 +931,7 @@ query Config {
  */
 
 import { Configuration } from '../configuration.js'
+import { getGlobalCountryCode, getGlobalCurrency } from '../types.js'
 
 /** Transport options for a cart/checkout GraphQL call. */
 export interface CartQueryOptions {
@@ -1038,7 +1039,11 @@ export async function createCart(
 ): Promise<any> {
   const json = await executeCartGraphQL(
     CREATE_CART_MUTATION,
-    { customerSessionId, currency, shippingCountry: shippingCountry || null },
+    {
+      customerSessionId,
+      currency: currency || getGlobalCurrency(),
+      shippingCountry: shippingCountry || getGlobalCountryCode(),
+    },
     options,
   )
   return json?.data?.Cart?.CreateCart

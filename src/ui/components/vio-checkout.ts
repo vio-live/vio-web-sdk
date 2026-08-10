@@ -30,7 +30,7 @@ import type {
 const STRIPE_LOGO_SRC =
   'data:image/svg+xml;utf8,' +
   encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 25" fill="none"><path d="M5.4 12.8c0-1.8 1.4-2.8 3.8-2.8 1.5 0 2.9.4 3.7.8V7.4c-.8-.3-2.1-.6-3.5-.6-3.8 0-6.4 2-6.4 5.9 0 5.4 7.2 4.5 7.2 6.9 0 1.9-1.5 2.8-3.9 2.8-1.8 0-3.3-.4-4.2-1v3.5c1 .5 2.4.8 4 .8 4 0 6.6-2 6.6-6 0-5.8-7.3-4.7-7.3-6.9zM19.1 7.2c-1.3 0-2.1.6-2.5 1.1v-6.7h-2.5v17.4h2.5V11c0-1.6 1.1-2.4 2.4-2.4 1.3 0 2.2.8 2.2 2.4v8h2.5v-8.3c0-2.3-1.6-3.5-4.7-3.5zM27 7.2h-2.5v11.8H27V7.2zM27 3.3h-2.5v2.5H27V3.3zM34.9 7.2c-1.4 0-2.3.6-2.8 1.3V7.2h-2.5v16.1h2.5v-4.5c.5.7 1.4 1.3 2.8 1.3 2.9 0 5-2.2 5-6.6s-2.1-6.3-5-6.3zm-.6 9.8c-1.4 0-2.3-1-2.3-2.6s.9-2.6 2.3-2.6c1.4 0 2.4 1 2.4 2.6s-1 2.6-2.4 2.6zM46.7 13c-.3-.2-1.3-.7-2.4-.7-1.5 0-2.4.9-2.4 2.2 0 1.3 1.1 1.9 2.7 2.3 2.2.6 4.3 1.3 4.3 4.1 0 3.3-2.7 4.8-6.1 4.8-1.9 0-3.7-.5-4.8-1.2v-3.4c1.1.7 2.7 1.2 4.4 1.2 1.7 0 2.8-.7 2.8-2 0-1.4-1.1-1.9-2.9-2.3-2.4-.6-4.1-1.5-4.1-4 0-3 2.4-4.5 5.5-4.5 1.7 0 3.1.4 4 .9V13z" fill="#635BFF"/></svg>',
+    '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
 export class VioCheckout extends LitElement {
@@ -101,6 +101,9 @@ export class VioCheckout extends LitElement {
         void this.refreshApplePay()
         void this.refreshKlarna()
         void this.loadAvailablePaymentMethods()
+        void this.loadAvailableShippings()
+      } else if (this.availableShippingsList.length === 0) {
+        void this.loadAvailableShippings()
       }
     } else {
       this.applePayAvailable = false
@@ -397,8 +400,9 @@ export class VioCheckout extends LitElement {
       background: var(--vio-color-surface-hover, #fafafa);
     }
     .payment-btn:disabled {
-      cursor: progress;
-      opacity: 0.6;
+      cursor: not-allowed;
+      opacity: 0.45;
+      pointer-events: none;
     }
     .payment-btn.primary {
       background: var(--vio-color-text, #0a0a0a);
@@ -484,7 +488,15 @@ export class VioCheckout extends LitElement {
     }
     /* "Betal" CTA — sits full-width below the method grid once a method is
        picked. Reuses .payment-btn.primary (its grid-column spans the row). */
-    .complete-cta { margin-top: 8px; }
+    .complete-cta {
+      width: 100% !important;
+      box-sizing: border-box !important;
+      margin-top: 8px;
+      display: flex !important;
+      align-items: center !important;
+      justify-content: center !important;
+      text-align: center !important;
+    }
 
     /* Order confirmation — compact, shown inside the drawer. */
     .confirmation {
@@ -710,7 +722,11 @@ export class VioCheckout extends LitElement {
     super.disconnectedCallback()
   }
 
-  override updated(): void {
+  override updated(changed: Map<string, unknown>): void {
+    // Opening the overlay: make sure the real shippings are loaded.
+    if (changed.has('open') && this.open && this.availableShippingsList.length === 0) {
+      void this.loadAvailableShippings()
+    }
     // Mount the Klarna Express button once its slot is in the DOM, the
     // express flow is available, and the overlay is open. Re-mount when the
     // amount changes (the payment request is captured at mount time).
@@ -723,7 +739,60 @@ export class VioCheckout extends LitElement {
     Vio.checkout.close()
   }
 
-  show(): void { this.open = true }
+  show(): void {
+    this.open = true
+    if (this.availableShippingsList.length === 0) {
+      void this.loadAvailableShippings()
+    }
+  }
+
+  /** Fetch the real per-supplier shippings and preselect + persist the first. */
+  private async loadAvailableShippings(): Promise<void> {
+    const spId = this.checkoutState?.sponsorId
+    if (!spId) return
+    try {
+      const shippings = await Vio.checkout.fetchAvailableShippings(spId)
+      if (Array.isArray(shippings) && shippings.length > 0) {
+        this.availableShippingsList = shippings
+        if (!this.selectedShipping || !shippings.some((s) => s.id === this.selectedShipping)) {
+          const firstOpt = shippings[0]!
+          this.selectedShipping = firstOpt.id
+          if (firstOpt.supplierId) {
+            void Vio.checkout.updateShippingsBySupplier(
+              [{ shipping_id: firstOpt.id, supplier_id: Number(firstOpt.supplierId) }],
+              spId,
+            )
+          }
+        }
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] loadAvailableShippings failed:', err)
+      }
+    }
+  }
+
+  /** Whether all mandatory Leveringsadresse fields are filled. */
+  private get isAddressValid(): boolean {
+    const f = this.form
+    if (!f) return false
+    return Boolean(
+      f.firstName && String(f.firstName).trim().length > 0 &&
+      f.lastName && String(f.lastName).trim().length > 0 &&
+      f.email && String(f.email).trim().length > 0 && String(f.email).includes('@') &&
+      f.address && String(f.address).trim().length > 0 &&
+      f.postalCode && String(f.postalCode).trim().length > 0 &&
+      f.city && String(f.city).trim().length > 0,
+    )
+  }
+
+  /** Whether a valid shipping option is selected (when shippings exist). */
+  private get hasSelectedShipping(): boolean {
+    if (this.availableShippingsList.length === 0) return true
+    return Boolean(
+      this.selectedShipping && this.shippingList.some((s) => s.id === this.selectedShipping),
+    )
+  }
 
   /** Which payment buttons to render — backend-configured per sponsor. */
   private async loadAvailablePaymentMethods(): Promise<void> {
@@ -923,8 +992,20 @@ export class VioCheckout extends LitElement {
     }
   }
 
-  private onPay(method: PaymentMethod): void {
+  private async onPay(method: PaymentMethod): Promise<void> {
     this.paymentError = null
+    // Vipps collects address in its own flow; every other method needs the
+    // form + a shipping choice before we mint sessions/links.
+    if (method !== 'vipps') {
+      if (!this.isAddressValid) {
+        this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
+        return
+      }
+      if (!this.hasSelectedShipping) {
+        this.paymentError = 'Vennligst velg en fraktmetode.'
+        return
+      }
+    }
     if (method === 'apple-pay') {
       void this.onApplePay()
       return
@@ -933,6 +1014,20 @@ export class VioCheckout extends LitElement {
     // Stripe / Vipps: hosted payment pages — mint the link and redirect. The
     // return trip lands in checkReturnPaymentStatus().
     if (method === 'stripe') {
+      // Persist the chosen shipping before the link is minted (total depends on it).
+      const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
+      if (selectedOpt?.supplierId) {
+        try {
+          await Vio.checkout.updateShippingsBySupplier(
+            [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+            this.checkoutState?.sponsorId,
+          )
+        } catch (err) {
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] updateShippingsBySupplier on stripe pay failed:', err)
+          }
+        }
+      }
       this.stripeLoading = true
       void Vio.checkout
         .startStripePayment(this.checkoutState?.sponsorId, this.form)
@@ -968,8 +1063,12 @@ export class VioCheckout extends LitElement {
   private onCompleteOrder(): void {
     const s = this.checkoutState
     if (!s || !s.paymentMethod) return
+    if (s.paymentMethod !== 'vipps' && !this.isAddressValid) {
+      this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
+      return
+    }
     if (s.paymentMethod === 'stripe' || s.paymentMethod === 'vipps') {
-      this.onPay(s.paymentMethod)
+      void this.onPay(s.paymentMethod)
       return
     }
     this.confirmOrder(s.paymentMethod, s.sponsorId)
@@ -1215,15 +1314,20 @@ export class VioCheckout extends LitElement {
   private renderCheckoutBody() {
     const method = this.checkoutState?.paymentMethod
     const showCompleteCta = !!method && !this.isExpressMethod(method)
+    // Vipps collects the address in its own flow — skip the form entirely.
+    const isVipps = method === 'vipps'
     return html`
+          ${!isVipps
+            ? html`
           <section class="section">
             <div class="section-label">Steg 1</div>
             <h3 class="section-heading">Leveringsadresse</h3>
             <div class="form-row">
               <div class="field">
-                <label>Fornavn</label>
+                <label>Fornavn *</label>
                 <input
                   type="text"
+                  required
                   autocomplete="given-name"
                   .value=${this.form.firstName}
                   @input=${(e: InputEvent) =>
@@ -1231,9 +1335,10 @@ export class VioCheckout extends LitElement {
                 />
               </div>
               <div class="field">
-                <label>Etternavn</label>
+                <label>Etternavn *</label>
                 <input
                   type="text"
+                  required
                   autocomplete="family-name"
                   .value=${this.form.lastName}
                   @input=${(e: InputEvent) =>
@@ -1242,9 +1347,10 @@ export class VioCheckout extends LitElement {
               </div>
             </div>
             <div class="field">
-              <label>E-post</label>
+              <label>E-post *</label>
               <input
                 type="email"
+                required
                 autocomplete="email"
                 .value=${this.form.email}
                 @input=${(e: InputEvent) =>
@@ -1252,9 +1358,10 @@ export class VioCheckout extends LitElement {
               />
             </div>
             <div class="field">
-              <label>Adresse</label>
+              <label>Adresse *</label>
               <input
                 type="text"
+                required
                 autocomplete="street-address"
                 .value=${this.form.address}
                 @input=${(e: InputEvent) =>
@@ -1263,9 +1370,10 @@ export class VioCheckout extends LitElement {
             </div>
             <div class="form-row">
               <div class="field">
-                <label>Postnummer</label>
+                <label>Postnummer *</label>
                 <input
                   type="text"
+                  required
                   autocomplete="postal-code"
                   .value=${this.form.postalCode}
                   @input=${(e: InputEvent) =>
@@ -1273,9 +1381,10 @@ export class VioCheckout extends LitElement {
                 />
               </div>
               <div class="field">
-                <label>Sted</label>
+                <label>Sted *</label>
                 <input
                   type="text"
+                  required
                   autocomplete="address-level2"
                   .value=${this.form.city}
                   @input=${(e: InputEvent) =>
@@ -1283,10 +1392,43 @@ export class VioCheckout extends LitElement {
                 />
               </div>
             </div>
+            ${this.availableShippingsList.length > 0
+              ? html`
+                  <div style="margin-top: 16px;">
+                    <label style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 8px;">
+                      Fraktmetode *
+                    </label>
+                    <div class="ship-select">
+                      ${this.availableShippingsList.map(
+                        (o) => html`
+                          <button
+                            type="button"
+                            class="ship-opt ${this.selectedShipping === o.id ? 'active' : ''}"
+                            @click=${() => void this.onSelectShipping(o.id)}
+                          >
+                            <span class="ship-meta">
+                              <b>${o.method || o.name}</b>
+                              ${o.description ? html`<span>${o.description}</span>` : ''}
+                            </span>
+                            <span class="ship-price">
+                              ${formatPrice(
+                                o.priceMajor ?? o.price / 100,
+                                o.currency || this.checkoutState?.currency || 'NOK',
+                              )}
+                            </span>
+                          </button>
+                        `,
+                      )}
+                    </div>
+                  </div>
+                `
+              : ''}
           </section>
+          `
+            : ''}
 
           <section class="section">
-            <div class="section-label">Steg 2</div>
+            <div class="section-label">${isVipps ? 'Betaling' : 'Steg 2'}</div>
             ${method
               ? html`
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
@@ -1307,8 +1449,13 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
-                          @click=${() => this.onPay('stripe')}
-                          ?disabled=${this.stripeLoading}
+                          @click=${() => void this.onPay('stripe')}
+                          ?disabled=${this.stripeLoading || !this.isAddressValid || !this.hasSelectedShipping}
+                          title=${!this.isAddressValid
+                            ? 'Vennligst fyll ut leveringsadresse'
+                            : !this.hasSelectedShipping
+                              ? 'Vennligst velg en fraktmetode'
+                              : ''}
                         >
                           ${this.stripeLoading
                             ? 'Går til Stripe…'
@@ -1320,7 +1467,7 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
-                          @click=${() => this.onPay('vipps')}
+                          @click=${() => void this.onPay('vipps')}
                           ?disabled=${this.vippsLoading}
                         >
                           ${this.vippsLoading
@@ -1333,8 +1480,13 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
-                          @click=${() => this.onPay('apple-pay')}
-                          ?disabled=${this.applePayInProgress}
+                          @click=${() => void this.onPay('apple-pay')}
+                          ?disabled=${this.applePayInProgress || !this.isAddressValid || !this.hasSelectedShipping}
+                          title=${!this.isAddressValid
+                            ? 'Vennligst fyll ut leveringsadresse'
+                            : !this.hasSelectedShipping
+                              ? 'Vennligst velg en fraktmetode'
+                              : ''}
                         >
                           ${this.applePayInProgress
                             ? 'Åpner…'
@@ -1347,11 +1499,30 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${this.onCompleteOrder}
+                          ?disabled=${!this.isAddressValid || !this.hasSelectedShipping}
+                          title=${!this.isAddressValid
+                            ? 'Vennligst fyll ut leveringsadresse'
+                            : !this.hasSelectedShipping
+                              ? 'Vennligst velg en fraktmetode'
+                              : ''}
                         >
                           Betal ${this.orderTotal()} med ${this.methodLabel(method ?? null)}
                         </button>
                       `
                     : ''}
+                  ${!isVipps && !this.isAddressValid
+                    ? html`
+                        <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
+                          Vennligst fyll ut leveringsadresse for å fullføre betalingen
+                        </div>
+                      `
+                    : !isVipps && !this.hasSelectedShipping
+                      ? html`
+                          <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
+                            Vennligst velg en fraktmetode for å fullføre betalingen
+                          </div>
+                        `
+                      : ''}
                 `
               : html`
                   <h3 class="section-heading">Velg betalingsmåte</h3>

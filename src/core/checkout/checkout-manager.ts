@@ -535,7 +535,9 @@ export class CheckoutManager extends EventTarget {
       try {
         const opts = await getCartGraphQLOptions(spId)
         const res = await gqlGetAvailablePaymentMethods(opts)
-        this.paymentMethodsCache.set(spId, res)
+        // Never cache empty/failed responses — a transient blip would freeze
+        // the payment grid for the whole page session.
+        if (res) this.paymentMethodsCache.set(spId, res)
         return res
       } finally {
         this.paymentMethodsPromises.delete(spId)
@@ -650,7 +652,9 @@ export class CheckoutManager extends EventTarget {
       const checkoutRes = await gqlCreateCheckout(cartId, opts)
       checkoutId = checkoutRes?.id
     }
-    if (!checkoutId) checkoutId = String(spId)
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
+    }
 
     // Vipps collects the address in its own flow — never push one onto the
     // checkout for it (the backend rejects partial Vipps addresses).
@@ -663,7 +667,12 @@ export class CheckoutManager extends EventTarget {
         ? formData
         : (formData as { email?: string } | undefined)?.email) ||
       this.state?.address?.email ||
-      'customer@example.com'
+      ''
+    if (!emailVal || !emailVal.includes('@')) {
+      // Never mint a payment link with a fabricated email — the order's
+      // receipt/contact would be wrong forever.
+      throw new Error('[CheckoutManager] email is required to start the payment')
+    }
 
     const updateVars: Record<string, unknown> = {
       checkoutId,
@@ -690,12 +699,18 @@ export class CheckoutManager extends EventTarget {
         checkoutId = updated.id
       }
     } catch (err) {
-      if (typeof console !== 'undefined') {
-        console.warn('[CheckoutManager] UpdateCheckout during payment setup failed:', err)
-      }
+      // Redirecting after a failed UpdateCheckout would charge with a stale
+      // (or missing) address/email — abort instead.
+      throw new Error(
+        `[CheckoutManager] could not persist checkout details: ${describeError(err)}`,
+      )
     }
 
-    return { spId, checkoutId: checkoutId || String(spId), emailVal, opts }
+    // (Narrowing: the assignment inside the try widens the type again.)
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
+    }
+    return { spId, checkoutId, emailVal, opts }
   }
 
   /** Redirect the top window to a payment provider URL. */
@@ -1110,7 +1125,9 @@ export class CheckoutManager extends EventTarget {
         console.warn('[CheckoutManager] CreateCheckout before Klarna init failed:', err)
       }
     }
-    if (!checkoutId) checkoutId = String(sponsorId)
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Klarna session')
+    }
 
     // 4. Klarna Payments session via the commerce GraphQL (native flow).
     const address = this.state.address
@@ -1269,7 +1286,9 @@ export class CheckoutManager extends EventTarget {
           console.warn('[CheckoutManager] CreateCheckout before Klarna instant failed:', err)
         }
       }
-      if (!checkoutId) checkoutId = String(sponsorId)
+      if (!checkoutId) {
+        throw new Error('[CheckoutManager] no backend checkout for the Klarna session')
+      }
 
       const address = this.state.address
       const activeCurrency = getGlobalCurrency()
@@ -1439,11 +1458,18 @@ export class CheckoutManager extends EventTarget {
     ctx: KlarnaPendingContext,
     result: KlarnaAuthorizeResult,
   ): Promise<void> {
-    if (typeof sessionStorage !== 'undefined') {
-      // Idempotency guard — first caller wins.
-      if (this.klarnaOrderInFlight) return
-      this.klarnaOrderInFlight = true
-      sessionStorage.removeItem(KLARNA_PENDING_KEY)
+    // Idempotency guard — first caller wins (also without sessionStorage).
+    if (this.klarnaOrderInFlight) return
+    this.klarnaOrderInFlight = true
+    // A token can only be confirmed once — a retry with an already-confirmed
+    // token (network blip after a successful confirm) would create a second
+    // order with autoCapture: double charge.
+    if (
+      typeof sessionStorage !== 'undefined' &&
+      sessionStorage.getItem('vio.klarna.confirmed.v1') === authorizationToken
+    ) {
+      this.klarnaOrderInFlight = false
+      return
     }
     try {
       const checkoutId =
@@ -1468,6 +1494,13 @@ export class CheckoutManager extends EventTarget {
         throw new Error('Klarna order confirmation failed: missing response data')
       }
       const orderData = confirmRes.order || confirmRes
+
+      // Success: only NOW is the pending context consumed (keeping it until
+      // here lets the redirect path retry a confirm that never ran).
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('vio.klarna.confirmed.v1', authorizationToken)
+        sessionStorage.removeItem(KLARNA_PENDING_KEY)
+      }
 
       // Synthesize a checkout state for the confirmation if the live one was
       // lost to a redirect reload.

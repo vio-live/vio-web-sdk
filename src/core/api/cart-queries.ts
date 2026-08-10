@@ -939,6 +939,10 @@ export interface CartQueryOptions {
   apiKey?: string
   /** Sponsor commerce key — goes in the Authorization header. */
   commerceKey?: string
+  /** True when the commerce key came from a resolved sponsor (bootstrap).
+   * False = we fell back to the host apiKey — writes like CreateCart should
+   * NOT proceed with the wrong key (the cart would be orphaned). */
+  sponsorResolved?: boolean
 }
 
 /**
@@ -972,16 +976,21 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
     : { apiKey: undefined, graphQLBase: 'https://graph-ql-dev.vio.live' }
   const anyCfg = cfg as { apiKey?: string; graphQLBase?: string }
   let commerceKey = anyCfg.apiKey
+  let sponsorResolved = false
   if (sponsorId && typeof facade?.findSponsor === 'function') {
     const sponsor = facade.findSponsor(sponsorId) as
       | { commerce?: { apiKey?: string } }
       | undefined
-    if (sponsor?.commerce?.apiKey) commerceKey = sponsor.commerce.apiKey
+    if (sponsor?.commerce?.apiKey) {
+      commerceKey = sponsor.commerce.apiKey
+      sponsorResolved = true
+    }
   }
   return {
     endpoint: anyCfg.graphQLBase || 'https://graph-ql-dev.vio.live',
     apiKey: anyCfg.apiKey,
     commerceKey,
+    sponsorResolved,
   }
 }
 

@@ -202,10 +202,28 @@ export function getGlobalCurrency(): string {
   return 'NOK'
 }
 
+/** Cache of validated locales — hosts can feed anything into vio.locale. */
+const validatedLocales = new Map<string, string>()
+
+/** Return the locale if Intl accepts it, else nb-NO (a host-set `nb_NO` with
+ * an underscore makes toLocaleString throw and blanks the whole render). */
+function safeLocale(locale: string): string {
+  const cached = validatedLocales.get(locale)
+  if (cached) return cached
+  let resolved = 'nb-NO'
+  try {
+    if (Intl.NumberFormat.supportedLocalesOf([locale]).length > 0) resolved = locale
+  } catch {
+    /* structurally invalid tag — keep the fallback */
+  }
+  validatedLocales.set(locale, resolved)
+  return resolved
+}
+
 /** Format a numeric amount + currency using the page locale and symbol map. */
 export function formatPrice(amount: number, currency?: string): string {
   const activeCurrency = currency || getGlobalCurrency()
-  const activeLocale = getGlobalLocale()
+  const activeLocale = safeLocale(getGlobalLocale())
   const activeSymbol = getGlobalSymbol(activeCurrency)
   const formatted = amount
     .toLocaleString(activeLocale, { minimumFractionDigits: 0, maximumFractionDigits: 2 })

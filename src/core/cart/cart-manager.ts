@@ -74,10 +74,42 @@ function normId(val: unknown): string {
 
 export class CartManager extends EventTarget {
   private cartsBySponsor: Map<number, SponsorCartState>
+  /** In-flight CreateCart per sponsor — two quick adds must share ONE backend
+   * cart (two CreateCarts split the items and one silently disappears). */
+  private cartIdPromises = new Map<number, Promise<string | undefined>>()
+  /** Monotonic mutation counter per sponsor + last applied response, so a
+   * slow response can't overwrite the state of a newer one. */
+  private mutationSeq = new Map<number, number>()
+  private appliedSeq = new Map<number, number>()
 
   constructor() {
     super()
     this.cartsBySponsor = this.loadFromStorage()
+  }
+
+  private nextSeq(sponsorId: number): number {
+    const n = (this.mutationSeq.get(sponsorId) ?? 0) + 1
+    this.mutationSeq.set(sponsorId, n)
+    return n
+  }
+
+  /** Apply a backend response only if no newer response was applied already. */
+  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): void {
+    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return
+    this.appliedSeq.set(sponsorId, seq)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.updateFromBackendCart(sponsorId, backendCart as any)
+  }
+
+  /** Surface a cart sync problem to hosts/UI (and the console). */
+  private emitError(message: string, err?: unknown): void {
+    if (typeof console !== 'undefined') console.warn('[CartManager]', message, err ?? '')
+    this.dispatchEvent(new CustomEvent('error', { detail: { message } }))
+    if (typeof document !== 'undefined') {
+      document.dispatchEvent(
+        new CustomEvent('vio:cart-error', { bubbles: true, detail: { message } }),
+      )
+    }
   }
 
   // MARK: - Backend cart sync (Vio Commerce GraphQL)
@@ -97,8 +129,20 @@ export class CartManager extends EventTarget {
     } else {
       cart.shippingCountry = activeCountry
     }
-    if (!cart.cartId) {
+    if (cart.cartId) return cart.cartId
+
+    // Dedupe: concurrent callers share ONE CreateCart per sponsor.
+    const inFlight = this.cartIdPromises.get(sponsorId)
+    if (inFlight) return inFlight
+
+    const creation = (async (): Promise<string | undefined> => {
       const opts = await getCartGraphQLOptions(sponsorId)
+      // Never create a backend cart with the wrong key — a cart signed with
+      // the host apiKey is orphaned once the sponsor key resolves later.
+      if (!opts.sponsorResolved) {
+        this.emitError(`no commerce key resolved for sponsor ${sponsorId} — cart not synced`)
+        return undefined
+      }
       const customerSessionId = getCustomerSessionId()
       try {
         const backendCart = await gqlCreateCart(
@@ -126,10 +170,15 @@ export class CartManager extends EventTarget {
           }
         }
       } catch (err) {
-        if (typeof console !== 'undefined') console.warn('[CartManager] createCart failed:', err)
+        this.emitError('createCart failed', err)
       }
-    }
-    return cart.cartId
+      return cart.cartId
+    })().finally(() => {
+      this.cartIdPromises.delete(sponsorId)
+    })
+
+    this.cartIdPromises.set(sponsorId, creation)
+    return creation
   }
 
   /** Overwrite local cart state with the backend cart response (source of truth). */
@@ -229,6 +278,22 @@ export class CartManager extends EventTarget {
     }
     this.persist()
     this.emit()
+
+    // Replay quantity intents recorded while the line had no backend id yet.
+    if (this.pendingQtyIntents.size > 0) {
+      const currentCart = this.cartsBySponsor.get(sponsorId)
+      for (const [key, qty] of [...this.pendingQtyIntents]) {
+        const line = currentCart?.items.find(
+          (i) => this.intentKey(i.productId, i.variantId) === key && i.cartItemId,
+        )
+        if (line) {
+          this.pendingQtyIntents.delete(key)
+          if (line.quantity !== qty) {
+            this.updateQuantity(line.cartItemId!, sponsorId, qty)
+          }
+        }
+      }
+    }
   }
 
   // MARK: - Mutations
@@ -314,9 +379,12 @@ export class CartManager extends EventTarget {
     this.emit()
 
     const addedItem = existing ?? cart.items[cart.items.length - 1]!
+    const addedLineId = addedItem.id
 
-    // Async sync with the backend cart (fire-and-forget; local state is
-    // optimistic and gets overwritten by the backend response when it lands).
+    // Async sync with the backend cart. Optimistic — but a REJECTED AddItem
+    // reverts the local line (a ghost line means the UI total and the charged
+    // total diverge silently).
+    const seq = this.nextSeq(opts.sponsorId)
     void (async () => {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
@@ -331,17 +399,35 @@ export class CartManager extends EventTarget {
           ]
           const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
           if (resCart && Array.isArray(resCart.line_items)) {
-            this.updateFromBackendCart(opts.sponsorId, resCart)
+            this.applyBackendCart(opts.sponsorId, resCart, seq)
           }
         }
+        // No cartId (no commerce key): the cart stays local-only; checkout is
+        // blocked upstream, so no ghost-charge risk.
       } catch (err) {
-        if (typeof console !== 'undefined') {
-          console.warn('[CartManager] GraphQL AddItem failed:', err)
+        // Revert the optimistic add — subtract what THIS add contributed.
+        const c = this.cartsBySponsor.get(opts.sponsorId)
+        const line = c?.items.find((i) => i.id === addedLineId)
+        if (c && line) {
+          line.quantity -= qty
+          if (line.quantity <= 0) c.items = c.items.filter((i) => i !== line)
+          if (c.items.length === 0) this.cartsBySponsor.delete(opts.sponsorId)
+          this.persist()
+          this.emit()
         }
+        this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
 
     return addedItem
+  }
+
+  /** Quantity intents for lines whose backend id hasn't arrived yet — replayed
+   * when the AddItem response reconciles (keyed by product::variant). */
+  private pendingQtyIntents = new Map<string, number>()
+
+  private intentKey(productId: unknown, variantId: unknown): string {
+    return `${normId(productId)}::${normId(variantId)}`
   }
 
   updateQuantity(lineItemId: string, sponsorId: number, quantity: number): void {
@@ -349,7 +435,7 @@ export class CartManager extends EventTarget {
     if (!cart) return
     const item = cart.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
     if (!item) return
-    const targetItemId = item.cartItemId ?? item.id
+    const targetItemId = item.cartItemId
     if (quantity <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
     } else {
@@ -359,25 +445,33 @@ export class CartManager extends EventTarget {
     this.persist()
     this.emit()
 
-    if (cart.cartId) {
-      const backendCartId = cart.cartId
-      void (async () => {
-        try {
-          const gqlOpts = await getCartGraphQLOptions(sponsorId)
-          const resCart =
-            quantity <= 0
-              ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
-              : await gqlUpdateItem(backendCartId, targetItemId, null, quantity, gqlOpts)
-          if (resCart && Array.isArray(resCart.line_items)) {
-            this.updateFromBackendCart(sponsorId, resCart)
-          }
-        } catch (err) {
-          if (typeof console !== 'undefined') {
-            console.warn('[CartManager] GraphQL Update/DeleteItem failed:', err)
-          }
-        }
-      })()
+    if (!cart.cartId) return
+
+    // The line hasn't been assigned its backend id yet (AddItem in flight):
+    // sending the local id would 404. Record the intent — it's replayed as
+    // soon as the reconcile lands.
+    if (!targetItemId) {
+      this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), quantity)
+      return
     }
+
+    const backendCartId = cart.cartId
+    const seq = this.nextSeq(sponsorId)
+    void (async () => {
+      try {
+        const gqlOpts = await getCartGraphQLOptions(sponsorId)
+        const resCart =
+          quantity <= 0
+            ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
+            : await gqlUpdateItem(backendCartId, targetItemId, null, quantity, gqlOpts)
+        if (resCart && Array.isArray(resCart.line_items)) {
+          this.applyBackendCart(sponsorId, resCart, seq)
+        }
+      } catch (err) {
+        this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
+        void this.fetchCartFromBackend(sponsorId)
+      }
+    })()
   }
 
   removeItem(lineItemId: string, sponsorId: number): void {

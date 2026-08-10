@@ -52,8 +52,13 @@ export class VioProductDetail extends LitElement {
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
   /** Payment method names enabled for the sponsor (backend-configured).
-   * Empty = not loaded yet → all buy buttons render (graceful default). */
-  @state() private availableMethods: string[] = []
+   * null = not loaded yet → all buy buttons render; [] = none enabled. */
+  @state() private availableMethods: string[] | null = null
+  /** Race guard: only the latest fetch may write state (two quick taps on
+   * different cards would otherwise let the slow response win). */
+  private fetchSeq = 0
+  /** Memoised option maps per variant object (recomputed per product). */
+  private optMapCache = new WeakMap<object, { map: Record<string, string>; titleParts: string[] }>()
   /** Pre-prepared Apple Pay handle — show() fires synchronously on tap. */
   private applePayHandle: { show: () => Promise<void> } | null = null
 
@@ -525,6 +530,10 @@ export class VioProductDetail extends LitElement {
       this.product = null
       return
     }
+    // Race guard: two quick taps on different cards → only the LATEST
+    // request may write state (else the slow response paints product A
+    // under product B's id).
+    const seq = ++this.fetchSeq
     this.isLoading = true
     this.fetchError = ''
 
@@ -553,6 +562,8 @@ export class VioProductDetail extends LitElement {
       }
     }
 
+    if (seq !== this.fetchSeq) return // superseded by a newer open
+
     if (lastError) {
       this.fetchError = lastError instanceof Error ? lastError.message : String(lastError)
       console.warn('[VioDetail] fetch failed after retries →', this.fetchError)
@@ -560,7 +571,12 @@ export class VioProductDetail extends LitElement {
       return
     }
 
+    this.optMapCache = new WeakMap()
     this.product = products?.[0] ?? null
+    if (!this.product) {
+      // Empty response without an exception — never leave a blank open modal.
+      this.fetchError = 'Fant ikke produktet.'
+    }
 
     if (this.product) {
       // Auto-select the first value of each option (so qty + add fire correctly
@@ -602,21 +618,22 @@ export class VioProductDetail extends LitElement {
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
       } else {
-        this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+        this.availableMethods = null
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioProductDetail] Failed to load payment methods:', err)
       }
-      this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+      // Unknown (not "none") — render everything rather than nothing.
+      this.availableMethods = null
     }
   }
 
+  /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
-    return (
-      this.availableMethods.length === 0 ||
-      this.availableMethods.some((m) => names.includes(m.toLowerCase()))
-    )
+    if (this.availableMethods === null) return true
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '')
+    return this.availableMethods.some((m) => names.some((n) => norm(m) === norm(n)))
   }
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -630,6 +647,12 @@ export class VioProductDetail extends LitElement {
     v: ProductVariant | any,
     productOptions: ProductOption[] | undefined,
   ): { map: Record<string, string>; titleParts: string[] } {
+    // Memoised per variant object — this runs per variant × option × render
+    // (a 20-variant product recomputed it ~700× per render otherwise).
+    if (v && typeof v === 'object') {
+      const cached = this.optMapCache.get(v)
+      if (cached) return cached
+    }
     const map: Record<string, string> = {}
     if (!v) return { map, titleParts: [] }
 
@@ -711,7 +734,9 @@ export class VioProductDetail extends LitElement {
       })
     }
 
-    return { map, titleParts }
+    const result = { map, titleParts }
+    if (v && typeof v === 'object') this.optMapCache.set(v, result)
+    return result
   }
 
   /** Option values a variant represents (map values ∪ title parts). */

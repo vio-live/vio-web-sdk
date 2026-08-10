@@ -28,6 +28,9 @@ class VioFacade {
   private commerceClients = new Map<number, CommerceClient>()
   private bootstrapPromise: Promise<BootstrapResponse> | null = null
   private cachedBootstrap: BootstrapResponse | null = null
+  /** Last bootstrap failure — short backoff so cart mutations don't hammer a
+   * dead endpoint on every call. */
+  private bootstrapFailedAt = 0
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
@@ -41,6 +44,9 @@ class VioFacade {
     this.commerceClients.clear()
     this.bootstrapPromise = null
     this.cachedBootstrap = null
+    this.bootstrapFailedAt = 0
+    // A new key/environment invalidates the per-sponsor payment methods too.
+    this.checkoutManager?.clearPaymentMethodsCache()
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
   }
@@ -80,11 +86,22 @@ class VioFacade {
   async bootstrap(): Promise<BootstrapResponse> {
     if (this.cachedBootstrap) return this.cachedBootstrap
     if (this.bootstrapPromise) return this.bootstrapPromise
+    // Failure backoff: don't re-fire a request for 5s after a failure —
+    // every cart mutation awaits bootstrap, so a dead endpoint would
+    // otherwise add a failed round-trip per click.
+    if (this.bootstrapFailedAt && Date.now() - this.bootstrapFailedAt < 5_000) {
+      throw new Error('[Vio] bootstrap recently failed — backing off')
+    }
     this.bootstrapPromise = this.api
       .bootstrap()
       .then((res) => {
         this.cachedBootstrap = res
+        this.bootstrapFailedAt = 0
         return res
+      })
+      .catch((err) => {
+        this.bootstrapFailedAt = Date.now()
+        throw err
       })
       .finally(() => {
         this.bootstrapPromise = null

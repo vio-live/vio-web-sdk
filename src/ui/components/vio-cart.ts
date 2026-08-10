@@ -36,8 +36,8 @@ export class VioCart extends LitElement {
   /** True when Apple Pay is usable (Safari + device + Stripe configured). */
   @state() private applePayAvailable = false
   /** Payment method names enabled for the sponsor (backend-configured).
-   * Empty = not loaded yet → all buttons render (graceful default). */
-  @state() private availableMethods: string[] = []
+   * null = not loaded yet → all buttons render; [] = none enabled. */
+  @state() private availableMethods: string[] | null = null
   /** Set after an Apple Pay express purchase — switches the drawer to the
    * confirmation screen (so the rest of the cart/checkout is not shown). */
   @state() private confirmedOrder: {
@@ -64,7 +64,7 @@ export class VioCart extends LitElement {
     this.carts = detail.cartsBySponsor
     this.itemCount = detail.itemCount
     // Cart changes fire often — only fetch methods if we don't have them yet.
-    if (this.availableMethods.length === 0) {
+    if (this.availableMethods === null) {
       void this.loadAvailablePaymentMethods()
     }
   }
@@ -447,23 +447,24 @@ export class VioCart extends LitElement {
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
       } else {
-        this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+        this.availableMethods = null
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCart] Failed to load payment methods:', err)
       }
-      this.availableMethods = ['Stripe', 'Klarna', 'Vipps']
+      // Unknown (not "none") — render everything rather than nothing.
+      this.availableMethods = null
     } finally {
       this.loadingPaymentMethods = false
     }
   }
 
+  /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(name: string): boolean {
-    return (
-      this.availableMethods.length === 0 ||
-      this.availableMethods.some((m) => m.toLowerCase() === name)
-    )
+    if (this.availableMethods === null) return true
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '')
+    return this.availableMethods.some((m) => norm(m) === norm(name))
   }
 
   override updated(changed: Map<string, unknown>): void {

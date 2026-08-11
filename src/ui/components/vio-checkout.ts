@@ -1684,7 +1684,7 @@ export class VioCheckout extends LitElement {
               : html`
                   <h3 class="section-heading">Velg betalingsmåte</h3>
                   <div class="payment-grid">
-                    ${this.applePayAvailable
+                    ${this.methodEnabled('apple-pay') && this.applePayAvailable
                       ? html`
                           <button
                             class="payment-btn primary"
@@ -1722,7 +1722,7 @@ export class VioCheckout extends LitElement {
                           </button>
                         `
                       : ''}
-                    ${!this.applePayAvailable
+                    ${this.methodEnabled('apple-pay') && !this.applePayAvailable
                       ? html`
                           <div class="apple-pay-note">
                              Pay krever Safari på iOS eller macOS med Apple Pay konfigurert.

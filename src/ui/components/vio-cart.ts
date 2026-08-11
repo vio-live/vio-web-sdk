@@ -701,7 +701,7 @@ export class VioCart extends LitElement {
                     ${formatPrice(this.totalAcrossSponsors, this.primaryCurrency)}
                   </span>
                 </div>
-                ${this.applePayAvailable
+                ${this.methodEnabled('apple-pay') && this.applePayAvailable
                   ? html`
                       <button
                         class="applepay-btn"

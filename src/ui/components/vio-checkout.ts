@@ -49,6 +49,8 @@ export class VioCheckout extends LitElement {
   @state() private orderConfirmed = false
   @state() private confirmedMethod: PaymentMethod | null = null
   @state() private paymentError: string | null = null
+  /** Neutral (non-error) status line: "verifying payment…" / "still processing". */
+  @state() private paymentNotice: string | null = null
   /** Snapshot of the placed order, for the confirmation screen. */
   @state() private confirmedOrder: {
     items: CartLineItem[]
@@ -116,6 +118,7 @@ export class VioCheckout extends LitElement {
       this.confirmedMethod = null
       this.confirmedOrder = null
       this.paymentError = null
+      this.paymentNotice = null
       this.express = false
       this.availableMethods = null
       this.unmountKlarna()
@@ -490,6 +493,16 @@ export class VioCheckout extends LitElement {
       color: var(--vio-color-accent, #c14a3b);
       text-align: center;
     }
+    .payment-notice {
+      grid-column: 1 / -1;
+      padding: 12px 16px;
+      background: #f4f4f2;
+      border: 1px solid var(--vio-color-border, #ddd);
+      border-radius: 8px;
+      font-size: 13px;
+      color: var(--vio-color-text, #1a1a1a);
+      text-align: center;
+    }
     /* "Betal" CTA — sits full-width below the method grid once a method is
        picked. Reuses .payment-btn.primary (its grid-column spans the row). */
     .complete-cta {
@@ -648,6 +661,17 @@ export class VioCheckout extends LitElement {
     'paid', 'completed', 'complete', 'success', 'succeeded', 'confirmed', 'captured',
   ])
 
+  /** Statuses that mean the payment definitively did NOT go through. */
+  private static readonly FAILED_STATUSES = new Set([
+    'failed', 'cancelled', 'canceled', 'rejected', 'declined', 'expired', 'aborted',
+    'terminated',
+  ])
+
+  /** Waits between GetCheckout attempts — PSP webhooks (Vipps especially) can
+   * land seconds after the shopper is redirected back, so a single immediate
+   * check misreads a successful charge as unpaid. ~20s total. */
+  private static readonly RETURN_VERIFY_DELAYS_MS = [0, 2000, 4000, 6000, 8000]
+
   private async checkReturnPaymentStatus(): Promise<void> {
     if (typeof window === 'undefined' || !window.location || !window.location.search) return
     try {
@@ -674,21 +698,41 @@ export class VioCheckout extends LitElement {
       if (vioPayment === 'success') {
         // The URL is forgeable (and some PSPs reuse one return URL for
         // cancellations) — the BACKEND decides whether this checkout is paid.
-        let paid = false
-        let checkout: { status?: string; origin_payment_id?: string } | null = null
+        // Webhooks can lag the redirect, so poll a few times before deciding;
+        // a genuinely-pending checkout gets a neutral "processing" notice, never
+        // a fabricated success.
+        let outcome: 'paid' | 'failed' | 'pending' = 'pending'
+        let sawStatus = false
         if (checkoutId) {
-          try {
-            checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
-            const status = String(checkout?.status ?? '').toLowerCase()
-            paid = VioCheckout.PAID_STATUSES.has(status) || Boolean(checkout?.origin_payment_id)
-          } catch (err) {
-            if (typeof console !== 'undefined') {
-              console.warn('[VioCheckout] return verification failed:', err)
+          this.open = true
+          this.paymentNotice = 'Bekrefter betalingen…'
+          for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
+            if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+            try {
+              const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
+              const status = String(checkout?.status ?? '').toLowerCase()
+              sawStatus = true
+              if (
+                VioCheckout.PAID_STATUSES.has(status) ||
+                Boolean(checkout?.origin_payment_id)
+              ) {
+                outcome = 'paid'
+                break
+              }
+              if (VioCheckout.FAILED_STATUSES.has(status)) {
+                outcome = 'failed'
+                break
+              }
+            } catch (err) {
+              if (typeof console !== 'undefined') {
+                console.warn('[VioCheckout] return verification attempt failed:', err)
+              }
             }
           }
+          this.paymentNotice = null
         }
 
-        if (paid) {
+        if (outcome === 'paid') {
           if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
           this.confirmedOrder = {
             items: [],
@@ -706,8 +750,17 @@ export class VioCheckout extends LitElement {
               detail: { method: vioMethod, sponsorId, orderId: checkoutId },
             }),
           )
+        } else if (outcome === 'failed') {
+          this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
+          this.open = true
+        } else if (sawStatus) {
+          // Backend reachable but the checkout is still processing (webhook not
+          // landed yet). Fail-closed: keep the cart, set expectations.
+          this.paymentNotice =
+            'Betalingen behandles fortsatt. Du får ordrebekreftelse på e-post når den er gjennomført. Handlekurven er uendret.'
+          this.open = true
         } else {
-          // Not verifiable as paid: keep the cart, tell the user.
+          // Never got an answer from the backend: keep the cart, tell the user.
           this.paymentError =
             'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
           this.open = true
@@ -999,6 +1052,7 @@ export class VioCheckout extends LitElement {
   private async onKlarnaAuthorize(): Promise<void> {
     if (!this.klarnaHandle || this.klarnaAuthorizing) return
     this.paymentError = null
+    this.paymentNotice = null
     this.klarnaAuthorizing = true
     try {
       // Resolves once the order is created (payment-complete) or surfaces a
@@ -1033,6 +1087,7 @@ export class VioCheckout extends LitElement {
 
   private async onPay(method: PaymentMethod): Promise<void> {
     this.paymentError = null
+    this.paymentNotice = null
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1381,6 +1436,9 @@ export class VioCheckout extends LitElement {
             `
           : ''}
         ${this.renderKlarnaPanel()}
+        ${this.paymentNotice
+          ? html`<div class="payment-notice">${this.paymentNotice}</div>`
+          : ''}
         ${this.paymentError
           ? html`<div class="payment-error">${this.paymentError}</div>`
           : ''}
@@ -1673,6 +1731,9 @@ export class VioCheckout extends LitElement {
                       : ''}
                   </div>
                 `}
+            ${this.paymentNotice
+              ? html`<div class="payment-notice">${this.paymentNotice}</div>`
+              : ''}
             ${this.paymentError
               ? html`<div class="payment-error">${this.paymentError}</div>`
               : ''}

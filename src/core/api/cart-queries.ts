@@ -1159,6 +1159,48 @@ export async function createPaymentStripe(
   return json?.data?.Payment?.CreatePaymentStripe
 }
 
+export const CREATE_PAYMENT_APPLE_PAY_MUTATION = `
+mutation CreatePaymentApplePay($checkoutId: String!) {
+  Payment {
+    CreatePaymentApplePay(checkout_id: $checkoutId) {
+      gateway
+      gateway_merchant_id
+    }
+  }
+}
+`
+
+/** Register the Apple Pay payment on the backend checkout. Returns the gateway
+ * info (gateway + gateway_merchant_id) the sheet/session should use. */
+export async function createPaymentApplePay(
+  variables: Record<string, unknown>,
+  options?: CartQueryOptions,
+): Promise<any> {
+  const json = await executeCartGraphQL(CREATE_PAYMENT_APPLE_PAY_MUTATION, variables, options)
+  return json?.data?.Payment?.CreatePaymentApplePay
+}
+
+export const CONFIRM_PAYMENT_APPLE_PAY_MUTATION = `
+mutation ConfirmPaymentApplePay($checkoutId: String!, $applePayToken: String!, $email: String, $shippingAddress: ApplePayAddressInput) {
+  Payment {
+    ConfirmPaymentApplePay(checkout_id: $checkoutId, apple_pay_token: $applePayToken, email: $email, shipping_address: $shippingAddress) {
+      order_id
+      status
+    }
+  }
+}
+`
+
+/** Confirm (charge) the Apple Pay payment server-side. Called from the sheet's
+ * authorize callback BEFORE completing it — the backend does the actual charge. */
+export async function confirmPaymentApplePay(
+  variables: Record<string, unknown>,
+  options?: CartQueryOptions,
+): Promise<any> {
+  const json = await executeCartGraphQL(CONFIRM_PAYMENT_APPLE_PAY_MUTATION, variables, options)
+  return json?.data?.Payment?.ConfirmPaymentApplePay
+}
+
 export const CREATE_PAYMENT_VIPPS_MUTATION = `
 mutation CreatePaymentVipps($checkoutId: String!, $email: String!, $returnUrl: String!) {
   Payment {

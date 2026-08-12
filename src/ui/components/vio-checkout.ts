@@ -1088,6 +1088,12 @@ export class VioCheckout extends LitElement {
   private async onPay(method: PaymentMethod): Promise<void> {
     this.paymentError = null
     this.paymentNotice = null
+    // Apple Pay collects address, shipping AND email inside its own sheet —
+    // skip the manual form validation entirely.
+    if (method === 'apple-pay') {
+      void this.onApplePay()
+      return
+    }
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1106,10 +1112,6 @@ export class VioCheckout extends LitElement {
         this.paymentError = 'Vennligst velg en fraktmetode.'
         return
       }
-    }
-    if (method === 'apple-pay') {
-      void this.onApplePay()
-      return
     }
     Vio.checkout.selectPaymentMethod(method)
     // Stripe / Vipps: hosted payment pages — mint the link and redirect. The

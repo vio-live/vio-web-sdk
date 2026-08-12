@@ -164,6 +164,22 @@ export async function isKlarnaPaymentsAvailable(): Promise<boolean> {
  * Init Klarna Payments with a server-minted client_token and mount the widget.
  * Returns a handle to (re)load categories and to authorize.
  */
+/** Pick the direct-payment category ("Betal nå") when the session offers one —
+ * the demo sells physical goods paid up front, not financing. Ported from
+ * Alan's round-5 improvement. */
+export function findPayNowCategory(categories: KlarnaPaymentsCategory[]): string | null {
+  if (!Array.isArray(categories) || categories.length === 0) return null
+  const byId = (re: RegExp) => categories.find((c) => c?.identifier && re.test(c.identifier))
+  const byName = (re: RegExp) => categories.find((c) => c?.name && re.test(c.name))
+  const cat =
+    categories.find((c) => c?.identifier === 'pay_now') ??
+    byName(/betal\s*n[åa]|pay\s*now/i) ??
+    byId(/pay_now|direct_debit|direct_bank_transfer|pay_in_full|klarna_pay_now/i) ??
+    byName(/direkte|bank|kort|straks|sofort/i) ??
+    categories.find((c) => c?.identifier && !/pay_later|pay_over_time|slice_it/.test(c.identifier))
+  return cat?.identifier ?? null
+}
+
 export async function createKlarnaPaymentsWidget(
   input: KlarnaPaymentsWidgetInput,
 ): Promise<KlarnaPaymentsWidget> {
@@ -171,7 +187,10 @@ export async function createKlarnaPaymentsWidget(
   Klarna.Payments.init({ client_token: input.clientToken })
 
   let selected =
-    input.category ?? input.categories[0]?.identifier ?? 'pay_later'
+    input.category ??
+    findPayNowCategory(input.categories) ??
+    input.categories[0]?.identifier ??
+    'pay_now'
 
   return {
     categories: input.categories,

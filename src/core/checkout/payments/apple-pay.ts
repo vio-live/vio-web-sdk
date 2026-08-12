@@ -45,6 +45,13 @@ export interface ApplePayConfig {
    * the total live (Apple Pay native shipping).
    */
   shippingOptions?: Array<{ id: string; label: string; detail?: string; amount: number }>
+  /**
+   * Charge hook, run INSIDE the sheet's authorize event with the tokenized
+   * payment. Must perform the real (backend) charge and throw on failure —
+   * only then does the sheet close with success; a throw closes it with
+   * failure. Its resolved value is surfaced as `ApplePayResult.confirmation`.
+   */
+  onAuthorize?: (result: ApplePayResult) => Promise<unknown>
 }
 
 export interface ApplePayResult {
@@ -61,9 +68,17 @@ export interface ApplePayResult {
     state?: string
     country?: string
   }
+  /** Whatever `onAuthorize` resolved with (e.g. backend order_id/status). */
+  confirmation?: unknown
 }
 
 let stripeJsPromise: Promise<unknown> | null = null
+
+/** Warm the Stripe.js load ahead of time (safe to call anywhere, never throws). */
+export function preloadStripeJs(): void {
+  if (typeof window === 'undefined') return
+  void loadStripeJs().catch(() => {})
+}
 
 /** Dynamically load Stripe.js exactly once. */
 function loadStripeJs(): Promise<unknown> {
@@ -177,7 +192,7 @@ export async function checkApplePayAvailability(config: ApplePayConfig): Promise
  * The backend must then confirm a Stripe PaymentIntent with this
  * payment method id (server-side step, not handled here).
  */
-export async function showApplePaySheet(config: ApplePayConfig): Promise<ApplePayResult> {
+export async function showApplePaySheet(config: ApplePayConfig): Promise<ApplePayResult | null> {
   if (!config.publishableKey) {
     throw new Error('[VioApplePay] publishableKey is required')
   }
@@ -187,8 +202,13 @@ export async function showApplePaySheet(config: ApplePayConfig): Promise<ApplePa
   if (!canMake?.applePay) {
     throw new Error('[VioApplePay] Apple Pay is not available on this device')
   }
-  return new Promise<ApplePayResult>((resolve, reject) => {
+  return new Promise<ApplePayResult | null>((resolve, reject) => {
     let settled = false
+    // Apple requires the address-change event to be answered or the sheet stalls.
+    pr.on('shippingaddresschange', (raw: unknown) => {
+      const ev = raw as { updateWith: (u: Record<string, unknown>) => void }
+      ev.updateWith({ status: 'success' })
+    })
     pr.on('paymentmethod', (raw: unknown) => {
       const ev = raw as {
         paymentMethod: { id: string }
@@ -199,21 +219,29 @@ export async function showApplePaySheet(config: ApplePayConfig): Promise<ApplePa
         complete: (status: 'success' | 'fail') => void
       }
       settled = true
-      // We complete with 'success' optimistically. In a real flow the
-      // backend confirms the PaymentIntent first, and only then we'd
-      // call `ev.complete('success')` (or 'fail' on error).
-      ev.complete('success')
-      resolve({
+      const result: ApplePayResult = {
         paymentMethodId: ev.paymentMethod.id,
         payerName: ev.payerName,
         payerEmail: ev.payerEmail,
         payerPhone: ev.payerPhone,
         shippingAddress: ev.shippingAddress,
-      })
+      }
+      // Fail-closed: the backend charge (onAuthorize) runs BEFORE the sheet
+      // closes. Success only if the charge succeeded.
+      void (async () => {
+        try {
+          const confirmation = config.onAuthorize ? await config.onAuthorize(result) : undefined
+          ev.complete('success')
+          resolve({ ...result, confirmation })
+        } catch (err) {
+          ev.complete('fail')
+          reject(err)
+        }
+      })()
     })
     pr.on('cancel', () => {
-      if (settled) return
-      reject(new Error('[VioApplePay] User cancelled Apple Pay'))
+      // User closed the sheet — not an error.
+      if (!settled) resolve(null)
     })
     pr.show()
   })
@@ -266,6 +294,10 @@ export async function prepareApplePay(config: ApplePayConfig): Promise<PreparedA
         })
       })
     }
+    pr.on('shippingaddresschange', (raw: unknown) => {
+      const ev = raw as { updateWith: (u: Record<string, unknown>) => void }
+      ev.updateWith({ status: 'success' })
+    })
     const result = await pr.canMakePayment()
     if (!result?.applePay) return unavailable('[VioApplePay] Apple Pay not available')
     return {
@@ -283,14 +315,23 @@ export async function prepareApplePay(config: ApplePayConfig): Promise<PreparedA
               complete: (status: 'success' | 'fail') => void
             }
             settled = true
-            ev.complete('success')
-            resolve({
+            const res: ApplePayResult = {
               paymentMethodId: ev.paymentMethod.id,
               payerName: ev.payerName,
               payerEmail: ev.payerEmail,
               payerPhone: ev.payerPhone,
               shippingAddress: ev.shippingAddress,
-            })
+            }
+            void (async () => {
+              try {
+                const confirmation = config.onAuthorize ? await config.onAuthorize(res) : undefined
+                ev.complete('success')
+                resolve({ ...res, confirmation })
+              } catch (err) {
+                ev.complete('fail')
+                reject(err)
+              }
+            })()
           })
           pr.on('cancel', () => {
             if (!settled) reject(new Error('[VioApplePay] User cancelled Apple Pay'))

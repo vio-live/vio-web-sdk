@@ -16,6 +16,7 @@ import { Configuration } from '../configuration.js'
 import {
   checkApplePayAvailability,
   prepareApplePay,
+  preloadStripeJs,
   showApplePaySheet,
   type ApplePayResult,
 } from './payments/apple-pay.js'
@@ -36,7 +37,9 @@ import {
   type KlarnaPaymentsCategory,
 } from './payments/klarna-payments.js'
 import {
+  confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
+  createPaymentApplePay as gqlCreatePaymentApplePay,
   createPaymentStripe as gqlCreatePaymentStripe,
   createPaymentVipps as gqlCreatePaymentVipps,
   executeCartGraphQL,
@@ -412,6 +415,12 @@ export interface KlarnaPaymentsHandle {
 export class CheckoutManager extends EventTarget {
   private state: CheckoutState | null = null
   private applePayAvailableCache: boolean | null = null
+
+  /** Gateway hints learned from CreatePaymentApplePay (per session). The
+   * backend's gateway_merchant_id may be a publishable key (pk_…) or a Stripe
+   * Connect account (acct_…) — stored defensively by prefix. */
+  private applePayPublishableKey: string | null = null
+  private applePayConnectedAccount: string | null = null
   private klarnaAvailableCache: boolean | null = null
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
@@ -424,6 +433,9 @@ export class CheckoutManager extends EventTarget {
 
   constructor(private readonly cartManager: CartManager) {
     super()
+    // Warm Stripe.js early: Apple Pay's sheet must open synchronously inside
+    // the tap gesture, so the library can't be lazy-loaded at click time.
+    preloadStripeJs()
   }
 
   open(sponsorId: number): CheckoutState {
@@ -849,9 +861,12 @@ export class CheckoutManager extends EventTarget {
     country = 'NO',
   ): Promise<{ available: boolean; show: () => Promise<void> }> {
     const cfg = Configuration.isInitialized ? Configuration.get() : null
-    if (!cfg?.stripePublishableKey) return { available: false, show: async () => {} }
+    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    if (!publishableKey) return { available: false, show: async () => {} }
     const prepared = await prepareApplePay({
-      publishableKey: cfg.stripePublishableKey,
+      publishableKey,
+      connectedAccount:
+        this.applePayConnectedAccount ?? this.findStripeConnectAccount() ?? undefined,
       amount: toSmallestUnit(amount, currency),
       currency,
       country,
@@ -863,6 +878,16 @@ export class CheckoutManager extends EventTarget {
         detail: o.description,
         amount: o.price,
       })),
+      // The real backend charge — sponsor resolved at authorize-time (the
+      // product-detail button calls checkout.open() before show()).
+      onAuthorize: (raw) => {
+        const spId =
+          this.state?.sponsorId ?? [...this.cartManager.getAllCarts().keys()][0]
+        if (spId == null) {
+          return Promise.reject(new Error('[VioCheckout] no sponsor for Apple Pay'))
+        }
+        return this.buildApplePayAuthorize(spId)(raw)
+      },
     })
     return {
       available: prepared.available,
@@ -903,11 +928,17 @@ export class CheckoutManager extends EventTarget {
     amount: number,
     currency: string,
     country = 'NO',
+    sponsorId?: number,
   ): Promise<{ available: boolean; show: () => Promise<ApplePayResult | null> }> {
     const cfg = Configuration.isInitialized ? Configuration.get() : null
-    if (!cfg?.stripePublishableKey) return { available: false, show: async () => null }
+    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    if (!publishableKey) return { available: false, show: async () => null }
+    const spId =
+      sponsorId ?? this.state?.sponsorId ?? [...this.cartManager.getAllCarts().keys()][0]
     const prepared = await prepareApplePay({
-      publishableKey: cfg.stripePublishableKey,
+      publishableKey,
+      connectedAccount:
+        this.applePayConnectedAccount ?? this.findStripeConnectAccount() ?? undefined,
       amount: toSmallestUnit(amount, currency),
       currency,
       country,
@@ -920,6 +951,8 @@ export class CheckoutManager extends EventTarget {
         detail: o.description,
         amount: o.price,
       })),
+      // The real backend charge, run inside the sheet's authorize event.
+      ...(spId != null ? { onAuthorize: this.buildApplePayAuthorize(spId) } : {}),
     })
     return {
       available: prepared.available,
@@ -936,31 +969,118 @@ export class CheckoutManager extends EventTarget {
     }
   }
 
+  /** The charge closure run inside the Apple Pay sheet's authorize event —
+   * shared by the checkout button and the cart's express button. Fail-closed:
+   * any failure throws and the sheet closes with failure, nothing confirmed. */
+  private buildApplePayAuthorize(spId: number): (raw: ApplePayResult) => Promise<unknown> {
+    return async (raw: ApplePayResult): Promise<unknown> => {
+      let checkoutId = this.state?.checkoutId
+      if (!checkoutId) {
+        const created = await this.createCheckout(spId)
+        checkoutId = created?.id ?? this.state?.checkoutId
+      }
+      if (!checkoutId) {
+        throw new Error('[VioCheckout] could not obtain a checkout for Apple Pay')
+      }
+      const email = raw.payerEmail || this.state?.address?.email || ''
+      // Record the method (+ email) on the checkout. Non-fatal: Confirm carries
+      // the email too, and the charge is what decides the outcome.
+      try {
+        await this.updateCheckout(
+          { checkoutId, paymentMethod: 'Apple Pay', ...(email ? { email } : {}) },
+          spId,
+        )
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[VioCheckout] updateCheckout before Apple Pay confirm failed:', err)
+        }
+      }
+      const gqlOpts = await getCartGraphQLOptions(spId)
+      const createRes = await gqlCreatePaymentApplePay({ checkoutId }, gqlOpts)
+      const gatewayId = String(createRes?.gateway_merchant_id ?? '')
+      if (gatewayId.startsWith('pk_')) this.applePayPublishableKey = gatewayId
+      else if (gatewayId.startsWith('acct_')) this.applePayConnectedAccount = gatewayId
+
+      const addr = (raw.shippingAddress ?? {}) as Record<string, unknown>
+      const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+      const lines = Array.isArray(addr.addressLine) ? (addr.addressLine as string[]) : []
+      const fullName = str(addr.name) || raw.payerName || ''
+      const shippingAddress = {
+        address1: lines[0] || str(addr.line1) || '',
+        address2: lines[1] || str(addr.line2) || '',
+        city: str(addr.locality) || str(addr.city) || '',
+        company: '',
+        country: str(addr.country) || '',
+        country_code: str(addr.countryCode) || getGlobalCountryCode(),
+        first_name: str(addr.givenName) || fullName.split(' ')[0] || '',
+        last_name: str(addr.familyName) || fullName.split(' ').slice(1).join(' ') || '',
+        phone: str(addr.phone) || str(addr.phoneNumber) || raw.payerPhone || '',
+        phone_code: '',
+        province: str(addr.administrativeArea) || str(addr.state) || '',
+        province_code: '',
+        zip: str(addr.postalCode) || str(addr.postal_code) || '',
+      }
+
+      const confirmRes = await gqlConfirmPaymentApplePay(
+        { checkoutId, applePayToken: raw.paymentMethodId, email, shippingAddress },
+        gqlOpts,
+      )
+      const status = String(confirmRes?.status ?? '').toLowerCase()
+      if (!confirmRes || CheckoutManager.APPLE_PAY_FAILED_STATUSES.has(status)) {
+        throw new Error(
+          `[VioCheckout] Apple Pay confirmation failed (status: ${confirmRes?.status ?? 'none'})`,
+        )
+      }
+      return { orderId: confirmRes?.order_id, status: confirmRes?.status }
+    }
+  }
+
+  /** Backend statuses from ConfirmPaymentApplePay that mean the charge did
+   * NOT go through — anything here fails the sheet (fail-closed). */
+  private static readonly APPLE_PAY_FAILED_STATUSES = new Set([
+    'failed', 'declined', 'rejected', 'cancelled', 'canceled', 'error', 'expired',
+  ])
+
   /**
-   * Launches the Apple Pay sheet. Resolves with the Stripe PaymentMethod
-   * id once the user authorises — the backend then confirms the
-   * PaymentIntent with that id to actually capture the funds.
+   * Launches the Apple Pay sheet and charges server-side INSIDE the sheet's
+   * authorize event (round-5 wiring, contract from the commerce backend):
+   *   1. ensure a backend checkout exists (create if missing)
+   *   2. UpdateCheckout(paymentMethod: "Apple Pay" + payer email)
+   *   3. CreatePaymentApplePay → gateway hints (pk_/acct_ stored by prefix)
+   *   4. ConfirmPaymentApplePay(token, email, shipping) → the REAL charge;
+   *      a failed/absent confirmation throws → the sheet closes with failure
+   * Resolves null if the user closes the sheet. On success, dispatches
+   * `payment-complete` with the backend order id in `result.confirmation`.
    */
   async startApplePay(options: {
     country?: string
     label?: string
-  } = {}): Promise<ApplePayResult> {
+    sponsorId?: number
+  } = {}): Promise<ApplePayResult | null> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
-    const cfg = Configuration.get()
-    if (!cfg.stripePublishableKey) {
+    const spId = options.sponsorId ?? this.state.sponsorId
+    const cfg = Configuration.isInitialized ? Configuration.get() : null
+    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    if (!publishableKey) {
       throw new Error(
         '[VioCheckout] No Stripe publishable key configured. Pass `stripePublishableKey` to Vio.init({ ... }).',
       )
     }
     const amount = toSmallestUnit(this.state.subtotal, this.state.currency)
+    const onAuthorize = this.buildApplePayAuthorize(spId)
+
     const result = await showApplePaySheet({
-      publishableKey: cfg.stripePublishableKey,
-      connectedAccount: this.findStripeConnectAccount() ?? undefined,
+      publishableKey,
+      connectedAccount:
+        this.applePayConnectedAccount ?? this.findStripeConnectAccount() ?? undefined,
       amount,
       currency: this.state.currency,
       country: options.country ?? 'NO',
       label: options.label ?? 'Vio',
+      onAuthorize,
     })
+    if (!result) return null // user closed the sheet — no event, nothing charged
+
     this.selectPaymentMethod('apple-pay')
     this.dispatchEvent(
       new CustomEvent<PaymentCompleteDetail>('payment-complete', {
@@ -1081,7 +1201,7 @@ export class CheckoutManager extends EventTarget {
    */
   async mountKlarnaPayments(
     container: HTMLElement,
-    opts?: { withShipping?: boolean; shippingId?: string },
+    opts?: { withShipping?: boolean; shippingId?: string; category?: string },
   ): Promise<KlarnaPaymentsHandle> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
     const sponsorId = this.state.sponsorId
@@ -1177,6 +1297,7 @@ export class CheckoutManager extends EventTarget {
       clientToken: nativeRes.client_token,
       sessionId: nativeRes.session_id,
       categories: nativeRes.payment_method_categories ?? [],
+      category: opts?.category,
       container,
     })
     await widget.load()

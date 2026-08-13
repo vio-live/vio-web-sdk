@@ -42,6 +42,7 @@ import {
   createPaymentApplePay as gqlCreatePaymentApplePay,
   createPaymentStripe as gqlCreatePaymentStripe,
   createPaymentVipps as gqlCreatePaymentVipps,
+  getVippsStatus as gqlGetVippsStatus,
   executeCartGraphQL,
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,
@@ -792,6 +793,13 @@ export class CheckoutManager extends EventTarget {
       return vippsRes
     }
     throw new Error('Vipps payment link generation failed: missing payment_url')
+  }
+
+  /** Vipps' own payment state for the checkout — see getVippsStatus in
+   * cart-queries.ts for why this exists instead of trusting GetCheckout. */
+  async getVippsStatus(checkoutId: string, sponsorId?: number): Promise<{ state?: string } | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetVippsStatus({ checkoutId }, opts)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

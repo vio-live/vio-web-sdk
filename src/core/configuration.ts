@@ -69,6 +69,7 @@ const DEFAULT_URLS: Record<Environment, { apiBase: string; graphQLBase: string }
 
 class ConfigurationSingleton {
   private resolved: ResolvedConfig | null = null
+  private readyWaiters: Array<() => void> = []
 
   init(input: VioConfig): void {
     if (!input.apiKey || typeof input.apiKey !== 'string') {
@@ -100,6 +101,9 @@ class ConfigurationSingleton {
         klarnaEnvironment: this.resolved.klarnaEnvironment,
       })
     }
+    const waiters = this.readyWaiters
+    this.readyWaiters = []
+    for (const waiter of waiters) waiter()
   }
 
   get(): ResolvedConfig {
@@ -115,9 +119,30 @@ class ConfigurationSingleton {
     return this.resolved !== null
   }
 
+  /**
+   * Resolves once `Vio.init()` has run, or after `timeoutMs` — whichever
+   * comes first. Hosts that mount several independent components (e.g. Vev
+   * blocks, which mount in no guaranteed order) may have one fire a GraphQL
+   * call before another has called `Vio.init()`. Awaiting this briefly lets
+   * that race resolve instead of silently sending an unauthenticated
+   * request. Resolves `true` if init happened in time, `false` on timeout —
+   * callers should still degrade gracefully either way.
+   */
+  whenReady(timeoutMs = 2000): Promise<boolean> {
+    if (this.resolved) return Promise.resolve(true)
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs)
+      this.readyWaiters.push(() => {
+        clearTimeout(timer)
+        resolve(true)
+      })
+    })
+  }
+
   /** For tests only. */
   reset(): void {
     this.resolved = null
+    this.readyWaiters = []
   }
 }
 

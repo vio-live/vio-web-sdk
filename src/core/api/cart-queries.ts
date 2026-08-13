@@ -971,6 +971,14 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
     }
   }
 
+  // Hosts that mount several independent components (Vev blocks mount in no
+  // guaranteed order) may have one query the commerce API before another has
+  // called Vio.init(). Give that race a brief window to resolve rather than
+  // silently sending an unauthenticated request.
+  if (!Configuration.isInitialized) {
+    await Configuration.whenReady()
+  }
+
   const cfg = Configuration.isInitialized
     ? Configuration.get()
     : { apiKey: undefined, graphQLBase: 'https://graph-ql-dev.vio.live' }
@@ -1012,13 +1020,21 @@ interface GraphQLEnvelope {
   errors?: Array<{ message?: string }>
 }
 
-/** Execute a GraphQL query/mutation against the configured commerce endpoint. */
+/** Execute a GraphQL query/mutation against the configured commerce endpoint.
+ * Callers that skip `getCartGraphQLOptions()` (or pass a bare sponsorId) get
+ * it resolved here instead of silently sending an unauthenticated request. */
 export async function executeCartGraphQL(
   query: string,
   variables: Record<string, unknown>,
-  options: CartQueryOptions = {},
+  options: CartQueryOptions | number | undefined = {},
 ): Promise<GraphQLEnvelope> {
-  const { endpoint = 'https://graph-ql-dev.vio.live', apiKey, commerceKey } = options
+  const resolvedOptions: CartQueryOptions =
+    typeof options === 'number'
+      ? await getCartGraphQLOptions(options)
+      : !options.apiKey && !options.commerceKey
+        ? { ...(await getCartGraphQLOptions()), ...options }
+        : options
+  const { endpoint = 'https://graph-ql-dev.vio.live', apiKey, commerceKey } = resolvedOptions
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (apiKey) headers['X-API-Key'] = apiKey
@@ -1217,4 +1233,27 @@ export async function createPaymentVipps(
 ): Promise<any> {
   const json = await executeCartGraphQL(CREATE_PAYMENT_VIPPS_MUTATION, variables, options)
   return json?.data?.Payment?.CreatePaymentVipps
+}
+
+export const GET_VIPPS_STATUS_QUERY = `
+query GetVippsStatus($checkoutId: String!) {
+  Payment {
+    GetVippsStatus(checkout_id: $checkoutId) {
+      state
+    }
+  }
+}
+`
+
+/** Vipps' own payment state for a checkout — queried directly against Vipps
+ * (via the backend) rather than trusting the generic checkout status, which
+ * can lag behind Vipps' webhook. Needed because Vipps redirects back to our
+ * return URL the same way on cancel as on success — the URL alone can't
+ * distinguish them. */
+export async function getVippsStatus(
+  variables: Record<string, unknown>,
+  options?: CartQueryOptions,
+): Promise<any> {
+  const json = await executeCartGraphQL(GET_VIPPS_STATUS_QUERY, variables, options)
+  return json?.data?.Payment?.GetVippsStatus
 }

@@ -664,13 +664,98 @@ export class VioCheckout extends LitElement {
   /** Statuses that mean the payment definitively did NOT go through. */
   private static readonly FAILED_STATUSES = new Set([
     'failed', 'cancelled', 'canceled', 'rejected', 'declined', 'expired', 'aborted',
-    'terminated',
+    'terminated', 'error', 'voided', 'unpaid',
   ])
 
   /** Waits between GetCheckout attempts — PSP webhooks (Vipps especially) can
    * land seconds after the shopper is redirected back, so a single immediate
    * check misreads a successful charge as unpaid. ~20s total. */
   private static readonly RETURN_VERIFY_DELAYS_MS = [0, 2000, 4000, 6000, 8000]
+
+  /** Vipps polling cadence — up to 2 minutes. Its webhook can lag well behind
+   * the redirect; this window was verified against a live checkout. */
+  private static readonly VIPPS_STATUS_MAX_ATTEMPTS = 24
+  private static readonly VIPPS_STATUS_DELAY_MS = 5000
+
+  /**
+   * Vipps redirects to our return URL the same way on cancel as on success —
+   * the URL alone can't tell them apart, and the generic checkout status can
+   * lag behind Vipps' own webhook. Poll Vipps' own state directly instead:
+   * AUTHORIZED confirms, CREATED means still processing (keep polling),
+   * anything else (including an unrecognized state) is treated as failed —
+   * fail-closed by default rather than guessing.
+   */
+  private async pollVippsStatus(
+    checkoutId: string,
+    sponsorId: number,
+  ): Promise<{ outcome: 'paid' | 'failed' | 'pending'; sawStatus: boolean }> {
+    let sawStatus = false
+    for (let attempt = 0; attempt < VioCheckout.VIPPS_STATUS_MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, VioCheckout.VIPPS_STATUS_DELAY_MS))
+      }
+      try {
+        const vippsStatus = await Vio.checkout.getVippsStatus(checkoutId, sponsorId || undefined)
+        const state = String(vippsStatus?.state ?? '').toUpperCase()
+        sawStatus = true
+        if (state === 'AUTHORIZED') return { outcome: 'paid', sawStatus }
+        if (state === 'CREATED') continue
+        return { outcome: 'failed', sawStatus }
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[VioCheckout] GetVippsStatus attempt failed:', err)
+        }
+      }
+    }
+    // Exhausted every attempt without a definitive state — honestly "still
+    // processing", not a fabricated failure (Vipps' webhook may still land
+    // and the backend order still get created).
+    return { outcome: 'pending', sawStatus }
+  }
+
+  /** Shared outcome handler for both the generic (GetCheckout) and the
+   * Vipps-specific (GetVippsStatus) return-verification paths. */
+  private applyReturnOutcome(
+    outcome: 'paid' | 'failed' | 'pending',
+    sawStatus: boolean,
+    vioMethod: string,
+    sponsorId: number,
+    checkoutId: string,
+  ): void {
+    if (outcome === 'paid') {
+      if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
+      this.confirmedOrder = {
+        items: [],
+        currency: getGlobalCurrency(),
+        total: 0,
+        orderId: checkoutId || undefined,
+      }
+      this.confirmedMethod = vioMethod as PaymentMethod
+      this.orderConfirmed = true
+      this.open = true
+      this.dispatchEvent(
+        new CustomEvent('vio:payment-success', {
+          bubbles: true,
+          composed: true,
+          detail: { method: vioMethod, sponsorId, orderId: checkoutId },
+        }),
+      )
+    } else if (outcome === 'failed') {
+      this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
+      this.open = true
+    } else if (sawStatus) {
+      // Backend reachable but the checkout is still processing (webhook not
+      // landed yet). Fail-closed: keep the cart, set expectations.
+      this.paymentNotice =
+        'Betalingen behandles fortsatt. Du får ordrebekreftelse på e-post når den er gjennomført. Handlekurven er uendret.'
+      this.open = true
+    } else {
+      // Never got an answer from the backend: keep the cart, tell the user.
+      this.paymentError =
+        'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
+      this.open = true
+    }
+  }
 
   private async checkReturnPaymentStatus(): Promise<void> {
     if (typeof window === 'undefined' || !window.location || !window.location.search) return
@@ -695,7 +780,16 @@ export class VioCheckout extends LitElement {
         return
       }
 
-      if (vioPayment === 'success') {
+      if (vioPayment === 'success' && vioMethod === 'vipps' && checkoutId) {
+        // Vipps-specific path: check Vipps' own state instead of the generic
+        // checkout status (see pollVippsStatus for why).
+        this.open = true
+        this.paymentNotice = 'Bekrefter betalingen med Vipps…'
+        const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
+        this.paymentNotice = null
+        this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
+        this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
+      } else if (vioPayment === 'success') {
         // The URL is forgeable (and some PSPs reuse one return URL for
         // cancellations) — the BACKEND decides whether this checkout is paid.
         // Webhooks can lag the redirect, so poll a few times before deciding;
@@ -712,15 +806,15 @@ export class VioCheckout extends LitElement {
               const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
               const status = String(checkout?.status ?? '').toLowerCase()
               sawStatus = true
+              if (VioCheckout.FAILED_STATUSES.has(status)) {
+                outcome = 'failed'
+                break
+              }
               if (
                 VioCheckout.PAID_STATUSES.has(status) ||
                 Boolean(checkout?.origin_payment_id)
               ) {
                 outcome = 'paid'
-                break
-              }
-              if (VioCheckout.FAILED_STATUSES.has(status)) {
-                outcome = 'failed'
                 break
               }
             } catch (err) {
@@ -732,39 +826,7 @@ export class VioCheckout extends LitElement {
           this.paymentNotice = null
         }
 
-        if (outcome === 'paid') {
-          if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
-          this.confirmedOrder = {
-            items: [],
-            currency: getGlobalCurrency(),
-            total: 0,
-            orderId: checkoutId || undefined,
-          }
-          this.confirmedMethod = vioMethod as PaymentMethod
-          this.orderConfirmed = true
-          this.open = true
-          this.dispatchEvent(
-            new CustomEvent('vio:payment-success', {
-              bubbles: true,
-              composed: true,
-              detail: { method: vioMethod, sponsorId, orderId: checkoutId },
-            }),
-          )
-        } else if (outcome === 'failed') {
-          this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
-          this.open = true
-        } else if (sawStatus) {
-          // Backend reachable but the checkout is still processing (webhook not
-          // landed yet). Fail-closed: keep the cart, set expectations.
-          this.paymentNotice =
-            'Betalingen behandles fortsatt. Du får ordrebekreftelse på e-post når den er gjennomført. Handlekurven er uendret.'
-          this.open = true
-        } else {
-          // Never got an answer from the backend: keep the cart, tell the user.
-          this.paymentError =
-            'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
-          this.open = true
-        }
+        this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
       } else if (vioPayment === 'cancel' || vioPayment === 'error') {
         this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'

@@ -767,7 +767,11 @@ export class VioCheckout extends LitElement {
       const vioMethod = urlParams.get('vio_method') || 'stripe'
       const sponsorId = Number(urlParams.get('vio_sponsor') || 0)
       const checkoutId = urlParams.get('checkout_id') || ''
-      if (!vioPayment) return
+      // Vipps is handled below without needing vioPayment at all (it
+      // re-verifies against Vipps directly, never trusts the URL) — so only
+      // bail here when there's neither a payment param NOR a checkout to
+      // check.
+      if (!vioPayment && !checkoutId) return
 
       // Klarna's own return path (resumeKlarnaReturn) creates the order and
       // fires payment-complete — don't double-handle while it's pending.
@@ -780,9 +784,28 @@ export class VioCheckout extends LitElement {
         return
       }
 
-      if (vioPayment === 'success' && vioMethod === 'vipps' && checkoutId) {
+      if (vioMethod === 'vipps' && checkoutId) {
         // Vipps-specific path: check Vipps' own state instead of the generic
-        // checkout status (see pollVippsStatus for why).
+        // checkout status (see pollVippsStatus for why) — deliberately
+        // ignores vioPayment's value entirely (not just 'success'), since
+        // that URL param can't be trusted either way for Vipps.
+        //
+        // A fresh page load (redirect back from Vipps) never called
+        // Vio.checkout.open() this session, so checkoutState is still null —
+        // populate it before showing the notice so the overlay has a
+        // coherent state to render instead of a blank/broken shell.
+        if (!this.checkoutState) {
+          const spIdToUse =
+            sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          if (spIdToUse) {
+            try {
+              Vio.checkout.open(spIdToUse)
+              Vio.checkout.selectPaymentMethod('vipps')
+            } catch {
+              /* noop */
+            }
+          }
+        }
         this.open = true
         this.paymentNotice = 'Bekrefter betalingen med Vipps…'
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)

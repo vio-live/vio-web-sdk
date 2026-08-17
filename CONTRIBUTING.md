@@ -67,3 +67,33 @@ it or whether it matches what's in git. Before deploying:
 3. If you're not sure whether someone else just deployed, check the live version first:
    `npx vev versions` (or ask before publishing) — a wrong assumption here is how we've
    overwritten each other's work in the past.
+
+
+## Publishing to npm
+
+`@vio-live/web-sdk` is a SEPARATE distribution channel from the Vev package
+above — anything not published here stays invisible to consumers who install
+the SDK directly (e.g. `vio-web`/Mote & Livsstil). It's easy to forget: it sat
+frozen at 0.2.0 from 2026-06-10 to 2026-08-17 while 27 commits landed on
+`main` with nobody noticing, since `vev deploy` publishing doesn't touch it.
+
+```bash
+git pull origin main                # publish from the tip of main, not a stale checkout
+npm run build                       # verify dist/ generates cleanly first
+npm version <patch|minor|major> --no-git-tag-version
+npm publish --access public
+git checkout -b chore/release-X.Y.Z
+git add package.json package-lock.json
+git commit -m "chore: release X.Y.Z"
+git push -u origin chore/release-X.Y.Z && gh pr create --fill && gh pr merge --squash
+```
+
+Version bump: this package is pre-1.0, so a minor bump (`0.X.0`) is the
+convention for anything beyond a pure bugfix — breaking API changes are
+expected pre-1.0 and don't require a major bump. Use `patch` only for
+fixes with no API surface change.
+
+No hard rule yet on WHEN to publish (every merge to `main`? batched?) — until
+one exists, treat "did this change anything an external consumer would
+notice" as the trigger, and when in doubt, publish rather than let it drift
+again.

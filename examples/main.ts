@@ -9,6 +9,8 @@
  */
 
 import { Vio } from '../src/index'
+import '../src/ui/index' // registers <vio-*> custom elements — without this
+                           // the demo's markup is just inert unknown tags.
 import type { VioCart } from '../src/ui/components/vio-cart'
 import type { VioCheckout } from '../src/ui/components/vio-checkout'
 import type { CartChangeDetail } from '../src/core/cart/cart-manager'

@@ -1217,43 +1217,10 @@ export async function confirmPaymentApplePay(
   return json?.data?.Payment?.ConfirmPaymentApplePay
 }
 
-export const CREATE_PAYMENT_VIPPS_MUTATION = `
-mutation CreatePaymentVipps($checkoutId: String!, $email: String!, $returnUrl: String!) {
-  Payment {
-    CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl) {
-      payment_url
-    }
-  }
-}
-`
+export {
+  CREATE_PAYMENT_VIPPS_MUTATION,
+  GET_VIPPS_STATUS_QUERY,
+  createPaymentVipps,
+  getVippsStatus,
+} from '../checkout/payments/vipps.js'
 
-export async function createPaymentVipps(
-  variables: Record<string, unknown>,
-  options?: CartQueryOptions,
-): Promise<any> {
-  const json = await executeCartGraphQL(CREATE_PAYMENT_VIPPS_MUTATION, variables, options)
-  return json?.data?.Payment?.CreatePaymentVipps
-}
-
-export const GET_VIPPS_STATUS_QUERY = `
-query GetVippsStatus($checkoutId: String!) {
-  Payment {
-    GetVippsStatus(checkout_id: $checkoutId) {
-      state
-    }
-  }
-}
-`
-
-/** Vipps' own payment state for a checkout — queried directly against Vipps
- * (via the backend) rather than trusting the generic checkout status, which
- * can lag behind Vipps' webhook. Needed because Vipps redirects back to our
- * return URL the same way on cancel as on success — the URL alone can't
- * distinguish them. */
-export async function getVippsStatus(
-  variables: Record<string, unknown>,
-  options?: CartQueryOptions,
-): Promise<any> {
-  const json = await executeCartGraphQL(GET_VIPPS_STATUS_QUERY, variables, options)
-  return json?.data?.Payment?.GetVippsStatus
-}

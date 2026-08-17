@@ -29,6 +29,7 @@ export {
   getAvailablePaymentMethods,
   createPaymentStripe,
   createPaymentVipps,
+  getVippsStatus,
   executeCartGraphQL,
   getCartGraphQLOptions,
   getCustomerSessionId,
@@ -45,6 +46,7 @@ export {
   GET_AVAILABLE_PAYMENT_METHODS_QUERY,
   CREATE_PAYMENT_STRIPE_MUTATION,
   CREATE_PAYMENT_VIPPS_MUTATION,
+  GET_VIPPS_STATUS_QUERY,
   type CartQueryOptions,
 } from './api/cart-queries.js'
 
@@ -73,6 +75,14 @@ export {
   type ApplePayConfig,
   type ApplePayResult,
 } from './checkout/payments/apple-pay.js'
+export type {
+  CreatePaymentVippsVariables,
+  CreatePaymentVippsResponse,
+  GetVippsStatusVariables,
+  VippsStatusResult,
+  VippsPaymentState,
+} from './checkout/payments/vipps.js'
+
 
 // Types + helpers
 export type {

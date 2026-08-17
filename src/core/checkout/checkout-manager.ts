@@ -37,12 +37,14 @@ import {
   type KlarnaPaymentsCategory,
 } from './payments/klarna-payments.js'
 import {
+  createPaymentVipps as gqlCreatePaymentVipps,
+  getVippsStatus as gqlGetVippsStatus,
+} from './payments/vipps.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
   createPaymentStripe as gqlCreatePaymentStripe,
-  createPaymentVipps as gqlCreatePaymentVipps,
-  getVippsStatus as gqlGetVippsStatus,
   executeCartGraphQL,
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,

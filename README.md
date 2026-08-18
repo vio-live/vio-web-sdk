@@ -97,6 +97,43 @@ function Shop() {
 
 Wrappers: `VioProduct`, `VioProductCarousel`, `VioProductDetail`, `VioCart`, `VioCheckout`.
 
+## Theming
+
+Every component reads its colors and fonts from `--vio-*` CSS custom properties
+(shadow DOM inherits these from the light DOM, so this reaches every component,
+including the Apple Pay/Klarna/Vipps panels). `applyVioTheme` is the one
+supported way to override them — don't set `--vio-*` properties by hand, and
+don't rely on the internal variable names staying stable across versions:
+
+```ts
+import { applyVioTheme } from '@vio-live/web-sdk/ui' // or '/react'
+
+applyVioTheme({
+  colorAccent: '#0044ff',
+  colorText: '#111111',
+  fontSerif: '"Playfair Display", Georgia, serif',
+  fontSans: '"Inter", sans-serif',
+})
+```
+
+A curated set on purpose — colors + fonts, not the full internal token list
+(spacing/radius/sizes stay implementation detail). Call it again any time
+(e.g. after a user picks a different brand color in a settings UI) — pass
+`null`/`undefined` for a key to revert it to the SDK default instead of
+leaving a stale override behind:
+
+```ts
+applyVioTheme({ colorAccent: null }) // back to the default #c14a3b
+```
+
+By default it sets the override on `document.documentElement` (`:root`, the
+whole page). Pass a second argument to scope it to one element instead —
+useful if you show multiple differently-branded sponsors on the same page:
+
+```ts
+applyVioTheme({ colorAccent: '#ff6600' }, document.getElementById('sponsor-2'))
+```
+
 ## Headless / SSR
 
 The root and `/core` entries export the framework-agnostic core with **no DOM side-effects** — SSR-safe and **tree-shakeable** (importing one helper pulls only that helper, ~0.5 kB):

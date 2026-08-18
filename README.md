@@ -24,9 +24,36 @@ import '@vio-live/web-sdk/ui'   // registers <vio-product-carousel>, <vio-cart>,
 
 Vio.init({
   apiKey: import.meta.env.VITE_VIO_API_KEY,
-  // apiBase, graphqlBase, stripePublishableKey — optional overrides
+  environment: 'production', // 'development' | 'testing' | 'production'
 })
 ```
+
+`environment` is the recommended way to configure — it resolves the right
+`apiBase`/`graphQLBase` for you (each environment has known-good defaults
+baked in). Note the middle value is **`'testing'`, not `'staging'`**
+(naming kept in parity with the iOS SDK).
+
+Only pass `apiBase`/`graphQLBase`/`stripePublishableKey` directly if you need
+to override those specific values — e.g. a self-hosted proxy, or a Stripe key
+that differs from the environment default:
+
+```ts
+Vio.init({
+  apiKey: '…',
+  environment: 'production',
+  apiBase: 'https://my-proxy.example.com',       // optional, overrides the environment default
+  graphQLBase: 'https://my-graphql.example.com', // optional — note the casing: graphQLBase
+  stripePublishableKey: 'pk_live_…',             // optional — needed for the Apple Pay button
+})
+```
+
+**Apple Pay note**: the button only renders when `canMakePayment()` says the
+device+browser can pay AND your domain is verified for Apple Pay in Stripe's
+dashboard (Settings → Payment method domains) — Stripe serves a verification
+file at `/.well-known/apple-developer-merchantid-domain-association` on that
+domain. Not all hosts let you serve that file (some page builders can't) —
+if the button never appears, check domain verification before assuming it's
+a code bug.
 
 ```html
 <vio-product-carousel
@@ -51,7 +78,7 @@ Typed wrappers (built on `@lit/react`). Importing this entry **registers the ele
 import { Vio } from '@vio-live/web-sdk'
 import { VioProductCarousel, VioCart } from '@vio-live/web-sdk/react'
 
-Vio.init({ apiKey: '…' })
+Vio.init({ apiKey: '…', environment: 'production' })
 
 function Shop() {
   return (

@@ -19,7 +19,7 @@ import { registerVioElements } from './elements.js'
 // keeps working. This call is what pins the registration into this entry.
 registerVioElements()
 
-export { VioTokens } from './tokens.js'
+export { VioTokens, applyVioTheme, type VioThemeOverrides } from './tokens.js'
 export {
   registerVioElements,
   VioProduct,
@@ -29,4 +29,4 @@ export {
   VioCheckout,
 } from './elements.js'
 
-export const VIO_UI_VERSION = '0.2.0'
+export const VIO_UI_VERSION = '0.3.0'

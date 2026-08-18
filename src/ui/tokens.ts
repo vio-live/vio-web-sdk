@@ -142,3 +142,81 @@ function injectTokens(): void {
 }
 
 injectTokens()
+
+/**
+ * Theming — override design tokens without touching SDK source.
+ *
+ * Every `<vio-*>` component reads colors/fonts via `var(--vio-color-accent,
+ * …)` etc. (shadow DOM inherits CSS custom properties from the light DOM,
+ * so this reaches every component including Apple Pay/Klarna/Vipps panels).
+ * `applyVioTheme` is the one supported way to set them: an inline style on
+ * `:root` (or a scoped element) always wins over the stylesheet rule
+ * `injectTokens` installs above, regardless of import/injection order — no
+ * specificity fights, no reaching for `!important`.
+ *
+ * A curated subset on purpose: colors + fonts are what a merchant/publisher
+ * actually wants a "brand settings" panel for. Spacing/radius/sizes stay
+ * internal — expose them here later if a real need shows up, don't
+ * speculatively surface the whole token set as public API.
+ *
+ * Host integrations (the Vio Config panel in Vev, a future Replit CMS
+ * panel, anything else) should call this ONE function — never set
+ * `--vio-*` custom properties by hand. If the injection mechanism changes
+ * later, only this function needs updating, not every panel that theme.
+ */
+export interface VioThemeOverrides {
+  colorText?: string
+  colorTextSecondary?: string
+  colorTextTertiary?: string
+  colorTextOnPrimary?: string
+  colorAccent?: string
+  colorSurface?: string
+  colorSurfaceMuted?: string
+  colorSurfaceHover?: string
+  colorBorder?: string
+  colorBorderDefault?: string
+  fontSerif?: string
+  fontSans?: string
+}
+
+const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
+  colorText: '--vio-color-text',
+  colorTextSecondary: '--vio-color-text-secondary',
+  colorTextTertiary: '--vio-color-text-tertiary',
+  colorTextOnPrimary: '--vio-color-text-on-primary',
+  colorAccent: '--vio-color-accent',
+  colorSurface: '--vio-color-surface',
+  colorSurfaceMuted: '--vio-color-surface-muted',
+  colorSurfaceHover: '--vio-color-surface-hover',
+  colorBorder: '--vio-color-border',
+  colorBorderDefault: '--vio-color-border-default',
+  fontSerif: '--vio-font-serif',
+  fontSans: '--vio-font-sans',
+}
+
+/**
+ * Apply (or clear) theme overrides. Pass `null`/`undefined` for a key to
+ * revert it to the SDK default instead of leaving a stale override behind
+ * — lets a host re-apply a full overrides object on every save without
+ * having to track which keys it previously set.
+ *
+ * `target` defaults to `document.documentElement` (`:root`, matching where
+ * `injectTokens` installs the defaults). Pass a specific element to scope
+ * the theme to one subtree instead of the whole page — e.g. multiple
+ * differently-branded sponsors on the same page.
+ */
+export function applyVioTheme(
+  overrides: VioThemeOverrides,
+  target: HTMLElement | null = typeof document !== 'undefined' ? document.documentElement : null,
+): void {
+  if (!target) return
+  for (const key of Object.keys(THEME_KEY_TO_CSS_VAR) as Array<keyof VioThemeOverrides>) {
+    const cssVar = THEME_KEY_TO_CSS_VAR[key]
+    const value = overrides[key]
+    if (value) {
+      target.style.setProperty(cssVar, value)
+    } else if (key in overrides) {
+      target.style.removeProperty(cssVar)
+    }
+  }
+}

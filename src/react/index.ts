@@ -28,6 +28,11 @@ import {
   VioCart as VioCartEl,
   VioCheckout as VioCheckoutEl,
 } from '../ui/elements.js'
+// Not just for the re-export below — the import itself injects the default
+// design tokens as CSS custom properties on `:root` (see tokens.ts). Without
+// it, `elements.js` alone never pulls tokens.ts in, so this entry (the one
+// the Vev bundle actually goes through) never ran that injection.
+import '../ui/tokens.js'
 
 // Register the underlying custom elements when this entry is imported.
 registerVioElements()
@@ -77,3 +82,5 @@ export const VioCheckout = createComponent({
     onPaymentSuccess: 'vio:payment-success',
   },
 })
+
+export { VioTokens, applyVioTheme, type VioThemeOverrides } from '../ui/tokens.js'

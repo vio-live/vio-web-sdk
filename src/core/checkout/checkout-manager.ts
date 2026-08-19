@@ -1303,6 +1303,12 @@ export class CheckoutManager extends EventTarget {
     if (!nativeRes || !nativeRes.client_token) {
       throw new Error('Klarna session creation failed: missing client_token')
     }
+    if (typeof console !== 'undefined') {
+      console.log(
+        '[VioCheckout] CreatePaymentKlarnaNative payment_method_categories:',
+        nativeRes.payment_method_categories,
+      )
+    }
     if (nativeRes.checkout_id) {
       ctx.checkoutId = nativeRes.checkout_id
       this.state = { ...this.state, checkoutId: nativeRes.checkout_id }

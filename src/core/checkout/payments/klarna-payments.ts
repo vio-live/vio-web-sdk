@@ -50,6 +50,8 @@ interface KlarnaPaymentsApi {
     data: Record<string, unknown>,
     cb?: (res: KpAuthorizeResult) => void,
   ): void
+  /** Debug/lifecycle events — e.g. 'fullscreenOverlayShown'/'fullscreenOverlayHidden'. */
+  on?(event: string, cb: () => void): void
 }
 interface KlarnaGlobal {
   Payments: KlarnaPaymentsApi
@@ -139,11 +141,15 @@ export interface KlarnaPaymentsWidget {
   /** (Re)load the widget for a category into the container. */
   load(category?: string): Promise<{ showForm: boolean }>
   /**
-   * Authorize the selected category. Resolves with the authorization token,
-   * rejects on decline/cancel/error. `data` is an optional order-data update
-   * (the session already carries the lines; pass billing/extra if available).
+   * Authorize a category. Resolves with the authorization token, rejects on
+   * decline/cancel/error. `category` overrides `selected` for this call (and
+   * reloads the widget first if it differs) — pass it explicitly rather than
+   * relying on `selected` alone, since a caller UI's own state and the
+   * widget's internal `selected` can drift. `data` is an optional order-data
+   * update (the session already carries the lines; pass billing/extra if
+   * available).
    */
-  authorize(data?: Record<string, unknown>): Promise<string>
+  authorize(category?: string, data?: Record<string, unknown>): Promise<string>
 }
 
 /** True if the Klarna Payments lib can load in this environment. */
@@ -184,46 +190,103 @@ export async function createKlarnaPaymentsWidget(
   input: KlarnaPaymentsWidgetInput,
 ): Promise<KlarnaPaymentsWidget> {
   const Klarna = await loadKpLib()
+  console.log('[DEBUG Klarna] Initializing Klarna Payments')
   Klarna.Payments.init({ client_token: input.clientToken })
+  console.log('[DEBUG Klarna] Klarna Payments initialized')
+  Klarna.Payments.on?.('fullscreenOverlayShown', () => {
+    console.log('[DEBUG Klarna] FULLSCREEN OVERLAY SHOWN')
+  })
+  Klarna.Payments.on?.('fullscreenOverlayHidden', () => {
+    console.log('[DEBUG Klarna] FULLSCREEN OVERLAY HIDDEN')
+  })
 
   let selected =
     input.category ??
     findPayNowCategory(input.categories) ??
     input.categories[0]?.identifier ??
     'pay_now'
+  if (typeof console !== 'undefined') {
+    console.log('[VioKlarna] Received payment_method_categories from backend:', input.categories)
+    console.log('[VioKlarna] Selected initial payment_method_category:', selected)
+  }
+
+  const load = (category?: string): Promise<{ showForm: boolean }> => {
+    if (category) selected = category
+    if (typeof console !== 'undefined') {
+      console.log(
+        '[VioKlarna] Klarna.Payments.load calling with payment_method_category:',
+        selected,
+        'container:',
+        input.container,
+      )
+    }
+    // Clear any previously-rendered iframe before reloading a different
+    // category — Klarna's widget doesn't always replace its own markup
+    // cleanly on a second load() into the same container.
+    if (input.container && 'innerHTML' in input.container) {
+      input.container.innerHTML = ''
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        // 3-arg form per Klarna docs: (options, data, callback). The empty
+        // data object is required — a 2-arg call risks the SDK treating the
+        // callback as `data` and never invoking it.
+        Klarna.Payments.load(
+          { container: input.container, payment_method_category: selected },
+          {},
+          (res) => {
+            if (typeof console !== 'undefined') {
+              console.log(
+                '[VioKlarna] Klarna.Payments.load response for payment_method_category:',
+                selected,
+                res,
+              )
+            }
+            if (res?.error) reject(res.error)
+            else resolve({ showForm: res?.show_form !== false })
+          },
+        )
+      } catch (err) {
+        reject(err)
+      }
+    })
+  }
 
   return {
     categories: input.categories,
     get selected() {
       return selected
     },
-    load(category?: string): Promise<{ showForm: boolean }> {
-      if (category) selected = category
-      return new Promise((resolve, reject) => {
-        try {
-          // 3-arg form per Klarna docs: (options, data, callback). The empty
-          // data object is required — a 2-arg call risks the SDK treating the
-          // callback as `data` and never invoking it.
-          Klarna.Payments.load(
-            { container: input.container, payment_method_category: selected },
-            {},
-            (res) => {
-              if (res?.error) reject(res.error)
-              else resolve({ showForm: res?.show_form !== false })
-            },
-          )
-        } catch (err) {
-          reject(err)
-        }
-      })
-    },
-    authorize(data?: Record<string, unknown>): Promise<string> {
+    load,
+    async authorize(category?: string, data?: Record<string, unknown>): Promise<string> {
+      const cat = category || selected
+      if (typeof console !== 'undefined') {
+        console.log('[DEBUG Klarna] BEFORE AUTHORIZE', {
+          argumentCategory: category,
+          argumentData: data,
+          selected,
+          resolvedCategory: cat,
+        })
+      }
+      // If the caller asked for a category different from what's currently
+      // loaded, reload the widget first — authorizing against a stale
+      // `selected` would charge/confirm the wrong payment method category.
+      if (cat && cat !== selected) {
+        await load(cat)
+      }
+      const finalData = { payment_method_category: cat, ...(data ?? {}) }
+      if (typeof console !== 'undefined') {
+        console.log('[DEBUG Klarna] FINAL AUTHORIZE', { cat, selected, finalData })
+      }
       return new Promise<string>((resolve, reject) => {
         try {
           Klarna.Payments.authorize(
-            { payment_method_category: selected, auto_finalize: true },
-            data ?? {},
+            { payment_method_category: cat, auto_finalize: true },
+            finalData,
             (res) => {
+              if (typeof console !== 'undefined') {
+                console.log('[DEBUG Klarna] RAW AUTHORIZE RESPONSE:', JSON.stringify(res, null, 2))
+              }
               if (res?.approved && res.authorization_token) {
                 resolve(res.authorization_token)
               } else if (res?.error) {

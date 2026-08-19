@@ -409,8 +409,9 @@ export interface KlarnaPaymentsHandle {
   readonly selected: string
   /** (Re)load the widget for a category. */
   load(category?: string): Promise<{ showForm: boolean }>
-  /** Authorize the selected method and (on approval) create the order. */
-  authorize(): Promise<void>
+  /** Authorize a category (defaults to whatever's currently selected) and,
+   * on approval, create the order. */
+  authorize(category?: string): Promise<void>
   /** Tear down the mounted widget. */
   unmount(): void
 }
@@ -570,13 +571,21 @@ export class CheckoutManager extends EventTarget {
 
   /**
    * Real shipping options from the backend cart (per supplier), mapped to the
-   * KlarnaShippingOption shape (minor units). Empty array on failure — callers
-   * fall back to the static KLARNA_SHIPPING_OPTIONS.
+   * KlarnaShippingOption shape (minor units). Empty array on failure/no
+   * options — Klarna callers use that as-is (no static fallback anymore, see
+   * 2026-08-18: it only ever papered over a race, now fixed via
+   * `waitForCartMutations`). `KLARNA_SHIPPING_OPTIONS` is still used
+   * separately by Apple Pay's synchronous sheet setup, which can't await
+   * this at all.
    */
   async fetchAvailableShippings(sponsorId?: number): Promise<KlarnaShippingOption[]> {
     try {
       const spId = sponsorId ?? this.state?.sponsorId
       if (!spId) return []
+      // A quick add-then-checkout can race an in-flight AddItem — wait for it
+      // to settle so this reads the cart it actually produced, not a stale
+      // pre-add snapshot (Alan, 2026-08-18: shippings came back empty this way).
+      await this.cartManager.waitForCartMutations(spId)
       const cart = this.cartManager.getCart(spId)
       let cartId = cart?.cartId
       if (!cartId) {
@@ -1216,9 +1225,12 @@ export class CheckoutManager extends EventTarget {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
     const sponsorId = this.state.sponsorId
 
-    // 1. Real per-supplier shippings from the backend cart (static fallback).
-    const fetchedShippings = await this.fetchAvailableShippings(sponsorId)
-    const shippings = fetchedShippings.length > 0 ? fetchedShippings : KLARNA_SHIPPING_OPTIONS
+    // 1. Real per-supplier shippings from the backend cart. No static
+    // fallback for Klarna anymore — fetchAvailableShippings now waits for
+    // any in-flight cart mutation, so an empty result means the backend
+    // genuinely has nothing, not a race; falling back to stale hardcoded
+    // prices would be worse than surfacing that honestly.
+    const shippings = await this.fetchAvailableShippings(sponsorId)
 
     // With shipping: add the CHOSEN shipping option as a shipping_fee line +
     // bump the total. (Klarna Payments doesn't render a picker; ours lives in
@@ -1319,12 +1331,19 @@ export class CheckoutManager extends EventTarget {
         return widget.selected
       },
       load: (category?: string) => widget.load(category),
-      authorize: async (): Promise<void> => {
+      authorize: async (category?: string): Promise<void> => {
         try {
           // The session already carries the order (country/currency/lines);
-          // Klarna collects customer details in its widget. Authorize with no
-          // update payload to avoid any session/payload mismatch.
-          const token = await widget.authorize()
+          // Klarna collects customer details in its widget. Address/customer
+          // are passed as a best-effort supplement when we already have them
+          // from the checkout form — Klarna's own widget can still fill gaps.
+          const addr = buildKlarnaAddress(this.state?.address)
+          const customer = buildKlarnaCustomer(this.state?.address)
+          const authData = {
+            ...(addr ? { billing_address: addr, shipping_address: addr } : {}),
+            ...(customer ? { customer } : {}),
+          }
+          const token = await widget.authorize(category, authData)
           await this.completeKlarnaOrder(token, ctx, { authorizationToken: token })
         } catch (err) {
           if (typeof console !== 'undefined') {
@@ -1361,7 +1380,7 @@ export class CheckoutManager extends EventTarget {
     shippingOptions: KlarnaShippingOption[]
   } {
     const base = this.buildKlarnaPendingContext()
-    const options = availableShippings.length > 0 ? availableShippings : KLARNA_SHIPPING_OPTIONS
+    const options = availableShippings
     const shipping =
       (shippingId ? options.find((o) => o.id === shippingId) : undefined) ??
       options.find((o) => o.preselected) ??
@@ -1397,8 +1416,7 @@ export class CheckoutManager extends EventTarget {
   async startKlarnaInstant(): Promise<void> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
     const sponsorId = this.state.sponsorId
-    const fetchedShippings = await this.fetchAvailableShippings(sponsorId)
-    const shippings = fetchedShippings.length > 0 ? fetchedShippings : KLARNA_SHIPPING_OPTIONS
+    const shippings = await this.fetchAvailableShippings(sponsorId)
     const { ctx } = this.buildKlarnaInstantContext(undefined, shippings)
 
     // 1. Backend checkout + Klarna Payments session via commerce GraphQL.

@@ -59,6 +59,18 @@ export type {
 } from './cart/cart-manager.js'
 export type { CartLineItem, SponsorCartState } from './cart/types.js'
 
+// Analytics
+export { AnalyticsManager } from './analytics/analytics-manager.js'
+export type {
+  AnalyticsEventName,
+  AnalyticsContext,
+  AnalyticsCommerce,
+  AnalyticsItemInput,
+  AnalyticsStartOptions,
+  TrackOptions,
+} from './analytics/analytics-manager.js'
+export { SDK_VERSION } from './version.js'
+
 // Checkout
 export { CheckoutManager } from './checkout/checkout-manager.js'
 export type {

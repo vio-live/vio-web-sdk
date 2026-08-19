@@ -183,6 +183,7 @@ export function findPayNowCategory(categories: KlarnaPaymentsCategory[]): string
     byId(/pay_now|direct_debit|direct_bank_transfer|pay_in_full|klarna_pay_now/i) ??
     byName(/direkte|bank|kort|straks|sofort/i) ??
     categories.find((c) => c?.identifier && !/pay_later|pay_over_time|slice_it/.test(c.identifier))
+  console.log('findPayNowCategory - Selected: ', cat)
   return cat?.identifier ?? null
 }
 
@@ -280,6 +281,9 @@ export async function createKlarnaPaymentsWidget(
       }
       return new Promise<string>((resolve, reject) => {
         try {
+          if (typeof console !== 'undefined') {
+            console.log('[DEBUG Klarna] ABOUT TO CALL AUTHORIZE')
+          }
           Klarna.Payments.authorize(
             { payment_method_category: cat, auto_finalize: true },
             finalData,
@@ -299,6 +303,9 @@ export async function createKlarnaPaymentsWidget(
               }
             },
           )
+          if (typeof console !== 'undefined') {
+            console.log('[DEBUG Klarna] AUTHORIZE CALL RETURNED')
+          }
         } catch (err) {
           reject(err)
         }

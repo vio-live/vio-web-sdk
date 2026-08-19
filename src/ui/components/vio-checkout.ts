@@ -13,11 +13,10 @@ import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice, getGlobalCurrency } from '../../core/types.js'
 import type { CartLineItem } from '../../core/cart/types.js'
-import {
-  KLARNA_SHIPPING_OPTIONS,
-  type CheckoutChangeDetail,
-  type KlarnaPaymentsHandle,
-  type KlarnaShippingOption,
+import type {
+  CheckoutChangeDetail,
+  KlarnaPaymentsHandle,
+  KlarnaShippingOption,
 } from '../../core/checkout/checkout-manager.js'
 import type {
   CheckoutAddress,
@@ -69,9 +68,8 @@ export class VioCheckout extends LitElement {
   @state() private klarnaSelectedCat = ''
   @state() private klarnaAuthorizing = false
   /** Chosen shipping option id (express flow) — drives the Klarna order total. */
-  @state() private selectedShipping =
-    KLARNA_SHIPPING_OPTIONS.find((o) => o.preselected)?.id ?? KLARNA_SHIPPING_OPTIONS[0]?.id ?? ''
-  /** Real per-supplier shippings from the backend (empty → static fallback). */
+  @state() private selectedShipping = ''
+  /** Real per-supplier shippings from the backend. */
   @state() private availableShippingsList: KlarnaShippingOption[] = []
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
@@ -438,10 +436,13 @@ export class VioCheckout extends LitElement {
       gap: 12px;
       margin-top: 4px;
     }
+    /* Klarna remembers the customer's preferred payment_method_category
+     * server-side across sessions/browsers — exposing a category-switcher
+     * chip UI on top of that just confuses users. Hidden per Alan's
+     * 2026-08-18 cross-browser investigation; the switching logic (onKlarnaCategory)
+     * stays wired for when/if this becomes configurable again. */
     .klarna-cats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
+      display: none !important;
     }
     .klarna-cat {
       flex: 1 1 auto;
@@ -894,8 +895,15 @@ export class VioCheckout extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
-    // Opening the overlay: make sure the real shippings are loaded.
-    if (changed.has('open') && this.open && this.availableShippingsList.length === 0) {
+    // Opening the overlay: make sure the real shippings are loaded. Gated on
+    // items.length — fetching shippings for an empty cart is wasted work and
+    // can race the cart's own in-flight mutations.
+    if (
+      changed.has('open') &&
+      this.open &&
+      this.items.length > 0 &&
+      this.availableShippingsList.length === 0
+    ) {
       void this.loadAvailableShippings()
     }
     // Mount the Klarna Express button once its slot is in the DOM, the
@@ -912,7 +920,7 @@ export class VioCheckout extends LitElement {
 
   show(): void {
     this.open = true
-    if (this.availableShippingsList.length === 0) {
+    if (this.items.length > 0 && this.availableShippingsList.length === 0) {
       void this.loadAvailableShippings()
     }
   }
@@ -921,6 +929,7 @@ export class VioCheckout extends LitElement {
   private async loadAvailableShippings(): Promise<void> {
     const spId = this.checkoutState?.sponsorId
     if (!spId) return
+    if (this.items.length === 0) return
     if (this.loadingShippings) return
     this.loadingShippings = true
     this.shippingsAttempted = true
@@ -1025,6 +1034,11 @@ export class VioCheckout extends LitElement {
     // express mode, which is Klarna-only).
     if (this.checkoutState.paymentMethod !== 'klarna' && !this.express) return
     if (this.klarnaMounting) return
+    // Make sure the real shippings are in before mounting — Klarna's total
+    // needs to reflect them, not the (removed) static fallback.
+    if (this.items.length > 0 && this.availableShippingsList.length === 0 && !this.shippingsAttempted) {
+      await this.loadAvailableShippings()
+    }
     const amount = this.checkoutState.subtotal
     // Re-mount when the amount OR the chosen shipping changes (a new shipping
     // option means a new session/total — Klarna's widget can't be updated live).
@@ -1087,11 +1101,9 @@ export class VioCheckout extends LitElement {
     this.klarnaAuthorizing = false
   }
 
-  /** Shippings in effect: backend per-supplier when loaded, static otherwise. */
+  /** Shippings in effect: backend per-supplier when loaded. */
   private get shippingList(): KlarnaShippingOption[] {
-    return this.availableShippingsList.length > 0
-      ? this.availableShippingsList
-      : KLARNA_SHIPPING_OPTIONS
+    return this.availableShippingsList
   }
 
   /** Selected shipping option (express flow). */
@@ -1122,8 +1134,11 @@ export class VioCheckout extends LitElement {
 
   /** Switch the Klarna widget to a different payment_method_category. */
   private async onKlarnaCategory(identifier: string): Promise<void> {
-    if (!this.klarnaHandle || this.klarnaSelectedCat === identifier) return
+    if (!this.klarnaHandle) return
     this.klarnaSelectedCat = identifier
+    if (typeof console !== 'undefined') {
+      console.log('[VioCheckout] User selected payment_method_category:', identifier)
+    }
     try {
       await this.klarnaHandle.load(identifier)
     } catch (err) {
@@ -1139,10 +1154,14 @@ export class VioCheckout extends LitElement {
     this.paymentError = null
     this.paymentNotice = null
     this.klarnaAuthorizing = true
+    const cat = this.klarnaSelectedCat || this.klarnaHandle.selected || 'pay_now'
+    if (typeof console !== 'undefined') {
+      console.log('[VioCheckout] Authorizing Klarna with payment_method_category:', cat)
+    }
     try {
       // Resolves once the order is created (payment-complete) or surfaces a
       // payment-error event handled by boundOnPaymentError.
-      await this.klarnaHandle.authorize()
+      await this.klarnaHandle.authorize(cat)
     } finally {
       this.klarnaAuthorizing = false
     }

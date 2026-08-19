@@ -81,6 +81,13 @@ export class CartManager extends EventTarget {
    * slow response can't overwrite the state of a newer one. */
   private mutationSeq = new Map<number, number>()
   private appliedSeq = new Map<number, number>()
+  /** In-flight AddItem/UpdateItem/DeleteItem per sponsor. Callers that need
+   * the backend cart to reflect a just-made change (e.g. fetching shippings
+   * right after an add) should `await waitForCartMutations(sponsorId)` first
+   * — otherwise they can race the mutation and see the cart from before it
+   * landed (Alan, 2026-08-18: shippings queried before AddItem settled,
+   * came back empty). */
+  private inFlightMutations = new Map<number, Promise<unknown>>()
 
   constructor() {
     super()
@@ -91,6 +98,18 @@ export class CartManager extends EventTarget {
     const n = (this.mutationSeq.get(sponsorId) ?? 0) + 1
     this.mutationSeq.set(sponsorId, n)
     return n
+  }
+
+  /** Resolves once any in-flight AddItem/UpdateItem/DeleteItem for this
+   * sponsor has settled (success or failure). No-op if nothing is pending. */
+  async waitForCartMutations(sponsorId: number): Promise<void> {
+    const p = this.inFlightMutations.get(sponsorId)
+    if (!p) return
+    try {
+      await p
+    } catch {
+      /* the mutation's own catch already handled/reported the failure */
+    }
   }
 
   /** Apply a backend response only if no newer response was applied already. */
@@ -385,7 +404,7 @@ export class CartManager extends EventTarget {
     // reverts the local line (a ghost line means the UI total and the charged
     // total diverge silently).
     const seq = this.nextSeq(opts.sponsorId)
-    void (async () => {
+    const mutation = (async () => {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
         if (cartId) {
@@ -418,6 +437,12 @@ export class CartManager extends EventTarget {
         this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
+    this.inFlightMutations.set(opts.sponsorId, mutation)
+    void mutation.finally(() => {
+      if (this.inFlightMutations.get(opts.sponsorId) === mutation) {
+        this.inFlightMutations.delete(opts.sponsorId)
+      }
+    })
 
     return addedItem
   }
@@ -457,7 +482,7 @@ export class CartManager extends EventTarget {
 
     const backendCartId = cart.cartId
     const seq = this.nextSeq(sponsorId)
-    void (async () => {
+    const mutation = (async () => {
       try {
         const gqlOpts = await getCartGraphQLOptions(sponsorId)
         const resCart =
@@ -472,6 +497,12 @@ export class CartManager extends EventTarget {
         void this.fetchCartFromBackend(sponsorId)
       }
     })()
+    this.inFlightMutations.set(sponsorId, mutation)
+    void mutation.finally(() => {
+      if (this.inFlightMutations.get(sponsorId) === mutation) {
+        this.inFlightMutations.delete(sponsorId)
+      }
+    })
   }
 
   removeItem(lineItemId: string, sponsorId: number): void {

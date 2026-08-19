@@ -21,6 +21,11 @@ export interface VioConfig {
   /** Override GraphQL base. Defaults are env-aware. */
   graphQLBase?: string
   /**
+   * Override the analytics collector base (vio-analytics service).
+   * Defaults are env-aware (`events-dev`/`events-staging`/`events.vio.live`).
+   */
+  eventsBase?: string
+  /**
    * Stripe **publishable** key (`pk_test_xxx` or `pk_live_xxx`). Used for
    * Apple Pay (via Payment Request) and Card flows. Public-safe — fine
    * to expose in client bundles.
@@ -46,24 +51,31 @@ export interface ResolvedConfig {
   environment: Environment
   apiBase: string
   graphQLBase: string
+  eventsBase: string
   stripePublishableKey?: string
   klarnaClientId?: string
   klarnaEnvironment: 'playground' | 'production'
 }
 
-const DEFAULT_URLS: Record<Environment, { apiBase: string; graphQLBase: string }> = {
+const DEFAULT_URLS: Record<
+  Environment,
+  { apiBase: string; graphQLBase: string; eventsBase: string }
+> = {
   development: {
     apiBase: 'https://api-dev.vio.live',
     graphQLBase: 'https://graph-ql-dev.vio.live',
+    eventsBase: 'https://events-dev.vio.live',
   },
   // No separate staging GraphQL deployment yet — shares dev's.
   testing: {
     apiBase: 'https://api-staging.vio.live',
     graphQLBase: 'https://graph-ql-dev.vio.live',
+    eventsBase: 'https://events-staging.vio.live',
   },
   production: {
     apiBase: 'https://api.vio.live',
     graphQLBase: 'https://graph-ql.vio.live',
+    eventsBase: 'https://events.vio.live',
   },
 }
 
@@ -82,6 +94,7 @@ class ConfigurationSingleton {
       environment: env,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
+      eventsBase: input.eventsBase ?? defaults.eventsBase,
       stripePublishableKey: input.stripePublishableKey,
       klarnaClientId: input.klarnaClientId,
       // Sandbox by default — live Klarna must be opted into explicitly.

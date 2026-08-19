@@ -425,6 +425,11 @@ export class VioCart extends LitElement {
   close(): void { this.open = false }
   show(): void {
     this.open = true
+    // Analytics/host hook — `view_cart` on any host, not just Vev (which
+    // used to synthesize this event itself).
+    this.dispatchEvent(
+      new CustomEvent('vio:open-cart', { bubbles: true, composed: true }),
+    )
     void this.loadAvailablePaymentMethods()
   }
 

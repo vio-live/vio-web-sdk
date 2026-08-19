@@ -21,6 +21,7 @@ import { createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
+import { AnalyticsManager } from './analytics/analytics-manager.js'
 import type { BootstrapResponse, Sponsor } from './types.js'
 
 class VioFacade {
@@ -36,6 +37,7 @@ class VioFacade {
   // need Vio.init() to work (state is purely local).
   private cartManager: CartManager | null = null
   private checkoutManager: CheckoutManager | null = null
+  private analyticsManager: AnalyticsManager | null = null
 
   init(config: VioConfig): void {
     Configuration.init(config)
@@ -66,6 +68,15 @@ class VioFacade {
   get checkout(): CheckoutManager {
     if (!this.checkoutManager) this.checkoutManager = new CheckoutManager(this.cart)
     return this.checkoutManager
+  }
+
+  /**
+   * Analytics — track() queues even pre-init; nothing is sent (and no
+   * listeners are installed) until an explicit `Vio.analytics.start()`.
+   */
+  get analytics(): AnalyticsManager {
+    if (!this.analyticsManager) this.analyticsManager = new AnalyticsManager()
+    return this.analyticsManager
   }
 
   // MARK: - Backend-bound

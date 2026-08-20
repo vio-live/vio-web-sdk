@@ -70,6 +70,8 @@ export interface AnalyticsContext {
   sponsorId?: number
   activationId?: number
   contentUrl?: string
+  /** Human-readable content snapshot; auto-filled from document.title. */
+  contentTitle?: string
   variant?: string
 }
 
@@ -361,6 +363,13 @@ export class AnalyticsManager extends EventTarget {
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
       content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
+      // Deletion-proof reporting: sources have no trash bin — the title
+      // snapshotted at event time keeps reports legible if content dies.
+      content_title:
+        ctx.contentTitle ??
+        (typeof document !== 'undefined' && document.title
+          ? document.title.slice(0, 255)
+          : undefined),
       variant: ctx.variant,
     })
 

@@ -99,6 +99,15 @@ export interface TrackOptions {
 export interface AnalyticsStartOptions {
   /** Where the SDK is embedded: 'vev' | 'replit' | 'custom' | … Default 'custom'. */
   host?: string
+  /**
+   * Install the automatic funnel listeners (vio:added-to-cart,
+   * vio:checkout-open, vio:open-cart, vio:payment-success). Default true.
+   * Hosts with their OWN instrumentation choke point (e.g. the Vev module,
+   * which forwards every event through trackEvent()) set false so the same
+   * user action is never tracked twice — they keep the session/batching/
+   * transport engine and call track() themselves.
+   */
+  autoTrack?: boolean
   /** Send to the Vio collector. Default true. */
   collector?: boolean
   /** Also push GA4 e-commerce events to window.dataLayer (publisher feature). */
@@ -142,9 +151,11 @@ interface WireEvent {
 
 export class AnalyticsManager extends EventTarget {
   private started = false
-  private options: Required<Pick<AnalyticsStartOptions, 'collector' | 'dataLayer' | 'debug'>> & {
+  private options: Required<
+    Pick<AnalyticsStartOptions, 'collector' | 'dataLayer' | 'debug' | 'autoTrack'>
+  > & {
     host: string
-  } = { host: 'custom', collector: true, dataLayer: false, debug: false }
+  } = { host: 'custom', collector: true, dataLayer: false, debug: false, autoTrack: true }
 
   private queue: WireEvent[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
@@ -175,6 +186,7 @@ export class AnalyticsManager extends EventTarget {
       collector: options.collector ?? this.options.collector,
       dataLayer: options.dataLayer ?? this.options.dataLayer,
       debug: options.debug ?? this.options.debug,
+      autoTrack: options.autoTrack ?? this.options.autoTrack,
     }
     if (this.started || !hasDom()) return
     this.started = true
@@ -190,7 +202,7 @@ export class AnalyticsManager extends EventTarget {
     window.addEventListener('pagehide', onPageHide)
     this.teardown.push(() => window.removeEventListener('pagehide', onPageHide))
 
-    this.installAutoListeners()
+    if (this.options.autoTrack) this.installAutoListeners()
   }
 
   /** Stop timers + listeners (tests / SPA unmount). Queue survives. */

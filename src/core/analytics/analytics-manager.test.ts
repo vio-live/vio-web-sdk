@@ -213,3 +213,21 @@ describe('SSR safety', () => {
     expect(flushedBatches).toHaveLength(0)
   })
 })
+
+describe('autoTrack option', () => {
+  it('start({autoTrack:false}) keeps the engine but installs no funnel listeners', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'vev', autoTrack: false })
+    // Host dispatches an SDK funnel event — with autoTrack off, nothing queues.
+    ;(globalThis as Record<string, unknown> as { window: Window }).window.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 1 } }) as unknown as Event,
+    )
+    m.track('view_item') // manual track still works through the same engine
+    await m.flush()
+    const names = flushedBatches[0]!.events.map((e) => e.name)
+    expect(names).not.toContain('add_to_cart')
+    expect(names).toContain('view_item')
+    m.stop()
+  })
+})

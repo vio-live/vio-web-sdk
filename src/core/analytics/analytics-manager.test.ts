@@ -255,3 +255,40 @@ describe('UI auto-instrumentation', () => {
     m.stop()
   })
 })
+
+describe('host attribution', () => {
+  it('carries the host content id on the wire so it can join its own reporting', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('purchase', { context: { contentId: 123, contentUrl: '/artikkel/hostens-jakker' } })
+    await m.flush()
+
+    const ev = flushedBatches[0]!.events.at(-1) as Record<string, unknown>
+    const ctx = ev.context as Record<string, unknown>
+    expect(ctx.content_id).toBe(123)
+    expect(ctx.content_url).toBe('/artikkel/hostens-jakker')
+  })
+
+  it('adopts a host-supplied session id instead of minting one', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ sessionId: 'ml-sid-abc', collector: true })
+    m.track('add_to_cart')
+    await m.flush()
+
+    const events = flushedBatches.flatMap((b) => b.events)
+    expect(events.length).toBeGreaterThan(0)
+    for (const ev of events) expect(ev.session_id).toBe('ml-sid-abc')
+    m.stop()
+  })
+
+  it('keeps minting its own session when the host supplies none', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('add_to_cart')
+    await m.flush()
+
+    const ev = flushedBatches[0]!.events.at(-1) as Record<string, unknown>
+    expect(String(ev.session_id)).toMatch(/^s-/)
+  })
+})

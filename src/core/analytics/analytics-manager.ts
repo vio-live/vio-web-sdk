@@ -248,11 +248,27 @@ export class AnalyticsManager extends EventTarget {
    */
   observeImpression(
     element: Element,
-    context: AnalyticsContext & { campaignComponentId: number },
-    opts: { name?: Extract<AnalyticsEventName, 'component_impression' | 'ad_impression'> } = {},
+    context: AnalyticsContext = {},
+    opts: {
+      name?: Extract<AnalyticsEventName, 'component_impression' | 'ad_impression'>
+      /** Dedupe key override. Defaults to the strongest id available:
+       *  campaignComponentId → locationId → componentTemplateId. */
+      key?: string
+      /** Called the one time the impression is tracked (e.g. to fire a
+       *  companion view_item_list). */
+      onImpression?: () => void
+    } = {},
   ): () => void {
     if (!hasDom() || typeof IntersectionObserver === 'undefined') return () => {}
     const name = opts.name ?? 'component_impression'
+    const dedupe =
+      opts.key ??
+      String(
+        context.campaignComponentId ??
+          context.locationId ??
+          context.componentTemplateId ??
+          'component',
+      )
     let dwellTimer: ReturnType<typeof setTimeout> | null = null
 
     const observer = new IntersectionObserver(
@@ -261,11 +277,12 @@ export class AnalyticsManager extends EventTarget {
           if (entry.isIntersecting && entry.intersectionRatio >= IMPRESSION_THRESHOLD) {
             if (dwellTimer) continue
             dwellTimer = setTimeout(() => {
-              const key = `${name}:${context.campaignComponentId}`
+              const key = `${name}:${dedupe}`
               this.ensureSession()
               if (this.impressedComponents.has(key)) return
               this.impressedComponents.add(key)
               this.track(name, { context })
+              opts.onImpression?.()
               observer.disconnect()
             }, IMPRESSION_DWELL_MS)
           } else if (dwellTimer) {
@@ -507,6 +524,31 @@ export class AnalyticsManager extends EventTarget {
           ],
           value: line ? line.unitPrice * (d.quantity ?? 1) : undefined,
           currency: line?.currency,
+        },
+      })
+    })
+
+    on('vio:product-click', (ev) => {
+      const d = (ev as CustomEvent<{
+        productId?: number | string
+        sponsorId?: number
+        name?: string
+        brand?: string
+        price?: number | string
+      }>).detail ?? {}
+      if (d.productId === undefined) return
+      const price = Number(d.price)
+      this.track('select_item', {
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined },
+        commerce: {
+          items: [
+            {
+              productId: d.productId,
+              name: d.name,
+              brand: d.brand,
+              price: Number.isFinite(price) ? price : undefined,
+            },
+          ],
         },
       })
     })

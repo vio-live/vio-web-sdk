@@ -231,3 +231,24 @@ describe('autoTrack option', () => {
     m.stop()
   })
 })
+
+describe('UI auto-instrumentation', () => {
+  it('vio:product-click from SDK components becomes select_item', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' }) // autoTrack default: on
+    ;(globalThis as Record<string, unknown> as { window: Window }).window.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 408948, sponsorId: 9, name: 'Bonding Oil', price: 300 },
+      }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches[0]!.events
+    const sel = events.find((e) => e.name === 'select_item') as Record<string, unknown>
+    expect(sel).toBeDefined()
+    const commerce = sel.commerce as { items: Array<Record<string, unknown>> }
+    expect(commerce.items[0]!.product_id).toBe('408948')
+    expect(commerce.items[0]!.price).toBe(300)
+    m.stop()
+  })
+})

@@ -208,9 +208,16 @@ export class VioProductCarousel extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    this.observeForAnalytics()
     if (this.productRefs.trim() || this.productIds.trim()) {
       void this.autoFetch()
     }
+  }
+
+  override disconnectedCallback(): void {
+    this.unobserveImpression?.()
+    this.unobserveImpression = null
+    super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
@@ -279,11 +286,72 @@ export class VioProductCarousel extends LitElement {
           return product ? { product, sponsorId } : null
         })
         .filter((x): x is { product: Product; sponsorId: number } => x !== null)
+      this.maybeTrackList()
     } catch (err) {
       this.fetchError = err instanceof Error ? err.message : String(err)
       // Keep `fetched` null so slotted fallback can still render.
     } finally {
       this.isLoading = false
+    }
+  }
+
+  // ── Analytics (auto) ──────────────────────────────────────────────
+  // component_impression on the contract rule (≥50% visible ≥1s, once per
+  // session) + view_item_list with the rendered products. No-ops unless
+  // Vio.analytics.start() ran.
+  private unobserveImpression: (() => void) | null = null
+  private impressed = false
+  private listTracked = false
+
+  private observeForAnalytics(): void {
+    if (this.unobserveImpression) return
+    try {
+      this.unobserveImpression = Vio.analytics.observeImpression(
+        this,
+        {
+          sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+          componentTemplateId: 'product-carousel',
+          locationId: this.label || undefined,
+        },
+        {
+          key: `carousel:${this.label || this.productIds || this.productRefs || 'default'}`,
+          onImpression: () => {
+            this.impressed = true
+            this.maybeTrackList()
+          },
+        },
+      )
+    } catch {
+      /* analytics must never break rendering */
+    }
+  }
+
+  /** view_item_list needs BOTH the viewport dwell and loaded products —
+   * whichever lands last fires it (once). */
+  private maybeTrackList(): void {
+    if (!this.impressed || this.listTracked) return
+    const entries = this.fetched ?? []
+    if (entries.length === 0) return
+    this.listTracked = true
+    try {
+      Vio.analytics.track('view_item_list', {
+        context: {
+          sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+          componentTemplateId: 'product-carousel',
+          locationId: this.label || undefined,
+        },
+        commerce: {
+          items: entries.map(({ product, sponsorId }) => ({
+            productId: product.id,
+            name: product.title,
+            price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
+          })),
+          currency: entries[0]?.product.price?.currency_code,
+        },
+        props: this.label ? { list_name: this.label } : undefined,
+      })
+    } catch {
+      /* never break rendering */
     }
   }
 

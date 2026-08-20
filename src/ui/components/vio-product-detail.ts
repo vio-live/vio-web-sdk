@@ -573,6 +573,33 @@ export class VioProductDetail extends LitElement {
 
     this.optMapCache = new WeakMap()
     this.product = products?.[0] ?? null
+    if (this.product) {
+      // Analytics (auto): the detail opened with a concrete product.
+      try {
+        const price = Number(
+          this.product.price?.amount_incl_taxes ?? this.product.price?.amount,
+        )
+        Vio.analytics.track('view_item', {
+          context: {
+            sponsorId: this.sponsorId > 0 ? Number(this.sponsorId) : undefined,
+            componentTemplateId: 'product-detail',
+          },
+          commerce: {
+            items: [
+              {
+                productId: this.product.id,
+                name: this.product.title,
+                price: Number.isFinite(price) ? price : undefined,
+              },
+            ],
+            value: Number.isFinite(price) ? price : undefined,
+            currency: this.product.price?.currency_code,
+          },
+        })
+      } catch {
+        /* never break rendering */
+      }
+    }
     if (!this.product) {
       // Empty response without an exception — never leave a blank open modal.
       this.fetchError = 'Fant ikke produktet.'

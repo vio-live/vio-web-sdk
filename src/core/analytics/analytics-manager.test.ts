@@ -38,6 +38,7 @@ function installFakeDom() {
   }
   ;(g.window as Record<string, unknown>).location = { href: 'https://host.example/article' }
   g.location = (g.window as Record<string, unknown>).location
+  g.document = { title: 'Sneakers 2026 — trendy' }
   return { store, listeners }
 }
 
@@ -45,6 +46,7 @@ function removeFakeDom() {
   const g = globalThis as Record<string, unknown>
   delete g.window
   delete g.location
+  delete g.document
 }
 
 const flushedBatches: Array<{ apiKey: string; events: Array<Record<string, unknown>> }> = []
@@ -101,6 +103,7 @@ describe('wire format (contract v1)', () => {
     expect(ctx.sponsor_id).toBe(9)
     expect(ctx.variant).toBe('top-b')
     expect(ctx.content_url).toBe('https://host.example/article')
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
   })
 
   it('normalizes commerce ids to strings', async () => {

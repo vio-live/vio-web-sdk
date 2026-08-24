@@ -14,8 +14,11 @@ const CHANNEL_METHODS = [
   { name: 'Vipps', config: [] },
 ]
 
+// CheckoutManager needs a CartManager; the key resolver never touches it.
+const fakeCart = {} as never
+
 function managerWith(methods: unknown) {
-  const m = new CheckoutManager()
+  const m = new CheckoutManager(fakeCart)
   vi.spyOn(m, 'getAvailablePaymentMethods').mockResolvedValue(methods as never)
   return m as unknown as {
     resolveStripePublishableKey(sponsorId?: number): Promise<string>
@@ -39,7 +42,7 @@ describe('Apple Pay publishable key', () => {
   })
 
   it('never throws when the channel is unreachable', async () => {
-    const m = new CheckoutManager()
+    const m = new CheckoutManager(fakeCart)
     vi.spyOn(m, 'getAvailablePaymentMethods').mockRejectedValue(new Error('commerce down'))
     const r = m as unknown as { resolveStripePublishableKey(id?: number): Promise<string> }
     await expect(r.resolveStripePublishableKey(14)).resolves.toBe('')

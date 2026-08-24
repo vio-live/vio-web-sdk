@@ -838,13 +838,41 @@ export class CheckoutManager extends EventTarget {
   // MARK: - Apple Pay (Stripe Payment Request)
 
   /**
+   * The Stripe publishable key for a sponsor, taken from its own commerce
+   * channel (`GetAvailablePaymentMethods` → Stripe → config.publishableKey).
+   *
+   * The channel is the right source: the key belongs to the brand's Stripe
+   * account, so two brands on one page each get theirs, and a host never has
+   * to configure it. `Vio.init({ stripePublishableKey })` still wins when set,
+   * which keeps existing integrations working and allows an override.
+   */
+  private async resolveStripePublishableKey(sponsorId?: number): Promise<string> {
+    const cfg = Configuration.isInitialized ? Configuration.get() : null
+    if (cfg?.stripePublishableKey) return cfg.stripePublishableKey
+    if (this.applePayPublishableKey) return this.applePayPublishableKey
+    try {
+      // Memoised per sponsor upstream, so this is cheap on repeat calls.
+      const methods = await this.getAvailablePaymentMethods(sponsorId)
+      const stripe = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null)
+        ?.find((m) => String(m?.name ?? '').toLowerCase() === 'stripe')
+      const key = stripe?.config?.find((c) => c?.name === 'publishableKey')?.value
+      if (typeof key === 'string' && key.startsWith('pk_')) {
+        this.applePayPublishableKey = key
+        return key
+      }
+    } catch {
+      /* channel unreachable — treat as "no Apple Pay", never throw */
+    }
+    return ''
+  }
+
+  /**
    * Returns true if Apple Pay can be shown on this device + Stripe config.
    * Result is memoised — call `clearApplePayCache()` if config changes.
    */
   async isApplePayAvailable(country = 'NO'): Promise<boolean> {
     if (this.applePayAvailableCache !== null) return this.applePayAvailableCache
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = cfg?.stripePublishableKey ?? ''
+    const publishableKey = await this.resolveStripePublishableKey(this.state?.sponsorId)
     if (!publishableKey || !this.state) {
       this.applePayAvailableCache = false
       return false
@@ -879,8 +907,7 @@ export class CheckoutManager extends EventTarget {
     currency: string,
     country = 'NO',
   ): Promise<{ available: boolean; show: () => Promise<void> }> {
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(this.state?.sponsorId)
     if (!publishableKey) return { available: false, show: async () => {} }
     const prepared = await prepareApplePay({
       publishableKey,
@@ -949,8 +976,7 @@ export class CheckoutManager extends EventTarget {
     country = 'NO',
     sponsorId?: number,
   ): Promise<{ available: boolean; show: () => Promise<ApplePayResult | null> }> {
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(sponsorId ?? this.state?.sponsorId)
     if (!publishableKey) return { available: false, show: async () => null }
     const spId =
       sponsorId ?? this.state?.sponsorId ?? [...this.cartManager.getAllCarts().keys()][0]
@@ -1078,8 +1104,7 @@ export class CheckoutManager extends EventTarget {
   } = {}): Promise<ApplePayResult | null> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
     const spId = options.sponsorId ?? this.state.sponsorId
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(spId)
     if (!publishableKey) {
       throw new Error(
         '[VioCheckout] No Stripe publishable key configured. Pass `stripePublishableKey` to Vio.init({ ... }).',

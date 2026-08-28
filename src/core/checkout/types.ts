@@ -6,7 +6,7 @@
  * sequential checkouts.
  */
 
-export type PaymentMethod = 'apple-pay' | 'klarna' | 'vipps' | 'card' | 'stripe'
+export type PaymentMethod = 'apple-pay' | 'klarna' | 'vipps' | 'card' | 'stripe' | 'kustom'
 
 export interface CheckoutAddress {
   firstName: string

@@ -41,6 +41,13 @@ import {
   getVippsStatus as gqlGetVippsStatus,
 } from './payments/vipps.js'
 import {
+  createPaymentKustom as gqlCreatePaymentKustom,
+  getKustomOrder as gqlGetKustomOrder,
+  kustomCleanHref,
+  renderKustomSnippet,
+  type KustomOrder,
+} from './payments/kustom.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -811,6 +818,64 @@ export class CheckoutManager extends EventTarget {
   async getVippsStatus(checkoutId: string, sponsorId?: number): Promise<{ state?: string } | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetVippsStatus({ checkoutId }, opts)
+  }
+
+  /**
+   * Kustom (former Klarna Checkout) — create the KCO order via Vio Commerce
+   * and render its html_snippet into `container`. The widget collects
+   * address, shipping and payment by itself; the SDK renders nothing else.
+   */
+  async mountKustomCheckout(
+    container: HTMLElement,
+    sponsorId?: number,
+  ): Promise<KustomOrder> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for Kustom')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) cartId = await this.cartManager.ensureCartId(spId)
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+    const opts = await getCartGraphQLOptions(spId)
+    let checkoutId = this.state?.checkoutId
+    if (!checkoutId) {
+      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      checkoutId = checkoutRes?.id
+      if (checkoutId && this.state) {
+        this.state = { ...this.state, checkoutId }
+      }
+    }
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Kustom order')
+    }
+    // href MUST be query-less: shopcart appends ?order_id=…&payment_processor=KUSTOM
+    const href = kustomCleanHref()
+    const order = await gqlCreatePaymentKustom(
+      {
+        checkoutId,
+        countryCode: getGlobalCountryCode(),
+        href,
+        email: this.state?.address?.email || undefined,
+      },
+      opts,
+    )
+    if (!order?.html_snippet) {
+      throw new Error('Kustom order creation failed: missing html_snippet')
+    }
+    renderKustomSnippet(container, order.html_snippet)
+    return order
+  }
+
+  /** Re-read a Kustom order — used on the confirmation return trip. */
+  async getKustomOrder(orderId: string, sponsorId?: number): Promise<KustomOrder | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetKustomOrder(orderId, opts)
+  }
+
+  /** Render a Kustom html_snippet (e.g. the confirmation receipt) into a container. */
+  renderKustomSnippet(container: HTMLElement, htmlSnippet: string): void {
+    renderKustomSnippet(container, htmlSnippet)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

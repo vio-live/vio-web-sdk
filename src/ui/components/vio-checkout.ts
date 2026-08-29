@@ -76,6 +76,8 @@ export class VioCheckout extends LitElement {
   @state() private availableMethods: string[] | null = null
   @state() private kustomMounting = false
   private kustomMountedOrderId: string | null = null
+  @state() private qliroMounting = false
+  private qliroMountedOrderId: string | null = null
   /** Redirecting to the Stripe / Vipps hosted page. */
   @state() private stripeLoading = false
   @state() private vippsLoading = false
@@ -844,6 +846,71 @@ export class VioCheckout extends LitElement {
         return
       }
 
+      // Qliro's confirmation return: ?checkout_id=…&payment_processor=QLIRO
+      // (the href is query-less by contract). Re-read the order BY CHECKOUT
+      // and render Qliro's own receipt; the Commerce order is created
+      // server-side by the push webhook, never from the browser.
+      if (urlParams.get('payment_processor') === 'QLIRO' && checkoutId) {
+        if (!this.checkoutState) {
+          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          if (spIdToUse) {
+            try {
+              Vio.checkout.open(spIdToUse)
+            } catch {
+              /* noop */
+            }
+          }
+        }
+        try {
+          Vio.checkout.selectPaymentMethod('qliro')
+        } catch {
+          /* noop */
+        }
+        this.open = true
+        this.paymentNotice = 'Bekrefter betalingen…'
+        try {
+          const order = await Vio.checkout.getQliroOrder(
+            checkoutId,
+            this.checkoutState?.sponsorId,
+          )
+          this.paymentNotice = null
+          if (order?.html_snippet) {
+            this.qliroMountedOrderId = order.order_id
+            await this.updateComplete
+            const container = this.renderRoot?.querySelector(
+              '#vio-qliro-checkout-container',
+            ) as HTMLElement | null
+            if (container) {
+              Vio.checkout.renderKustomSnippet(container, order.html_snippet)
+            }
+            if (order.status === 'Completed') {
+              this.dispatchEvent(
+                new CustomEvent('vio:payment-success', {
+                  detail: { method: 'qliro', orderId: order.order_id },
+                  bubbles: true,
+                  composed: true,
+                }),
+              )
+              const spId = this.checkoutState?.sponsorId
+              if (spId) {
+                try {
+                  Vio.cart.clearSponsorCart(spId)
+                } catch {
+                  /* noop */
+                }
+              }
+            }
+          }
+        } catch (err) {
+          this.paymentNotice = null
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Qliro confirmation read failed:', err)
+          }
+        }
+        this.cleanReturnQueryParams(['checkout_id', 'payment_processor'])
+        return
+      }
+
       // Klarna's own return path (resumeKlarnaReturn) creates the order and
       // fires payment-complete — don't double-handle while it's pending.
       if (
@@ -981,6 +1048,7 @@ export class VioCheckout extends LitElement {
     // amount changes (the payment request is captured at mount time).
     void this.mountKlarnaIfNeeded()
     void this.mountKustomIfNeeded()
+    void this.mountQliroIfNeeded()
   }
 
   close(): void {
@@ -1275,6 +1343,11 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('kustom')
       return
     }
+    // Qliro: same widget-does-everything category as Kustom.
+    if (method === 'qliro') {
+      Vio.checkout.selectPaymentMethod('qliro')
+      return
+    }
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1403,6 +1476,8 @@ export class VioCheckout extends LitElement {
         return 'Klarna'
       case 'kustom':
         return 'Kustom'
+      case 'qliro':
+        return 'Qliro'
       case 'vipps':
         return 'Vipps'
       case 'stripe':
@@ -1419,7 +1494,12 @@ export class VioCheckout extends LitElement {
     // Apple Pay finishes in its sheet; Klarna finishes via its widget's
     // authorize() button; Kustom's embedded checkout has its own buy button —
     // none of them uses the generic "Betal" CTA.
-    return method === 'apple-pay' || method === 'klarna' || method === 'kustom'
+    return (
+      method === 'apple-pay' ||
+      method === 'klarna' ||
+      method === 'kustom' ||
+      method === 'qliro'
+    )
   }
 
   private orderTotal(): string {
@@ -1560,6 +1640,57 @@ export class VioCheckout extends LitElement {
     `
   }
 
+  /** Mount the Qliro embedded checkout once it's the chosen method. */
+  private async mountQliroIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'qliro') return
+    if (this.qliroMounting) return
+    const container = this.renderRoot?.querySelector(
+      '#vio-qliro-checkout-container',
+    ) as HTMLElement | null
+    if (!container) return
+    if (this.qliroMountedOrderId && container.childElementCount > 0) return
+
+    this.qliroMounting = true
+    container.innerHTML = ''
+    try {
+      const order = await Vio.checkout.mountQliroCheckout(
+        container,
+        this.checkoutState.sponsorId,
+      )
+      this.qliroMountedOrderId = order.order_id
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] Qliro mount failed:', err)
+      }
+      this.paymentError = `Kunne ikke laste Qliro: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+    } finally {
+      this.qliroMounting = false
+    }
+  }
+
+  private unmountQliro(): void {
+    this.qliroMountedOrderId = null
+    const container = this.renderRoot?.querySelector(
+      '#vio-qliro-checkout-container',
+    ) as HTMLElement | null
+    if (container) container.innerHTML = ''
+  }
+
+  private renderQliroPanel() {
+    return html`
+      <div class="qliro-panel">
+        ${this.qliroMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Qliro…</div>`
+          : ''}
+        <div id="vio-qliro-checkout-container"></div>
+      </div>
+    `
+  }
+
   private renderKlarnaPanel() {
     const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
@@ -1690,9 +1821,9 @@ export class VioCheckout extends LitElement {
     const showCompleteCta = !!method && !this.isExpressMethod(method)
     // Vipps collects the address in its own flow — skip the form entirely.
     const isVipps = method === 'vipps'
-    // Kustom's embedded checkout collects address, shipping AND email itself —
-    // skip the form AND the contact section (the widget does everything).
-    const isKustom = method === 'kustom'
+    // Kustom's and Qliro's embedded checkouts collect address, shipping AND
+    // email themselves — skip the form AND the contact section entirely.
+    const isKustom = method === 'kustom' || method === 'qliro'
     return html`
           ${!isVipps && !isKustom
             ? html`
@@ -1837,6 +1968,7 @@ export class VioCheckout extends LitElement {
                       @click=${() => {
                         this.unmountKlarna()
                         this.unmountKustom()
+                        this.unmountQliro()
                         Vio.checkout.selectPaymentMethod('' as PaymentMethod)
                       }}
                     >
@@ -1846,6 +1978,7 @@ export class VioCheckout extends LitElement {
 
                   ${method === 'klarna' ? this.renderKlarnaPanel() : ''}
                   ${method === 'kustom' ? this.renderKustomPanel() : ''}
+                  ${method === 'qliro' ? this.renderQliroPanel() : ''}
                   ${method === 'stripe'
                     ? html`
                         <button
@@ -1963,6 +2096,13 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button class="payment-btn" @click=${() => this.onPay('kustom')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Kustom</span>
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('qliro')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('qliro')}>
+                            <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Qliro</span>
                           </button>
                         `
                       : ''}

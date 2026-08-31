@@ -23,6 +23,7 @@ import type {
   CheckoutState,
   PaymentMethod,
 } from '../../core/checkout/types.js'
+import { WALLEY_PURCHASE_COMPLETED_EVENT } from '../../core/checkout/payments/walley.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -78,6 +79,9 @@ export class VioCheckout extends LitElement {
   private kustomMountedOrderId: string | null = null
   @state() private qliroMounting = false
   private qliroMountedOrderId: string | null = null
+  @state() private walleyMounting = false
+  private walleyMountedOrderId: string | null = null
+  private walleyCompletedListener: ((e: Event) => void) | null = null
   /** Redirecting to the Stripe / Vipps hosted page. */
   @state() private stripeLoading = false
   @state() private vippsLoading = false
@@ -911,6 +915,30 @@ export class VioCheckout extends LitElement {
         return
       }
 
+      // Walley's redirect return is only a SAFETY NET (the DOM event is the
+      // primary signal): re-select walley so the panel re-mounts — a
+      // completed session renders Walley's own receipt and re-signals.
+      if (urlParams.get('payment_processor') === 'WALLEY' && checkoutId) {
+        if (!this.checkoutState) {
+          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          if (spIdToUse) {
+            try {
+              Vio.checkout.open(spIdToUse)
+            } catch {
+              /* noop */
+            }
+          }
+        }
+        try {
+          Vio.checkout.selectPaymentMethod('walley')
+        } catch {
+          /* noop */
+        }
+        this.open = true
+        this.cleanReturnQueryParams(['checkout_id', 'payment_processor'])
+        return
+      }
+
       // Klarna's own return path (resumeKlarnaReturn) creates the order and
       // fires payment-complete — don't double-handle while it's pending.
       if (
@@ -1049,6 +1077,7 @@ export class VioCheckout extends LitElement {
     void this.mountKlarnaIfNeeded()
     void this.mountKustomIfNeeded()
     void this.mountQliroIfNeeded()
+    void this.mountWalleyIfNeeded()
   }
 
   close(): void {
@@ -1348,6 +1377,11 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('qliro')
       return
     }
+    // Walley: same widget-does-everything category.
+    if (method === 'walley') {
+      Vio.checkout.selectPaymentMethod('walley')
+      return
+    }
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1478,6 +1512,8 @@ export class VioCheckout extends LitElement {
         return 'Kustom'
       case 'qliro':
         return 'Qliro'
+      case 'walley':
+        return 'Walley'
       case 'vipps':
         return 'Vipps'
       case 'stripe':
@@ -1498,7 +1534,8 @@ export class VioCheckout extends LitElement {
       method === 'apple-pay' ||
       method === 'klarna' ||
       method === 'kustom' ||
-      method === 'qliro'
+      method === 'qliro' ||
+      method === 'walley'
     )
   }
 
@@ -1691,6 +1728,98 @@ export class VioCheckout extends LitElement {
     `
   }
 
+  /** Mount the Walley embedded checkout once it's the chosen method. */
+  private async mountWalleyIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'walley') return
+    if (this.walleyMounting) return
+    const container = this.renderRoot?.querySelector(
+      '#vio-walley-checkout-container',
+    ) as HTMLElement | null
+    if (!container) return
+    if (this.walleyMountedOrderId && container.childElementCount > 0) return
+
+    this.walleyMounting = true
+    container.innerHTML = ''
+    try {
+      const order = await Vio.checkout.mountWalleyCheckout(
+        container,
+        this.checkoutState.sponsorId,
+      )
+      this.walleyMountedOrderId = order.order_id
+      this.listenWalleyCompleted()
+      // Reload of an already-completed session: Walley renders its own
+      // receipt, and the event won't re-fire — signal success from status.
+      if (order.status === 'PurchaseCompleted') this.onWalleyCompleted()
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] Walley mount failed:', err)
+      }
+      this.paymentError = `Kunne ikke laste Walley: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+    } finally {
+      this.walleyMounting = false
+    }
+  }
+
+  /** Walley fires a DOM event on completion — no redirect round-trip. */
+  private listenWalleyCompleted(): void {
+    if (this.walleyCompletedListener || typeof document === 'undefined') return
+    this.walleyCompletedListener = () => this.onWalleyCompleted()
+    document.addEventListener(
+      WALLEY_PURCHASE_COMPLETED_EVENT,
+      this.walleyCompletedListener,
+    )
+  }
+
+  private onWalleyCompleted(): void {
+    this.dispatchEvent(
+      new CustomEvent('vio:payment-success', {
+        detail: { method: 'walley', orderId: this.walleyMountedOrderId },
+        bubbles: true,
+        composed: true,
+      }),
+    )
+    const spId = this.checkoutState?.sponsorId
+    if (spId) {
+      try {
+        Vio.cart.clearSponsorCart(spId)
+      } catch {
+        /* noop */
+      }
+    }
+    // The Commerce order is created server-side by Walley's notification —
+    // the iframe now shows Walley's own receipt; nothing else to render.
+  }
+
+  private unmountWalley(): void {
+    this.walleyMountedOrderId = null
+    if (this.walleyCompletedListener && typeof document !== 'undefined') {
+      document.removeEventListener(
+        WALLEY_PURCHASE_COMPLETED_EVENT,
+        this.walleyCompletedListener,
+      )
+      this.walleyCompletedListener = null
+    }
+    const container = this.renderRoot?.querySelector(
+      '#vio-walley-checkout-container',
+    ) as HTMLElement | null
+    if (container) container.innerHTML = ''
+  }
+
+  private renderWalleyPanel() {
+    return html`
+      <div class="walley-panel">
+        ${this.walleyMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Walley…</div>`
+          : ''}
+        <div id="vio-walley-checkout-container"></div>
+      </div>
+    `
+  }
+
   private renderKlarnaPanel() {
     const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
@@ -1823,7 +1952,7 @@ export class VioCheckout extends LitElement {
     const isVipps = method === 'vipps'
     // Kustom's and Qliro's embedded checkouts collect address, shipping AND
     // email themselves — skip the form AND the contact section entirely.
-    const isKustom = method === 'kustom' || method === 'qliro'
+    const isKustom = method === 'kustom' || method === 'qliro' || method === 'walley'
     return html`
           ${!isVipps && !isKustom
             ? html`
@@ -1969,6 +2098,7 @@ export class VioCheckout extends LitElement {
                         this.unmountKlarna()
                         this.unmountKustom()
                         this.unmountQliro()
+                        this.unmountWalley()
                         Vio.checkout.selectPaymentMethod('' as PaymentMethod)
                       }}
                     >
@@ -1979,6 +2109,7 @@ export class VioCheckout extends LitElement {
                   ${method === 'klarna' ? this.renderKlarnaPanel() : ''}
                   ${method === 'kustom' ? this.renderKustomPanel() : ''}
                   ${method === 'qliro' ? this.renderQliroPanel() : ''}
+                  ${method === 'walley' ? this.renderWalleyPanel() : ''}
                   ${method === 'stripe'
                     ? html`
                         <button
@@ -2103,6 +2234,13 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button class="payment-btn" @click=${() => this.onPay('qliro')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Qliro</span>
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('walley')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('walley')}>
+                            <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Walley</span>
                           </button>
                         `
                       : ''}

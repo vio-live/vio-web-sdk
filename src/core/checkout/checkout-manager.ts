@@ -53,6 +53,11 @@ import {
   type QliroOrder,
 } from './payments/qliro.js'
 import {
+  createPaymentWalley as gqlCreatePaymentWalley,
+  getWalleyOrder as gqlGetWalleyOrder,
+  type WalleyOrder,
+} from './payments/walley.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -933,6 +938,58 @@ export class CheckoutManager extends EventTarget {
   async getQliroOrder(checkoutId: string, sponsorId?: number): Promise<QliroOrder | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetQliroOrder(checkoutId, opts)
+  }
+
+  /**
+   * Walley Checkout — init the session via Vio Commerce and render its
+   * (synthesized) snippet into `container`. Widget-does-everything; the
+   * completion signal is Walley's own DOM event, no redirect needed.
+   */
+  async mountWalleyCheckout(
+    container: HTMLElement,
+    sponsorId?: number,
+  ): Promise<WalleyOrder> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for Walley')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) cartId = await this.cartManager.ensureCartId(spId)
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+    const opts = await getCartGraphQLOptions(spId)
+    let checkoutId = this.state?.checkoutId
+    if (!checkoutId) {
+      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      checkoutId = checkoutRes?.id
+      if (checkoutId && this.state) {
+        this.state = { ...this.state, checkoutId }
+      }
+    }
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Walley session')
+    }
+    const href = kustomCleanHref()
+    const order = await gqlCreatePaymentWalley(
+      {
+        checkoutId,
+        countryCode: getGlobalCountryCode(),
+        href,
+        email: this.state?.address?.email || undefined,
+      },
+      opts,
+    )
+    if (!order?.html_snippet) {
+      throw new Error('Walley session init failed: missing html_snippet')
+    }
+    renderKustomSnippet(container, order.html_snippet)
+    return order
+  }
+
+  /** Re-read the Walley session owned by a checkout. */
+  async getWalleyOrder(checkoutId: string, sponsorId?: number): Promise<WalleyOrder | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetWalleyOrder(checkoutId, opts)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

@@ -75,6 +75,8 @@ export const VioTokens = {
     sm: '2px',
     md: '4px',
     lg: '8px',
+    /** Sheet/drawer corners — the largest surface radius in the checkout. */
+    xl: '16px',
     full: '9999px',
   },
 } as const
@@ -129,6 +131,7 @@ const VIO_TOKENS_CSS = `
     --vio-radius-sm: ${VioTokens.radius.sm};
     --vio-radius-md: ${VioTokens.radius.md};
     --vio-radius-lg: ${VioTokens.radius.lg};
+    --vio-radius-xl: ${VioTokens.radius.xl};
   }
 `
 
@@ -154,10 +157,16 @@ injectTokens()
  * `injectTokens` installs above, regardless of import/injection order — no
  * specificity fights, no reaching for `!important`.
  *
- * A curated subset on purpose: colors + fonts are what a merchant/publisher
- * actually wants a "brand settings" panel for. Spacing/radius/sizes stay
- * internal — expose them here later if a real need shows up, don't
- * speculatively surface the whole token set as public API.
+ * A curated subset on purpose — colors, fonts, corner radius and the spacing
+ * steps the checkout actually uses. Radius and spacing were added once the
+ * need was real (brand panels in Vev/Replit): corner shape is the strongest
+ * identity lever after colour, and the spacing steps drive comfortable-vs-
+ * compact density. The rest of the token set (sizes, tracking, line heights)
+ * stays internal — don't speculatively surface it as public API.
+ *
+ * Panels are expected to present these as a few opinionated choices (e.g.
+ * "Sharp / Default / Rounded") rather than four raw pixel inputs; the API
+ * stays per-token so a panel can compose whatever presets it wants.
  *
  * Host integrations (the Vio Config panel in Vev, a future Replit CMS
  * panel, anything else) should call this ONE function — never set
@@ -177,6 +186,18 @@ export interface VioThemeOverrides {
   colorBorderDefault?: string
   fontSerif?: string
   fontSans?: string
+  /** Corner radius. `sm` = drag handles, `lg` = controls (chips, notices,
+   *  shipping options), `xl` = the sheet/drawer itself. Set all three to `0`
+   *  for a square look, or raise `xl` for a softer one. */
+  radiusSm?: string
+  radiusMd?: string
+  radiusLg?: string
+  radiusXl?: string
+  /** Spacing steps — drive checkout density (compact vs comfortable). */
+  spaceSm?: string
+  spaceMd?: string
+  spaceLg?: string
+  spaceXl?: string
 }
 
 const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
@@ -192,6 +213,14 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   colorBorderDefault: '--vio-color-border-default',
   fontSerif: '--vio-font-serif',
   fontSans: '--vio-font-sans',
+  radiusSm: '--vio-radius-sm',
+  radiusMd: '--vio-radius-md',
+  radiusLg: '--vio-radius-lg',
+  radiusXl: '--vio-radius-xl',
+  spaceSm: '--vio-space-sm',
+  spaceMd: '--vio-space-md',
+  spaceLg: '--vio-space-lg',
+  spaceXl: '--vio-space-xl',
 }
 
 /**

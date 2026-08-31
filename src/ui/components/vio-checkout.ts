@@ -186,7 +186,7 @@ export class VioCheckout extends LitElement {
       max-height: 88vh;
       max-width: 460px;
       margin: 0 auto;
-      border-radius: 16px 16px 0 0;
+      border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
       box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.18);
     }
     .modal.as-drawer .handle {
@@ -200,7 +200,7 @@ export class VioCheckout extends LitElement {
       width: 40px;
       height: 4px;
       background: var(--vio-color-border, #e5e5e5);
-      border-radius: 2px;
+      border-radius: var(--vio-radius-sm, 2px);
     }
 
     /* Express (Apple Pay-style): right-side drawer, like the cart. Slides in
@@ -237,7 +237,7 @@ export class VioCheckout extends LitElement {
         max-width: none;
         height: 92vh;
         transform: translateY(100%);
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
       }
       :host([open]) .modal.as-side { transform: translateY(0); }
     }
@@ -252,7 +252,7 @@ export class VioCheckout extends LitElement {
       max-width: 440px;
       height: auto;
       max-height: 88vh;
-      border-radius: 16px;
+      border-radius: var(--vio-radius-xl, 16px);
       box-shadow: 0 30px 80px -24px rgba(0, 0, 0, 0.4);
       transform: translate(-50%, -50%) scale(0.96);
       opacity: 0;
@@ -268,7 +268,7 @@ export class VioCheckout extends LitElement {
         left: 0;
         width: 100%;
         max-width: none;
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         transform: translateY(100%) scale(1);
         opacity: 1;
       }
@@ -282,7 +282,7 @@ export class VioCheckout extends LitElement {
       .modal {
         top: auto;
         height: 92vh;
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
       }
       .handle {
@@ -296,7 +296,7 @@ export class VioCheckout extends LitElement {
         width: 40px;
         height: 4px;
         background: var(--vio-color-border, #e5e5e5);
-        border-radius: 2px;
+        border-radius: var(--vio-radius-sm, 2px);
       }
     }
 
@@ -452,7 +452,7 @@ export class VioCheckout extends LitElement {
       flex: 1 1 auto;
       padding: 8px 12px;
       border: 1px solid var(--vio-color-border, #ddd);
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       background: #fff;
       font-size: 13px;
       cursor: pointer;
@@ -476,7 +476,7 @@ export class VioCheckout extends LitElement {
     .ship-opt {
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
       padding: 12px 14px; border: 1px solid var(--vio-color-border, #ddd);
-      border-radius: 10px; background: #fff; cursor: pointer; font-family: inherit;
+      border-radius: var(--vio-radius-lg, 8px); background: #fff; cursor: pointer; font-family: inherit;
       text-align: left;
     }
     .ship-opt.active {
@@ -493,7 +493,7 @@ export class VioCheckout extends LitElement {
       padding: 12px 16px;
       background: #fdecea;
       border: 1px solid var(--vio-color-accent, #c14a3b);
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       font-size: 13px;
       color: var(--vio-color-accent, #c14a3b);
       text-align: center;
@@ -503,7 +503,7 @@ export class VioCheckout extends LitElement {
       padding: 12px 16px;
       background: #f4f4f2;
       border: 1px solid var(--vio-color-border, #ddd);
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       font-size: 13px;
       color: var(--vio-color-text, #1a1a1a);
       text-align: center;

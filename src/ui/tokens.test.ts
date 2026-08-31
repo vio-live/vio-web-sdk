@@ -34,10 +34,18 @@ describe('applyVioTheme', () => {
     expect(target.style.setProperty).toHaveBeenCalledWith('--vio-font-serif', 'Georgia, serif')
   })
 
+  it('maps the radius and spacing keys too (corner shape + density)', () => {
+    const target = mockTarget()
+    applyVioTheme({ radiusXl: '0', radiusLg: '0', spaceMd: '12px' }, target)
+    expect(target.style.setProperty).toHaveBeenCalledWith('--vio-radius-xl', '0')
+    expect(target.style.setProperty).toHaveBeenCalledWith('--vio-radius-lg', '0')
+    expect(target.style.setProperty).toHaveBeenCalledWith('--vio-space-md', '12px')
+  })
+
   it('only touches keys actually present in the overrides object', () => {
     const target = mockTarget()
     applyVioTheme({ colorAccent: '#0044ff' }, target)
-    // 12 keys total in VioThemeOverrides; only 1 was passed.
+    // 20 keys total in VioThemeOverrides; only 1 was passed.
     expect(target.style.setProperty).toHaveBeenCalledTimes(1)
     expect(target.style.removeProperty).not.toHaveBeenCalled()
   })

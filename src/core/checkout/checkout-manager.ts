@@ -41,6 +41,13 @@ import {
   getVippsStatus as gqlGetVippsStatus,
 } from './payments/vipps.js'
 import {
+  createPaymentKustom as gqlCreatePaymentKustom,
+  getKustomOrder as gqlGetKustomOrder,
+  kustomCleanHref,
+  renderKustomSnippet,
+  type KustomOrder,
+} from './payments/kustom.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -813,6 +820,64 @@ export class CheckoutManager extends EventTarget {
     return gqlGetVippsStatus({ checkoutId }, opts)
   }
 
+  /**
+   * Kustom (former Klarna Checkout) — create the KCO order via Vio Commerce
+   * and render its html_snippet into `container`. The widget collects
+   * address, shipping and payment by itself; the SDK renders nothing else.
+   */
+  async mountKustomCheckout(
+    container: HTMLElement,
+    sponsorId?: number,
+  ): Promise<KustomOrder> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for Kustom')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) cartId = await this.cartManager.ensureCartId(spId)
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+    const opts = await getCartGraphQLOptions(spId)
+    let checkoutId = this.state?.checkoutId
+    if (!checkoutId) {
+      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      checkoutId = checkoutRes?.id
+      if (checkoutId && this.state) {
+        this.state = { ...this.state, checkoutId }
+      }
+    }
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Kustom order')
+    }
+    // href MUST be query-less: shopcart appends ?order_id=…&payment_processor=KUSTOM
+    const href = kustomCleanHref()
+    const order = await gqlCreatePaymentKustom(
+      {
+        checkoutId,
+        countryCode: getGlobalCountryCode(),
+        href,
+        email: this.state?.address?.email || undefined,
+      },
+      opts,
+    )
+    if (!order?.html_snippet) {
+      throw new Error('Kustom order creation failed: missing html_snippet')
+    }
+    renderKustomSnippet(container, order.html_snippet)
+    return order
+  }
+
+  /** Re-read a Kustom order — used on the confirmation return trip. */
+  async getKustomOrder(orderId: string, sponsorId?: number): Promise<KustomOrder | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetKustomOrder(orderId, opts)
+  }
+
+  /** Render a Kustom html_snippet (e.g. the confirmation receipt) into a container. */
+  renderKustomSnippet(container: HTMLElement, htmlSnippet: string): void {
+    renderKustomSnippet(container, htmlSnippet)
+  }
+
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   setAddress(address: CheckoutAddress): void {
@@ -838,13 +903,41 @@ export class CheckoutManager extends EventTarget {
   // MARK: - Apple Pay (Stripe Payment Request)
 
   /**
+   * The Stripe publishable key for a sponsor, taken from its own commerce
+   * channel (`GetAvailablePaymentMethods` → Stripe → config.publishableKey).
+   *
+   * The channel is the right source: the key belongs to the brand's Stripe
+   * account, so two brands on one page each get theirs, and a host never has
+   * to configure it. `Vio.init({ stripePublishableKey })` still wins when set,
+   * which keeps existing integrations working and allows an override.
+   */
+  private async resolveStripePublishableKey(sponsorId?: number): Promise<string> {
+    const cfg = Configuration.isInitialized ? Configuration.get() : null
+    if (cfg?.stripePublishableKey) return cfg.stripePublishableKey
+    if (this.applePayPublishableKey) return this.applePayPublishableKey
+    try {
+      // Memoised per sponsor upstream, so this is cheap on repeat calls.
+      const methods = await this.getAvailablePaymentMethods(sponsorId)
+      const stripe = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null)
+        ?.find((m) => String(m?.name ?? '').toLowerCase() === 'stripe')
+      const key = stripe?.config?.find((c) => c?.name === 'publishableKey')?.value
+      if (typeof key === 'string' && key.startsWith('pk_')) {
+        this.applePayPublishableKey = key
+        return key
+      }
+    } catch {
+      /* channel unreachable — treat as "no Apple Pay", never throw */
+    }
+    return ''
+  }
+
+  /**
    * Returns true if Apple Pay can be shown on this device + Stripe config.
    * Result is memoised — call `clearApplePayCache()` if config changes.
    */
   async isApplePayAvailable(country = 'NO'): Promise<boolean> {
     if (this.applePayAvailableCache !== null) return this.applePayAvailableCache
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = cfg?.stripePublishableKey ?? ''
+    const publishableKey = await this.resolveStripePublishableKey(this.state?.sponsorId)
     if (!publishableKey || !this.state) {
       this.applePayAvailableCache = false
       return false
@@ -879,8 +972,7 @@ export class CheckoutManager extends EventTarget {
     currency: string,
     country = 'NO',
   ): Promise<{ available: boolean; show: () => Promise<void> }> {
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(this.state?.sponsorId)
     if (!publishableKey) return { available: false, show: async () => {} }
     const prepared = await prepareApplePay({
       publishableKey,
@@ -949,8 +1041,7 @@ export class CheckoutManager extends EventTarget {
     country = 'NO',
     sponsorId?: number,
   ): Promise<{ available: boolean; show: () => Promise<ApplePayResult | null> }> {
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(sponsorId ?? this.state?.sponsorId)
     if (!publishableKey) return { available: false, show: async () => null }
     const spId =
       sponsorId ?? this.state?.sponsorId ?? [...this.cartManager.getAllCarts().keys()][0]
@@ -1078,8 +1169,7 @@ export class CheckoutManager extends EventTarget {
   } = {}): Promise<ApplePayResult | null> {
     if (!this.state) throw new Error('[VioCheckout] no active checkout — call open() first')
     const spId = options.sponsorId ?? this.state.sponsorId
-    const cfg = Configuration.isInitialized ? Configuration.get() : null
-    const publishableKey = this.applePayPublishableKey || cfg?.stripePublishableKey || ''
+    const publishableKey = await this.resolveStripePublishableKey(spId)
     if (!publishableKey) {
       throw new Error(
         '[VioCheckout] No Stripe publishable key configured. Pass `stripePublishableKey` to Vio.init({ ... }).',

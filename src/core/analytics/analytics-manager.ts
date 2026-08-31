@@ -70,6 +70,13 @@ export interface AnalyticsContext {
   sponsorId?: number
   activationId?: number
   contentUrl?: string
+  /**
+   * The host's own id for the piece of content the component sits in — an
+   * article id in a CMS, a page id in a site builder. Carried verbatim so the
+   * host can join Vio's funnel back onto its own per-article reporting
+   * (revenue stops being an estimate). Left alone by the SDK.
+   */
+  contentId?: string | number
   /** Human-readable content snapshot; auto-filled from document.title. */
   contentTitle?: string
   variant?: string
@@ -110,6 +117,14 @@ export interface AnalyticsStartOptions {
    * transport engine and call track() themselves.
    */
   autoTrack?: boolean
+  /**
+   * Adopt the host's session id instead of minting one. A host that already
+   * tracks its readers (its own impressions, dwell, clicks) needs Vio's
+   * purchases to land in the SAME session, or the two datasets cannot be
+   * joined. Pass the id the host already stores; omit it and the SDK keeps
+   * its own rotating session.
+   */
+  sessionId?: string
   /** Send to the Vio collector. Default true. */
   collector?: boolean
   /** Also push GA4 e-commerce events to window.dataLayer (publisher feature). */
@@ -166,6 +181,9 @@ export class AnalyticsManager extends EventTarget {
   private externalUserId: string | undefined
 
   private sessionId: string | null = null
+
+  /** Set via start({ sessionId }) — the host owns the session, we follow. */
+  private externalSessionId: string | null = null
   private sessionStartedAt = 0
   /** Impression once-per-(session, component) guard; reset on session rotation. */
   private impressedComponents = new Set<string>()
@@ -190,6 +208,10 @@ export class AnalyticsManager extends EventTarget {
       debug: options.debug ?? this.options.debug,
       autoTrack: options.autoTrack ?? this.options.autoTrack,
     }
+    // A host-supplied session id wins over our own: it is the only way the
+    // host can join Vio's funnel onto the events it already collects.
+    if (options.sessionId) this.externalSessionId = options.sessionId
+
     if (this.started || !hasDom()) return
     this.started = true
 
@@ -363,6 +385,8 @@ export class AnalyticsManager extends EventTarget {
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
       content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
+      // The host's own content id — its join key back onto its reporting.
+      content_id: ctx.contentId,
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
       content_title:
@@ -443,6 +467,15 @@ export class AnalyticsManager extends EventTarget {
         } catch {
           this.sessionId = null
         }
+      }
+    }
+
+    if (this.externalSessionId) {
+      // The host rotates its own session; we never expire or replace it.
+      if (this.sessionId !== this.externalSessionId) {
+        this.sessionId = this.externalSessionId
+        this.sessionStartedAt = now
+        this.impressedComponents.clear()
       }
     }
 

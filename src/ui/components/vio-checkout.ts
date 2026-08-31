@@ -74,6 +74,8 @@ export class VioCheckout extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  @state() private kustomMounting = false
+  private kustomMountedOrderId: string | null = null
   /** Redirecting to the Stripe / Vipps hosted page. */
   @state() private stripeLoading = false
   @state() private vippsLoading = false
@@ -774,6 +776,74 @@ export class VioCheckout extends LitElement {
       // check.
       if (!vioPayment && !checkoutId) return
 
+      // Kustom's confirmation return: shopcart registers the confirmation URL
+      // as ?order_id=…&payment_processor=KUSTOM (no vio_* params — the href
+      // is query-less by contract). Re-read the order and render KCO's own
+      // confirmation snippet; the Commerce order is created server-side by
+      // the push webhook, never from the browser.
+      const kustomOrderId = urlParams.get('order_id') || ''
+      if (urlParams.get('payment_processor') === 'KUSTOM' && kustomOrderId) {
+        if (!this.checkoutState) {
+          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          if (spIdToUse) {
+            try {
+              Vio.checkout.open(spIdToUse)
+            } catch {
+              /* noop */
+            }
+          }
+        }
+        try {
+          Vio.checkout.selectPaymentMethod('kustom')
+        } catch {
+          /* noop */
+        }
+        this.open = true
+        this.paymentNotice = 'Bekrefter betalingen…'
+        try {
+          const order = await Vio.checkout.getKustomOrder(
+            kustomOrderId,
+            this.checkoutState?.sponsorId,
+          )
+          this.paymentNotice = null
+          if (order?.html_snippet) {
+            // Render KCO's own receipt into the panel once it exists in the DOM.
+            this.kustomMountedOrderId = order.order_id
+            await this.updateComplete
+            const container = this.renderRoot?.querySelector(
+              '#vio-kustom-checkout-container',
+            ) as HTMLElement | null
+            if (container) {
+              Vio.checkout.renderKustomSnippet(container, order.html_snippet)
+            }
+            if (order.status === 'checkout_complete') {
+              this.dispatchEvent(
+                new CustomEvent('vio:payment-success', {
+                  detail: { method: 'kustom', orderId: order.order_id },
+                  bubbles: true,
+                  composed: true,
+                }),
+              )
+              const spId = this.checkoutState?.sponsorId
+              if (spId) {
+                try {
+                  Vio.cart.clearSponsorCart(spId)
+                } catch {
+                  /* noop */
+                }
+              }
+            }
+          }
+        } catch (err) {
+          this.paymentNotice = null
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Kustom confirmation read failed:', err)
+          }
+        }
+        this.cleanReturnQueryParams(['order_id', 'payment_processor'])
+        return
+      }
+
       // Klarna's own return path (resumeKlarnaReturn) creates the order and
       // fires payment-complete — don't double-handle while it's pending.
       if (
@@ -910,6 +980,7 @@ export class VioCheckout extends LitElement {
     // express flow is available, and the overlay is open. Re-mount when the
     // amount changes (the payment request is captured at mount time).
     void this.mountKlarnaIfNeeded()
+    void this.mountKustomIfNeeded()
   }
 
   close(): void {
@@ -1198,6 +1269,12 @@ export class VioCheckout extends LitElement {
       void this.onApplePay()
       return
     }
+    // Kustom's embedded checkout collects address, shipping, email AND
+    // payment — nothing to validate before mounting it.
+    if (method === 'kustom') {
+      Vio.checkout.selectPaymentMethod('kustom')
+      return
+    }
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1324,6 +1401,8 @@ export class VioCheckout extends LitElement {
         return 'Apple Pay'
       case 'klarna':
         return 'Klarna'
+      case 'kustom':
+        return 'Kustom'
       case 'vipps':
         return 'Vipps'
       case 'stripe':
@@ -1338,8 +1417,9 @@ export class VioCheckout extends LitElement {
   /** True for methods that complete via a separate sheet/widget, not the CTA. */
   private isExpressMethod(method: PaymentMethod | undefined): boolean {
     // Apple Pay finishes in its sheet; Klarna finishes via its widget's
-    // authorize() button — neither uses the generic "Betal" CTA.
-    return method === 'apple-pay' || method === 'klarna'
+    // authorize() button; Kustom's embedded checkout has its own buy button —
+    // none of them uses the generic "Betal" CTA.
+    return method === 'apple-pay' || method === 'klarna' || method === 'kustom'
   }
 
   private orderTotal(): string {
@@ -1427,6 +1507,59 @@ export class VioCheckout extends LitElement {
   }
 
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
+  /** Mount the Kustom embedded checkout once it's the chosen method. */
+  private async mountKustomIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'kustom') return
+    if (this.kustomMounting) return
+    const container = this.renderRoot?.querySelector(
+      '#vio-kustom-checkout-container',
+    ) as HTMLElement | null
+    if (!container) return
+    // Already mounted for this session — the KCO iframe manages itself
+    // (address, shipping and totals live inside it; no re-mount on change).
+    if (this.kustomMountedOrderId && container.childElementCount > 0) return
+
+    this.kustomMounting = true
+    container.innerHTML = ''
+    try {
+      const order = await Vio.checkout.mountKustomCheckout(
+        container,
+        this.checkoutState.sponsorId,
+      )
+      this.kustomMountedOrderId = order.order_id
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] Kustom mount failed:', err)
+      }
+      this.paymentError = `Kunne ikke laste Kustom: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+    } finally {
+      this.kustomMounting = false
+    }
+  }
+
+  private unmountKustom(): void {
+    this.kustomMountedOrderId = null
+    const container = this.renderRoot?.querySelector(
+      '#vio-kustom-checkout-container',
+    ) as HTMLElement | null
+    if (container) container.innerHTML = ''
+  }
+
+  private renderKustomPanel() {
+    return html`
+      <div class="kustom-panel">
+        ${this.kustomMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Kustom…</div>`
+          : ''}
+        <div id="vio-kustom-checkout-container"></div>
+      </div>
+    `
+  }
+
   private renderKlarnaPanel() {
     const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
@@ -1557,8 +1690,11 @@ export class VioCheckout extends LitElement {
     const showCompleteCta = !!method && !this.isExpressMethod(method)
     // Vipps collects the address in its own flow — skip the form entirely.
     const isVipps = method === 'vipps'
+    // Kustom's embedded checkout collects address, shipping AND email itself —
+    // skip the form AND the contact section (the widget does everything).
+    const isKustom = method === 'kustom'
     return html`
-          ${!isVipps
+          ${!isVipps && !isKustom
             ? html`
           <section class="section">
             <div class="section-label">Steg 1</div>
@@ -1688,7 +1824,7 @@ export class VioCheckout extends LitElement {
             : ''}
 
           <section class="section">
-            <div class="section-label">${isVipps ? 'Betaling' : 'Steg 2'}</div>
+            <div class="section-label">${isVipps || isKustom ? 'Betaling' : 'Steg 2'}</div>
             ${method
               ? html`
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
@@ -1700,6 +1836,7 @@ export class VioCheckout extends LitElement {
                       style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
                       @click=${() => {
                         this.unmountKlarna()
+                        this.unmountKustom()
                         Vio.checkout.selectPaymentMethod('' as PaymentMethod)
                       }}
                     >
@@ -1708,6 +1845,7 @@ export class VioCheckout extends LitElement {
                   </div>
 
                   ${method === 'klarna' ? this.renderKlarnaPanel() : ''}
+                  ${method === 'kustom' ? this.renderKustomPanel() : ''}
                   ${method === 'stripe'
                     ? html`
                         <button
@@ -1818,6 +1956,13 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button class="payment-btn" @click=${() => this.onPay('klarna')}>
                             Klarna
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('kustom')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('kustom')}>
+                            <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Kustom</span>
                           </button>
                         `
                       : ''}

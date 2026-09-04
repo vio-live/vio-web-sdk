@@ -53,6 +53,12 @@ import {
   type QliroOrder,
 } from './payments/qliro.js'
 import {
+  createPaymentWalley as gqlCreatePaymentWalley,
+  getWalleyOrder as gqlGetWalleyOrder,
+  WALLEY_PURCHASE_COMPLETED_EVENT,
+  type WalleyOrder,
+} from './payments/walley.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -933,6 +939,68 @@ export class CheckoutManager extends EventTarget {
   async getQliroOrder(checkoutId: string, sponsorId?: number): Promise<QliroOrder | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetQliroOrder(checkoutId, opts)
+  }
+
+  /**
+   * Mount the Walley embedded checkout. `onPurchaseCompleted` fires as soon
+   * as Walley's own script dispatches its success event INSIDE the widget —
+   * no redirect needed. `getWalleyOrder`/the confirmation-URL fallback
+   * remain for the case the event is missed (tab backgrounded, reload).
+   */
+  async mountWalleyCheckout(
+    container: HTMLElement,
+    sponsorId?: number,
+    onPurchaseCompleted?: (order: WalleyOrder) => void,
+  ): Promise<WalleyOrder> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for Walley')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) cartId = await this.cartManager.ensureCartId(spId)
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+    const opts = await getCartGraphQLOptions(spId)
+    let checkoutId = this.state?.checkoutId
+    if (!checkoutId) {
+      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      checkoutId = checkoutRes?.id
+      if (checkoutId && this.state) {
+        this.state = { ...this.state, checkoutId }
+      }
+    }
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Walley order')
+    }
+    // href MUST be query-less: shopcart appends ?checkout_id=…&payment_processor=WALLEY
+    const href = kustomCleanHref()
+    const order = await gqlCreatePaymentWalley(
+      {
+        checkoutId,
+        countryCode: getGlobalCountryCode(),
+        href,
+        email: this.state?.address?.email || undefined,
+      },
+      opts,
+    )
+    if (!order?.html_snippet) {
+      throw new Error('Walley order creation failed: missing html_snippet')
+    }
+    renderKustomSnippet(container, order.html_snippet)
+    if (onPurchaseCompleted) {
+      const handler = () => {
+        document.removeEventListener(WALLEY_PURCHASE_COMPLETED_EVENT, handler)
+        onPurchaseCompleted(order)
+      }
+      document.addEventListener(WALLEY_PURCHASE_COMPLETED_EVENT, handler, { once: true })
+    }
+    return order
+  }
+
+  /** Re-read the Walley session owned by a checkout — the confirmation trip. */
+  async getWalleyOrder(checkoutId: string, sponsorId?: number): Promise<WalleyOrder | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetWalleyOrder(checkoutId, opts)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

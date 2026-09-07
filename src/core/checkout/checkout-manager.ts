@@ -53,6 +53,12 @@ import {
   type QliroOrder,
 } from './payments/qliro.js'
 import {
+  installQliroListeners,
+  type QliroController,
+  type QliroEvent,
+  type QliroSyncResult,
+} from './payments/qliro-sync.js'
+import {
   createPaymentWalley as gqlCreatePaymentWalley,
   getWalleyOrder as gqlGetWalleyOrder,
   WALLEY_PURCHASE_COMPLETED_EVENT,
@@ -444,6 +450,8 @@ export class CheckoutManager extends EventTarget {
   private applePayPublishableKey: string | null = null
   private applePayConnectedAccount: string | null = null
   private klarnaAvailableCache: boolean | null = null
+  /** Live q1 listeners while a Qliro widget is mounted. */
+  private qliroController: QliroController | null = null
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
   private lastFetchedShippings: KlarnaShippingOption[] = []
@@ -945,8 +953,53 @@ export class CheckoutManager extends EventTarget {
     if (!order?.html_snippet) {
       throw new Error('Qliro order creation failed: missing html_snippet')
     }
+    // BEFORE the snippet: Qliro calls `window.q1Ready` once, as the widget
+    // finishes rendering, and never again. Installed after the injection, the
+    // listeners would simply never fire.
+    this.qliroController?.destroy()
+    this.qliroController = installQliroListeners({
+      checkoutId,
+      queryOptions: opts,
+      onEvent: (event) => this.onQliroEvent(event),
+    })
     renderKustomSnippet(container, order.html_snippet)
     return order
+  }
+
+  /**
+   * Everything the customer does inside the Qliro iframe, re-published as a
+   * DOM event so a host page can follow a checkout it cannot see into.
+   */
+  private onQliroEvent(event: QliroEvent): void {
+    this.dispatchEvent(
+      new CustomEvent<QliroEvent>('qliro-event', {
+        detail: event,
+        bubbles: true,
+        composed: true,
+      }),
+    )
+    // Qliro owns the shipping choice — this only keeps our own summary
+    // showing the same total the customer is looking at.
+    if (event.type === 'shipping-changed' || event.type === 'shipping-price-changed') {
+      this.emit()
+    }
+  }
+
+  /**
+   * Push the current cart onto the open Qliro order.
+   *
+   * Call it after changing the cart while the widget is open: it holds
+   * `q1.lock()` across the round trip and unlocks once Qliro confirms it is
+   * showing the new version. A no-op when no Qliro widget is mounted.
+   */
+  async syncQliroOrder(): Promise<QliroSyncResult | null> {
+    return (await this.qliroController?.sync()) ?? null
+  }
+
+  /** Drop the Qliro listeners and release any lock still held. */
+  destroyQliroListeners(): void {
+    this.qliroController?.destroy()
+    this.qliroController = null
   }
 
   /** Re-read the Qliro order owned by a checkout — the confirmation trip. */

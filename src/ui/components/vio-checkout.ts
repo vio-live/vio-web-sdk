@@ -879,9 +879,7 @@ export class VioCheckout extends LitElement {
           if (order?.html_snippet) {
             this.qliroMountedOrderId = order.order_id
             await this.updateComplete
-            const container = this.renderRoot?.querySelector(
-              '#vio-qliro-checkout-container',
-            ) as HTMLElement | null
+            const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
             if (container) {
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
             }
@@ -945,9 +943,7 @@ export class VioCheckout extends LitElement {
           if (order?.html_snippet) {
             this.walleyMountedOrderId = order.order_id
             await this.updateComplete
-            const container = this.renderRoot?.querySelector(
-              '#vio-walley-checkout-container',
-            ) as HTMLElement | null
+            const container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
             if (container) {
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
             }
@@ -1718,14 +1714,35 @@ export class VioCheckout extends LitElement {
   }
 
   /** Mount the Qliro embedded checkout once it's the chosen method. */
+
+  /**
+   * Container for a third-party embed, living in the LIGHT DOM.
+   *
+   * Qliro's (and Walley's) bootstrap script resolves its mount point from the
+   * document, so a container inside this component's shadow root is invisible
+   * to it and the widget silently never renders — verified against Qliro's
+   * staging widget: identical snippet, light DOM renders the iframe, shadow
+   * DOM renders nothing at all. The element is a child of the host (light DOM)
+   * and is projected back into the panel through a named slot, so the layout
+   * is unchanged. Kustom's KCO snippet resolves its own script's parent, so it
+   * works either way and keeps using the shadow-root container.
+   */
+  private lightContainer(id: string, slotName: string): HTMLElement {
+    let el = this.querySelector<HTMLElement>(`#${id}`)
+    if (!el) {
+      el = document.createElement('div')
+      el.id = id
+      el.setAttribute('slot', slotName)
+      this.appendChild(el)
+    }
+    return el
+  }
+
   private async mountQliroIfNeeded(): Promise<void> {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'qliro') return
     if (this.qliroMounting) return
-    const container = this.renderRoot?.querySelector(
-      '#vio-qliro-checkout-container',
-    ) as HTMLElement | null
-    if (!container) return
+    const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
     if (this.qliroMountedOrderId && container.childElementCount > 0) return
 
     this.qliroMounting = true
@@ -1751,10 +1768,7 @@ export class VioCheckout extends LitElement {
 
   private unmountQliro(): void {
     this.qliroMountedOrderId = null
-    const container = this.renderRoot?.querySelector(
-      '#vio-qliro-checkout-container',
-    ) as HTMLElement | null
-    if (container) container.innerHTML = ''
+    this.querySelector<HTMLElement>('#vio-qliro-checkout-container')?.remove()
   }
 
   private renderQliroPanel() {
@@ -1763,7 +1777,7 @@ export class VioCheckout extends LitElement {
         ${this.qliroMounting
           ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Qliro…</div>`
           : ''}
-        <div id="vio-qliro-checkout-container"></div>
+        <slot name="vio-qliro"></slot>
       </div>
     `
   }
@@ -1778,10 +1792,7 @@ export class VioCheckout extends LitElement {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'walley') return
     if (this.walleyMounting) return
-    const container = this.renderRoot?.querySelector(
-      '#vio-walley-checkout-container',
-    ) as HTMLElement | null
-    if (!container) return
+    const container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
     if (this.walleyMountedOrderId && container.childElementCount > 0) return
 
     this.walleyMounting = true
@@ -1826,10 +1837,7 @@ export class VioCheckout extends LitElement {
 
   private unmountWalley(): void {
     this.walleyMountedOrderId = null
-    const container = this.renderRoot?.querySelector(
-      '#vio-walley-checkout-container',
-    ) as HTMLElement | null
-    if (container) container.innerHTML = ''
+    this.querySelector<HTMLElement>('#vio-walley-checkout-container')?.remove()
   }
 
   private renderWalleyPanel() {
@@ -1838,7 +1846,7 @@ export class VioCheckout extends LitElement {
         ${this.walleyMounting
           ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Walley…</div>`
           : ''}
-        <div id="vio-walley-checkout-container"></div>
+        <slot name="vio-walley"></slot>
       </div>
     `
   }

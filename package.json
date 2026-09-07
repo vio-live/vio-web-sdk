@@ -1,6 +1,6 @@
 {
   "name": "@vio-live/web-sdk",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Vio Web SDK \u2014 in-site shoppable + native checkout, designed for editorial commerce sites",
   "type": "module",
   "main": "./dist/index.js",

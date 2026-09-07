@@ -18,7 +18,7 @@ describe('Qliro Payment Module', () => {
   it('defines CREATE_PAYMENT_QLIRO_MUTATION correctly', () => {
     expect(CREATE_PAYMENT_QLIRO_MUTATION).toContain('mutation CreatePaymentQliro')
     expect(CREATE_PAYMENT_QLIRO_MUTATION).toContain(
-      'CreatePaymentQliro(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email)',
+      'CreatePaymentQliro(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email, theme: $theme)',
     )
     expect(CREATE_PAYMENT_QLIRO_MUTATION).toContain('html_snippet')
   })

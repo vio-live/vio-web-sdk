@@ -424,12 +424,22 @@ export class VioCart extends LitElement {
 
   close(): void { this.open = false }
   show(): void {
+    // `vio:open-cart` es un COMANDO ("abrí el carrito") y varios hosts lo
+    // escuchan para llamar a este show() — Vev entre ellos. Si show()
+    // reemitiera el mismo evento siempre, se arma un lazo: comando → show →
+    // comando → … Cada vuelta disparaba un `view_cart` (24.172 en 12
+    // sesiones el 2026-09-07 en staging, ~2.000 por sesión).
+    //
+    // Notificar solo en la TRANSICIÓN cerrado→abierto rompe el lazo: la
+    // segunda vuelta encuentra `open` en true y no reemite.
+    const wasClosed = !this.open
     this.open = true
-    // Analytics/host hook — `view_cart` on any host, not just Vev (which
-    // used to synthesize this event itself).
-    this.dispatchEvent(
-      new CustomEvent('vio:open-cart', { bubbles: true, composed: true }),
-    )
+    if (wasClosed) {
+      // Hook de analytics/host — `view_cart` en cualquier host, no solo Vev.
+      this.dispatchEvent(
+        new CustomEvent('vio:open-cart', { bubbles: true, composed: true }),
+      )
+    }
     void this.loadAvailablePaymentMethods()
   }
 

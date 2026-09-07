@@ -1768,6 +1768,9 @@ export class VioCheckout extends LitElement {
 
   private unmountQliro(): void {
     this.qliroMountedOrderId = null
+    // Release the q1 listeners with the widget they belong to — and any lock
+    // still held, which would otherwise outlive the iframe.
+    Vio.checkout.destroyQliroListeners()
     this.querySelector<HTMLElement>('#vio-qliro-checkout-container')?.remove()
   }
 

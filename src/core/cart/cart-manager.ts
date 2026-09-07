@@ -463,6 +463,25 @@ export class CartManager extends EventTarget {
     const targetItemId = item.cartItemId
     if (quantity <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
+      // Choke point de la baja: sale acá y no en la UI para que también
+      // cuente cuando el host llama removeItem() por API.
+      if (typeof document !== 'undefined') {
+        document.dispatchEvent(
+          new CustomEvent('vio:removed-from-cart', {
+            bubbles: true,
+            detail: {
+              productId: item.productId,
+              variantId: item.variantId,
+              name: item.name,
+              brand: item.brand,
+              price: item.unitPrice,
+              quantity: item.quantity,
+              currency: item.currency,
+              sponsorId,
+            },
+          }),
+        )
+      }
     } else {
       item.quantity = quantity
     }

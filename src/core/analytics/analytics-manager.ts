@@ -42,6 +42,7 @@ export const ANALYTICS_EVENT_NAMES = [
   'select_item',
   'view_item',
   'add_to_cart',
+  'remove_from_cart',
   'view_cart',
   'begin_checkout',
   'purchase',
@@ -55,6 +56,9 @@ export const ANALYTICS_EVENT_NAMES = [
   // session
   'session_start',
   'session_end',
+  // diagnóstico — lo que salió MAL (ver EVENTS_CONTRACT.md)
+  'checkout_error',
+  'sdk_error',
 ] as const
 
 export type AnalyticsEventName = (typeof ANALYTICS_EVENT_NAMES)[number]
@@ -79,6 +83,8 @@ export interface AnalyticsContext {
   contentId?: string | number
   /** Human-readable content snapshot; auto-filled from document.title. */
   contentTitle?: string
+  /** Código corto del fallo (`sdk_error` / `checkout_error`). */
+  errorCode?: string
   variant?: string
 }
 
@@ -108,6 +114,13 @@ export interface TrackOptions {
 export interface AnalyticsStartOptions {
   /** Where the SDK is embedded: 'vev' | 'replit' | 'custom' | … Default 'custom'. */
   host?: string
+  /**
+   * Arrancar en modo cookieless hasta que el host llame `setConsent(true)`.
+   * Default false: el SDK asume que el CMP del publisher ya decidió si nos
+   * carga. Los publishers EU que necesitan medir antes del consentimiento
+   * (o no pueden persistir sin él) ponen true.
+   */
+  requireConsent?: boolean
   /**
    * Install the automatic funnel listeners (vio:added-to-cart,
    * vio:checkout-open, vio:open-cart, vio:payment-success). Default true.
@@ -181,6 +194,9 @@ export class AnalyticsManager extends EventTarget {
   private externalUserId: string | undefined
 
   private sessionId: string | null = null
+  private requireConsent = false
+  private consentGranted = false
+  private anonIdCache: string | null = null
 
   /** Set via start({ sessionId }) — the host owns the session, we follow. */
   private externalSessionId: string | null = null
@@ -200,7 +216,33 @@ export class AnalyticsManager extends EventTarget {
    * Install listeners + begin flushing. Explicit on purpose (no module
    * side-effects). Safe to call twice (second call only updates options).
    */
+  /**
+   * Consentimiento (ePrivacy/GDPR). Por defecto el SDK asume que el host ya
+   * lo gestionó — su CMP decide si nos carga. Con `requireConsent: true`
+   * arranca en modo **cookieless**: mide la visita con ids efímeros en
+   * memoria y NO escribe nada en localStorage hasta que el host llame
+   * `setConsent(true)`. Retirarlo borra lo persistido.
+   */
+  setConsent(granted: boolean): void {
+    this.consentGranted = granted
+    if (granted) {
+      // Promueve los ids efímeros a persistentes: la visita en curso no se
+      // parte en dos por haber aceptado a mitad de camino.
+      if (this.anonIdCache) safeStorageSet(ANON_KEY, this.anonIdCache)
+      if (this.sessionId) this.persistSession()
+      return
+    }
+    safeStorageRemove(ANON_KEY)
+    safeStorageRemove(SESSION_KEY)
+  }
+
+  /** ¿Podemos escribir en el dispositivo? */
+  private get canPersist(): boolean {
+    return !this.requireConsent || this.consentGranted
+  }
+
   start(options: AnalyticsStartOptions = {}): void {
+    this.requireConsent = options.requireConsent === true
     this.options = {
       host: options.host ?? this.options.host,
       collector: options.collector ?? this.options.collector,
@@ -389,6 +431,7 @@ export class AnalyticsManager extends EventTarget {
       content_id: ctx.contentId,
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
+      error_code: ctx.errorCode,
       content_title:
         ctx.contentTitle ??
         (typeof document !== 'undefined' && document.title
@@ -433,19 +476,39 @@ export class AnalyticsManager extends EventTarget {
     }
   }
 
+  /** Guarda la sesión solo si podemos escribir en el dispositivo. */
+  private persistSession(now: number = Date.now()): void {
+    if (!this.canPersist || !this.sessionId) return
+    safeStorageSet(
+      SESSION_KEY,
+      JSON.stringify({
+        id: this.sessionId,
+        ts: now,
+        startedAt: this.sessionStartedAt ?? now,
+      }),
+    )
+  }
+
   private anonId(): string | null {
-    const stored = safeStorageGet(ANON_KEY)
-    if (stored) return stored
+    if (this.anonIdCache) return this.anonIdCache
+    const stored = this.canPersist ? safeStorageGet(ANON_KEY) : null
+    if (stored) {
+      this.anonIdCache = stored
+      return stored
+    }
     const id = `a-${uuid()}`
-    safeStorageSet(ANON_KEY, id)
-    return safeStorageGet(ANON_KEY) ?? id // storage may be blocked — ephemeral id still works
+    // Sin consentimiento el id vive solo en memoria: se mide la visita, no
+    // queda rastro en el dispositivo.
+    if (this.canPersist) safeStorageSet(ANON_KEY, id)
+    this.anonIdCache = (this.canPersist ? safeStorageGet(ANON_KEY) : null) ?? id
+    return this.anonIdCache
   }
 
   /** Rolling session: renewed by activity, rotated after 30 min idle. */
   private ensureSession(): void {
     const now = Date.now()
     if (!this.sessionId) {
-      const stored = safeStorageGet(SESSION_KEY)
+      const stored = this.canPersist ? safeStorageGet(SESSION_KEY) : null
       if (stored) {
         try {
           const parsed = JSON.parse(stored) as { id: string; ts: number; startedAt: number }
@@ -458,7 +521,7 @@ export class AnalyticsManager extends EventTarget {
         }
       }
     } else {
-      const stored = safeStorageGet(SESSION_KEY)
+      const stored = this.canPersist ? safeStorageGet(SESSION_KEY) : null
       if (stored) {
         try {
           if (now - (JSON.parse(stored) as { ts: number }).ts >= SESSION_TTL_MS) {
@@ -483,16 +546,10 @@ export class AnalyticsManager extends EventTarget {
       this.sessionId = `s-${uuid()}`
       this.sessionStartedAt = now
       this.impressedComponents.clear()
-      safeStorageSet(
-        SESSION_KEY,
-        JSON.stringify({ id: this.sessionId, ts: now, startedAt: now }),
-      )
+      this.persistSession(now)
       this.track('session_start')
     } else {
-      safeStorageSet(
-        SESSION_KEY,
-        JSON.stringify({ id: this.sessionId, ts: now, startedAt: this.sessionStartedAt }),
-      )
+      this.persistSession(now)
     }
   }
 
@@ -567,6 +624,47 @@ export class AnalyticsManager extends EventTarget {
           value: line ? line.unitPrice * (d.quantity ?? 1) : undefined,
           currency: line?.currency,
         },
+      })
+    })
+
+    on('vio:removed-from-cart', (ev) => {
+      const d = (ev as CustomEvent<{
+        productId?: number | string
+        variantId?: number | string
+        name?: string
+        brand?: string
+        price?: number
+        quantity?: number
+        currency?: string
+        sponsorId?: number
+      }>).detail ?? {}
+      if (d.productId === undefined) return
+      this.track('remove_from_cart', {
+        context: { sponsorId: d.sponsorId },
+        commerce: {
+          items: [
+            {
+              productId: d.productId,
+              variantId: d.variantId,
+              name: d.name,
+              brand: d.brand,
+              price: d.price,
+              quantity: d.quantity,
+            },
+          ],
+          value: (d.price ?? 0) * (d.quantity ?? 1),
+          currency: d.currency,
+        },
+      })
+    })
+
+    // Diagnóstico: sin esto, "el carrito falló" es indistinguible de
+    // "el usuario se fue".
+    on('vio:cart-error', (ev) => {
+      const d = (ev as CustomEvent<{ message?: string }>).detail ?? {}
+      this.track('sdk_error', {
+        context: { errorCode: 'cart_error' },
+        props: d.message ? { message: String(d.message).slice(0, 500) } : undefined,
       })
     })
 
@@ -692,6 +790,14 @@ function safeStorageGet(key: string): string | null {
     return window.localStorage.getItem(key)
   } catch {
     return null
+  }
+}
+
+function safeStorageRemove(key: string): void {
+  try {
+    window.localStorage.removeItem(key)
+  } catch {
+    /* private mode / blocked */
   }
 }
 

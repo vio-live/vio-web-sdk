@@ -34,10 +34,57 @@ export interface QliroOrder {
   total_price?: number
 }
 
+/**
+ * The Vio theme tokens Qliro can be dressed with.
+ *
+ * Qliro fixes its appearance at CREATE ORDER — there is no way to restyle the
+ * widget once it has rendered — so the tokens have to travel with the order.
+ * They are sent as Vio tokens, not Qliro field names: the mapping and the
+ * validation live in shopcart, where they can be tested without a browser.
+ */
+export interface QliroTheme {
+  accent?: string
+  surface?: string
+  radiusMd?: string
+  radiusLg?: string
+}
+
+/**
+ * The theme as the host page has actually resolved it.
+ *
+ * Reads the COMPUTED values, not the SDK's defaults: `--vio-*` are custom
+ * properties any host — a Vev block, a publisher's stylesheet — is free to
+ * override, and the whole point is that Qliro matches what the shopper is
+ * looking at. Returns undefined outside a browser, or when nothing resolved.
+ */
+export function readVioTheme(): QliroTheme | undefined {
+  if (typeof globalThis === 'undefined') return undefined
+  const doc = (globalThis as any).document
+  const getComputed = (globalThis as any).getComputedStyle
+  if (!doc?.documentElement || typeof getComputed !== 'function') return undefined
+  let style: any
+  try {
+    style = getComputed(doc.documentElement)
+  } catch {
+    return undefined
+  }
+  const read = (name: string): string | undefined => {
+    const value = style?.getPropertyValue?.(name)?.trim()
+    return value || undefined
+  }
+  const theme: QliroTheme = {
+    accent: read('--vio-color-accent'),
+    surface: read('--vio-color-surface'),
+    radiusMd: read('--vio-radius-md'),
+    radiusLg: read('--vio-radius-lg'),
+  }
+  return Object.values(theme).some(Boolean) ? theme : undefined
+}
+
 export const CREATE_PAYMENT_QLIRO_MUTATION = `
-mutation CreatePaymentQliro($checkoutId: String!, $countryCode: String!, $href: String!, $email: String) {
+mutation CreatePaymentQliro($checkoutId: String!, $countryCode: String!, $href: String!, $email: String, $theme: QliroThemeInput) {
   Payment {
-    CreatePaymentQliro(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email) {
+    CreatePaymentQliro(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email, theme: $theme) {
       order_id
       status
       html_snippet
@@ -69,6 +116,7 @@ export interface CreatePaymentQliroVariables extends Record<string, unknown> {
   countryCode: string
   href: string
   email?: string
+  theme?: QliroTheme
 }
 
 export async function createPaymentQliro(

@@ -49,6 +49,7 @@ import {
 } from './payments/kustom.js'
 import {
   createPaymentQliro as gqlCreatePaymentQliro,
+  readVioTheme,
   getQliroOrder as gqlGetQliroOrder,
   type QliroOrder,
 } from './payments/qliro.js'
@@ -947,6 +948,9 @@ export class CheckoutManager extends EventTarget {
         countryCode: getGlobalCountryCode(),
         href,
         email: this.state?.address?.email || undefined,
+        // Qliro cannot be restyled once rendered, so the host page's theme has
+        // to travel with the order.
+        theme: readVioTheme(),
       },
       opts,
     )

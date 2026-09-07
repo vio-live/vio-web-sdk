@@ -292,3 +292,104 @@ describe('host attribution', () => {
     expect(String(ev.session_id)).toMatch(/^s-/)
   })
 })
+
+describe('consentimiento (ePrivacy) y diagnósticos', () => {
+  const ls = () =>
+    (globalThis as Record<string, any>).window.localStorage as {
+      getItem: (k: string) => string | null
+    }
+  const fire = (type: string, detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent(type, { detail }) as unknown as Event,
+    )
+
+  it('sin requireConsent persiste el anon_id — comportamiento de siempre', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    await m.flush()
+    expect(ls().getItem('vio.anon.v1')).not.toBeNull()
+    m.stop()
+  })
+
+  it('con requireConsent NO escribe nada en el dispositivo, pero igual mide', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom', requireConsent: true })
+    m.track('view_item')
+    await m.flush()
+
+    expect(ls().getItem('vio.anon.v1')).toBeNull()
+    expect(ls().getItem('vio.session.v1')).toBeNull()
+
+    // La visita se mide igual: el evento sale con ids efímeros.
+    const events = flushedBatches[0]!.events
+    const ev = events.find((e) => e.name === 'view_item')!
+    expect(ev.anon_id).toMatch(/^a-/)
+    expect(ev.session_id).toMatch(/^s-/)
+    m.stop()
+  })
+
+  it('setConsent(true) promueve los ids efímeros sin partir la visita', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom', requireConsent: true })
+    m.track('view_item')
+    await m.flush()
+    const anonAntes = flushedBatches[0]!.events[0]!.anon_id
+
+    m.setConsent(true)
+    m.track('add_to_cart')
+    await m.flush()
+
+    expect(ls().getItem('vio.anon.v1')).toBe(anonAntes)
+    const despues = flushedBatches[flushedBatches.length - 1]!.events[0]!
+    expect(despues.anon_id).toBe(anonAntes)
+    m.stop()
+  })
+
+  it('setConsent(false) borra lo que había en el dispositivo', () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    expect(ls().getItem('vio.anon.v1')).not.toBeNull()
+
+    m.setConsent(false)
+
+    expect(ls().getItem('vio.anon.v1')).toBeNull()
+    expect(ls().getItem('vio.session.v1')).toBeNull()
+    m.stop()
+  })
+
+  it('vio:removed-from-cart se convierte en remove_from_cart', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire('vio:removed-from-cart', { productId: 408948, name: 'Bonding Oil', price: 300, quantity: 2, currency: 'NOK' })
+    await m.flush()
+
+    const ev = flushedBatches
+      .flatMap((b) => b.events)
+      .find((e) => e.name === 'remove_from_cart') as Record<string, any>
+    expect(ev).toBeDefined()
+    expect(ev.commerce.items[0].product_id).toBe('408948')
+    expect(ev.commerce.value).toBe(600)
+    m.stop()
+  })
+
+  it('un fallo del carrito se reporta como sdk_error con error_code', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire('vio:cart-error', { message: 'AddItem failed' })
+    await m.flush()
+
+    const ev = flushedBatches
+      .flatMap((b) => b.events)
+      .find((e) => e.name === 'sdk_error') as Record<string, any>
+    expect(ev).toBeDefined()
+    expect(ev.context.error_code).toBe('cart_error')
+    expect(ev.props.message).toBe('AddItem failed')
+    m.stop()
+  })
+})

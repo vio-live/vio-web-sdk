@@ -851,7 +851,14 @@ export class CheckoutManager extends EventTarget {
     const opts = await getCartGraphQLOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
-      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      // createCheckout(), NOT the raw mutation: shopcart refuses to start a
+      // payment on a checkout whose buyer has not accepted the purchase
+      // conditions ("Is required that customer accepted purchase conditions"),
+      // and that acceptance is part of createCheckout(). Creating it raw here
+      // made every embedded method fail whenever IT was the one to create the
+      // checkout — which is the normal path when the shopper picks the method
+      // straight from the cart.
+      const checkoutRes = await this.createCheckout(spId)
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -908,7 +915,14 @@ export class CheckoutManager extends EventTarget {
     const opts = await getCartGraphQLOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
-      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      // createCheckout(), NOT the raw mutation: shopcart refuses to start a
+      // payment on a checkout whose buyer has not accepted the purchase
+      // conditions ("Is required that customer accepted purchase conditions"),
+      // and that acceptance is part of createCheckout(). Creating it raw here
+      // made every embedded method fail whenever IT was the one to create the
+      // checkout — which is the normal path when the shopper picks the method
+      // straight from the cart.
+      const checkoutRes = await this.createCheckout(spId)
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -963,7 +977,14 @@ export class CheckoutManager extends EventTarget {
     const opts = await getCartGraphQLOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
-      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      // createCheckout(), NOT the raw mutation: shopcart refuses to start a
+      // payment on a checkout whose buyer has not accepted the purchase
+      // conditions ("Is required that customer accepted purchase conditions"),
+      // and that acceptance is part of createCheckout(). Creating it raw here
+      // made every embedded method fail whenever IT was the one to create the
+      // checkout — which is the normal path when the shopper picks the method
+      // straight from the cart.
+      const checkoutRes = await this.createCheckout(spId)
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }

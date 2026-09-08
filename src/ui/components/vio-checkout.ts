@@ -914,29 +914,33 @@ export class VioCheckout extends LitElement {
             this.checkoutState?.sponsorId,
           )
           this.paymentNotice = null
-          if (order?.html_snippet) {
+          if (order?.status === 'Completed') {
+            // Through the SHARED confirmation path. Rendering Qliro's receipt and
+            // THEN clearing the cart loses it: clearing is a state change, so the
+            // component re-renders with zero items and the payment step takes the
+            // screen back — the customer sees their confirmation flash and then
+            // "how do you want to pay", which invites paying twice.
+            //
+            // `confirmOrder` snapshots the order BEFORE clearing, sets the confirmed
+            // state and keeps it, and clears the cart itself.
+            //
+            // The snippet is deliberately NOT re-rendered for a paid order: remounting
+            // a completed order's widget is the other half of how this looped back
+            // into payment.
+            this.qliroMountedOrderId = order.order_id
+            this.confirmOrder(
+              'qliro',
+              this.checkoutState?.sponsorId ?? sponsorId ?? 0,
+              { order: { orderId: order.order_id }, chargedTotal: order.total_price },
+            )
+          } else if (order?.html_snippet) {
+            // Not completed (OnHold, still InProcess): Qliro's own screen explains
+            // that state better than we could.
             this.qliroMountedOrderId = order.order_id
             await this.updateComplete
             const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
             if (container) {
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
-            }
-            if (order.status === 'Completed') {
-              this.dispatchEvent(
-                new CustomEvent('vio:payment-success', {
-                  detail: { method: 'qliro', orderId: order.order_id },
-                  bubbles: true,
-                  composed: true,
-                }),
-              )
-              const spId = this.checkoutState?.sponsorId
-              if (spId) {
-                try {
-                  Vio.cart.clearSponsorCart(spId)
-                } catch {
-                  /* noop */
-                }
-              }
             }
           }
         } catch (err) {

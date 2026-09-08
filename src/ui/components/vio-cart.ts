@@ -238,6 +238,23 @@ export class VioCart extends LitElement {
       font-size: 14px;
     }
 
+    /* Always present: the express buttons below are shortcuts, not the only
+       way out of the cart. Without this a channel offering only an embedded
+       checkout (Kustom, Qliro, Walley) had no button at all. */
+    .checkout-btn {
+      width: 100%;
+      padding: 14px;
+      margin-bottom: var(--vio-space-sm, 8px);
+      background: var(--vio-color-text, #0a0a0a);
+      color: var(--vio-color-text-on-primary, #fff);
+      border: none;
+      border-radius: var(--vio-radius-md, 4px);
+      font-family: var(--vio-font-sans, inherit);
+      font-size: var(--vio-size-sm, 14px);
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .checkout-btn:hover { opacity: 0.9; }
     .footer {
       padding: var(--vio-space-lg, 24px);
       border-top: 1px solid var(--vio-color-border, #e5e5e5);
@@ -580,6 +597,27 @@ export class VioCart extends LitElement {
   }
 
   /** Vipps — opens the checkout with Vipps preselected. */
+  /**
+   * Open the checkout without preselecting a method.
+   *
+   * The footer used to be express-only — Apple Pay, Stripe, Klarna, Vipps —
+   * so a channel offering just an embedded checkout (Kustom, Qliro, Walley)
+   * had NO button at all and the cart was a dead end. Even with an express
+   * method present the others were unreachable from here.
+   */
+  private onCheckout(): void {
+    if (this.itemCount === 0) return
+    const firstSponsorId = [...this.carts.keys()][0]
+    if (firstSponsorId === undefined) return
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: firstSponsorId, express: false },
+      }),
+    )
+  }
+
   private onVipps(): void {
     if (this.itemCount === 0) return
     const firstSponsorId = [...this.carts.keys()][0]
@@ -716,6 +754,13 @@ export class VioCart extends LitElement {
                     ${formatPrice(this.totalAcrossSponsors, this.primaryCurrency)}
                   </span>
                 </div>
+                <button
+                  class="checkout-btn"
+                  @click=${this.onCheckout}
+                  aria-label="Til kassen"
+                >
+                  Til kassen
+                </button>
                 ${this.methodEnabled('apple-pay') && this.applePayAvailable
                   ? html`
                       <button

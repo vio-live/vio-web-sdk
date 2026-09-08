@@ -93,6 +93,13 @@ export class VioCheckout extends LitElement {
   }
   /** In-flight guard for loadAvailablePaymentMethods. */
   private loadingPaymentMethods = false
+  /**
+   * Whether a load has COMPLETED, either way. `availableMethods === null`
+   * cannot tell "not asked yet" from "asked and failed", and rendering every
+   * button while we still do not know shows methods the channel may not have
+   * enabled — a shopper can click one that is not there.
+   */
+  @state() private paymentMethodsResolved = false
   /** In-flight + attempted guards for loadAvailableShippings (change events
    * fire per keystroke — without these, typing an address hammers the API). */
   private loadingShippings = false
@@ -125,6 +132,7 @@ export class VioCheckout extends LitElement {
       this.paymentNotice = null
       this.express = false
       this.availableMethods = null
+      this.paymentMethodsResolved = false
       this.unmountKlarna()
     }
   }
@@ -390,6 +398,30 @@ export class VioCheckout extends LitElement {
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: var(--vio-space-md, 16px);
+    }
+    /* Shown until we know which methods the channel offers. Rendering every
+       button meanwhile would let a shopper click one that is not enabled. */
+    .payment-loading {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 20px 0;
+      font-size: 13px;
+      color: var(--vio-color-text-secondary, #666);
+    }
+    .payment-spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid var(--vio-color-border, #e5e5e5);
+      border-top-color: var(--vio-color-text-secondary, #666);
+      border-radius: 50%;
+      animation: vio-payment-spin 0.7s linear infinite;
+    }
+    @keyframes vio-payment-spin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .payment-spinner { animation: none; }
     }
     .payment-btn {
       padding: 20px;
@@ -1205,6 +1237,7 @@ export class VioCheckout extends LitElement {
       this.availableMethods = null
     } finally {
       this.loadingPaymentMethods = false
+      this.paymentMethodsResolved = true
     }
   }
 
@@ -2223,7 +2256,15 @@ export class VioCheckout extends LitElement {
                         `
                       : ''}
                 `
-              : html`
+              : !this.paymentMethodsResolved
+                ? html`
+                    <h3 class="section-heading">Velg betalingsmåte</h3>
+                    <div class="payment-loading">
+                      <span class="payment-spinner" aria-hidden="true"></span>
+                      <span>Henter betalingsmåter…</span>
+                    </div>
+                  `
+                : html`
                   <h3 class="section-heading">Velg betalingsmåte</h3>
                   <div class="payment-grid">
                     ${this.methodEnabled('apple-pay') && this.applePayAvailable

@@ -903,6 +903,9 @@ export class VioCheckout extends LitElement {
         } catch {
           /* noop */
         }
+        // A return is not a fresh checkout: whatever the order turns out to be,
+        // nothing here should offer to start paying again.
+        this.autoSelectAttempted = true
         this.open = true
         this.paymentNotice = 'Bekrefter betalingen…'
         try {

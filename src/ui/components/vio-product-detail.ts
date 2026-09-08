@@ -21,6 +21,7 @@ import {
   type ProductOption,
   type ProductVariant,
 } from '../../core/types.js'
+import { isMethodEnabled, EMBEDDED_METHODS } from '../../core/checkout/method-taxonomy.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -677,9 +678,7 @@ export class VioProductDetail extends LitElement {
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
-    if (this.availableMethods === null) return true
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '')
-    return this.availableMethods.some((m) => names.some((n) => norm(m) === norm(n)))
+    return isMethodEnabled(this.availableMethods, ...names)
   }
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -1265,9 +1264,7 @@ export class VioProductDetail extends LitElement {
           </div>
 
           ${this.availableQuantity > 0 &&
-          (this.methodEnabled('qliro') ||
-            this.methodEnabled('kustom') ||
-            this.methodEnabled('walley'))
+          this.methodEnabled(...EMBEDDED_METHODS)
             ? html`
                 <button
                   class="buy-now"

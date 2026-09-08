@@ -16,6 +16,7 @@ import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
+import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -38,6 +39,8 @@ export class VioCart extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** Whether the method lookup has been attempted — see boundOnCartChange. */
+  private paymentMethodsAttempted = false
   /** Set after an Apple Pay express purchase — switches the drawer to the
    * confirmation screen (so the rest of the cart/checkout is not shown). */
   @state() private confirmedOrder: {
@@ -63,8 +66,12 @@ export class VioCart extends LitElement {
     const detail = (e as CustomEvent<CartChangeDetail>).detail
     this.carts = detail.cartsBySponsor
     this.itemCount = detail.itemCount
-    // Cart changes fire often — only fetch methods if we don't have them yet.
-    if (this.availableMethods === null) {
+    // Cart changes fire often, so ask ONCE. The condition is "not attempted",
+    // not "availableMethods is null": null also means "asked and failed", and
+    // retrying on every cart mutation turns one bad response into a refetch
+    // per click for the rest of the session.
+    if (!this.paymentMethodsAttempted) {
+      this.paymentMethodsAttempted = true
       void this.loadAvailablePaymentMethods()
     }
   }
@@ -493,10 +500,8 @@ export class VioCart extends LitElement {
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
-  private methodEnabled(name: string): boolean {
-    if (this.availableMethods === null) return true
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '')
-    return this.availableMethods.some((m) => norm(m) === norm(name))
+  private methodEnabled(...names: string[]): boolean {
+    return isMethodEnabled(this.availableMethods, ...names)
   }
 
   override updated(changed: Map<string, unknown>): void {

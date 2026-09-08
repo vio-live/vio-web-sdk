@@ -151,3 +151,47 @@ describe('vio-checkout — a confirmed order keeps the screen', () => {
     expect(shadowText(el)).not.toContain('Velg betalingsmåte')
   })
 })
+
+describe('vio-checkout — a failed lookup must not become a retry storm', () => {
+  afterEach(() => { unmountAll(); vi.restoreAllMocks() })
+
+  it('does not refetch on every state change once the lookup has resolved', async () => {
+    // `setAddress` emits on every KEYSTROKE. Before this, one failed methods
+    // lookup left `availableMethods` null, and the refresh condition was
+    // "availableMethods === null" — so every keypress refetched methods,
+    // shippings, Apple Pay and Klarna for the rest of the session.
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    el.checkoutState = { ...CART }
+    // The lookup ran and FAILED: resolved, but with nothing to show.
+    el.availableMethods = null
+    el.paymentMethodsResolved = true
+    await settle(el)
+
+    const spy = vi.spyOn(el as any, 'loadAvailablePaymentMethods')
+    // Ten "keystrokes" on the same sponsor.
+    for (let i = 0; i < 10; i++) {
+      ;(el as any).boundOnCheckoutChange(
+        new CustomEvent('change', { detail: { state: { ...CART } } }),
+      )
+    }
+    await settle(el)
+    expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('DOES refetch when the sponsor changes — a different channel, a different answer', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    el.checkoutState = { ...CART }
+    el.availableMethods = ['Qliro']
+    el.paymentMethodsResolved = true
+    await settle(el)
+
+    const spy = vi.spyOn(el as any, 'loadAvailablePaymentMethods').mockResolvedValue(undefined)
+    ;(el as any).boundOnCheckoutChange(
+      new CustomEvent('change', { detail: { state: { ...CART, sponsorId: 9 } } }),
+    )
+    await settle(el)
+    expect(spy).toHaveBeenCalledTimes(1)
+    // …and the previous answer stops counting as resolved.
+    expect(el.paymentMethodsResolved).toBe(false)
+  })
+})

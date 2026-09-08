@@ -23,6 +23,11 @@ import type {
   CheckoutState,
   PaymentMethod,
 } from '../../core/checkout/types.js'
+import {
+  isMethodEnabled,
+  isEmbeddedMethod,
+  everyMethodCollectsAddress as allCollectAddress,
+} from '../../core/checkout/method-taxonomy.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -115,8 +120,18 @@ export class VioCheckout extends LitElement {
     this.items = Vio.checkout.items
     // Re-check vendor availability when the sponsor changes (state changes fire
     // on every selection — refetching each time hammers the backend).
+    //
+    // The condition is "not resolved yet", NOT "availableMethods is null":
+    // null also means "asked and failed", and `setAddress` emits on every
+    // KEYSTROKE in the address form. One transient failure of the methods
+    // lookup used to turn every subsequent keypress into a full refresh of
+    // methods, shippings, Apple Pay and Klarna — for the rest of the session.
+    // Same hammering shape as the mount loop of 2026-09-08, one layer up.
     if (this.checkoutState) {
-      if (sponsorChanged || this.availableMethods === null) {
+      if (sponsorChanged || !this.paymentMethodsResolved) {
+        // A different sponsor is a different channel: what it offers has to be
+        // asked again, so the previous answer stops counting as resolved.
+        if (sponsorChanged) this.paymentMethodsResolved = false
         void this.refreshApplePay()
         void this.refreshKlarna()
         void this.loadAvailablePaymentMethods()
@@ -1297,10 +1312,8 @@ export class VioCheckout extends LitElement {
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
-  private methodEnabled(name: string): boolean {
-    if (this.availableMethods === null) return true
-    const norm = (s: string) => s.toLowerCase().replace(/[^a-z]/g, '')
-    return this.availableMethods.some((m) => norm(m) === norm(name))
+  private methodEnabled(...names: string[]): boolean {
+    return isMethodEnabled(this.availableMethods, ...names)
   }
 
   private async refreshApplePay(): Promise<void> {
@@ -1657,9 +1670,7 @@ export class VioCheckout extends LitElement {
     return (
       method === 'apple-pay' ||
       method === 'klarna' ||
-      method === 'kustom' ||
-      method === 'qliro' ||
-      method === 'walley'
+      isEmbeddedMethod(method ?? '')
     )
   }
 
@@ -2074,20 +2085,13 @@ export class VioCheckout extends LitElement {
     const isVipps = method === 'vipps'
     // Kustom's and Qliro's embedded checkouts collect address, shipping AND
     // email themselves — skip the form AND the contact section entirely.
-    const isKustom = method === 'kustom' || method === 'qliro' || method === 'walley'
+    const isKustom = isEmbeddedMethod(method ?? '')
     // …and skip it BEFORE a method is chosen too, when every method the
     // channel offers collects the address itself. Otherwise a Qliro-only
     // checkout opens on a delivery-address form the shopper fills in, only
     // for it to vanish and Qliro to ask for the same thing again.
-    const collectsOwnAddress = (name: string): boolean =>
-      ['kustom', 'qliro', 'walley', 'vipps'].includes(
-        name.toLowerCase().replace(/[^a-z]/g, ''),
-      )
     const everyMethodCollectsAddress =
-      this.paymentMethodsResolved &&
-      Array.isArray(this.availableMethods) &&
-      this.availableMethods.length > 0 &&
-      this.availableMethods.every(collectsOwnAddress)
+      this.paymentMethodsResolved && allCollectAddress(this.availableMethods)
     return html`
           ${!isVipps && !isKustom && !everyMethodCollectsAddress
             ? html`

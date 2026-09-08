@@ -1139,6 +1139,11 @@ export class VioCheckout extends LitElement {
     ) {
       void this.loadAvailableShippings()
     }
+    // The list may have resolved while the overlay was closed, in which case
+    // the auto-selection at load time was skipped on purpose.
+    if (changed.has('open') && this.open) {
+      this.autoSelectSoleMethod()
+    }
     // Mount the Klarna Express button once its slot is in the DOM, the
     // express flow is available, and the overlay is open. Re-mount when the
     // amount changes (the payment request is captured at mount time).
@@ -1238,7 +1243,39 @@ export class VioCheckout extends LitElement {
     } finally {
       this.loadingPaymentMethods = false
       this.paymentMethodsResolved = true
+      this.autoSelectSoleMethod()
     }
+  }
+
+  /**
+   * With exactly one payment method there is no choice to make, so making the
+   * shopper click it is a step that can only have one outcome. Select it.
+   *
+   * Deliberately narrow:
+   * - never overrides a method the shopper already picked;
+   * - only for methods usable RIGHT NOW — Apple Pay and Klarna depend on the
+   *   browser and on their script loading, and auto-selecting an unusable one
+   *   would strand the shopper on a panel that cannot pay;
+   * - Stripe is excluded: it charges a saved card on click, and arriving at a
+   *   payment step already armed is not the same as choosing it.
+   */
+  private autoSelectSoleMethod(): void {
+    if (!this.open) return
+    if (this.checkoutState?.paymentMethod) return
+    const methods = this.availableMethods
+    if (!Array.isArray(methods) || methods.length !== 1) return
+    const id = String(methods[0] ?? '').toLowerCase().replace(/[^a-z]/g, '')
+    const usable: Record<string, PaymentMethod | undefined> = {
+      kustom: 'kustom',
+      qliro: 'qliro',
+      walley: 'walley',
+      vipps: 'vipps',
+      klarna: this.klarnaAvailable ? 'klarna' : undefined,
+      applepay: this.applePayAvailable ? 'apple-pay' : undefined,
+    }
+    const only = usable[id]
+    if (!only) return
+    Vio.checkout.selectPaymentMethod(only)
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
@@ -2020,8 +2057,21 @@ export class VioCheckout extends LitElement {
     // Kustom's and Qliro's embedded checkouts collect address, shipping AND
     // email themselves — skip the form AND the contact section entirely.
     const isKustom = method === 'kustom' || method === 'qliro' || method === 'walley'
+    // …and skip it BEFORE a method is chosen too, when every method the
+    // channel offers collects the address itself. Otherwise a Qliro-only
+    // checkout opens on a delivery-address form the shopper fills in, only
+    // for it to vanish and Qliro to ask for the same thing again.
+    const collectsOwnAddress = (name: string): boolean =>
+      ['kustom', 'qliro', 'walley', 'vipps'].includes(
+        name.toLowerCase().replace(/[^a-z]/g, ''),
+      )
+    const everyMethodCollectsAddress =
+      this.paymentMethodsResolved &&
+      Array.isArray(this.availableMethods) &&
+      this.availableMethods.length > 0 &&
+      this.availableMethods.every(collectsOwnAddress)
     return html`
-          ${!isVipps && !isKustom
+          ${!isVipps && !isKustom && !everyMethodCollectsAddress
             ? html`
           <section class="section">
             <div class="section-label">Steg 1</div>
@@ -2151,7 +2201,9 @@ export class VioCheckout extends LitElement {
             : ''}
 
           <section class="section">
-            <div class="section-label">${isVipps || isKustom ? 'Betaling' : 'Steg 2'}</div>
+            <div class="section-label">
+              ${isVipps || isKustom || everyMethodCollectsAddress ? 'Betaling' : 'Steg 2'}
+            </div>
             ${method
               ? html`
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
@@ -2242,13 +2294,13 @@ export class VioCheckout extends LitElement {
                         </button>
                       `
                     : ''}
-                  ${!isVipps && !this.isAddressValid
+                  ${!isVipps && !isKustom && !everyMethodCollectsAddress && !this.isAddressValid
                     ? html`
                         <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
                           Vennligst fyll ut leveringsadresse for å fullføre betalingen
                         </div>
                       `
-                    : !isVipps && !this.hasSelectedShipping
+                    : !isVipps && !isKustom && !everyMethodCollectsAddress && !this.hasSelectedShipping
                       ? html`
                           <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
                             Vennligst velg en fraktmetode for å fullføre betalingen

@@ -46,6 +46,36 @@ describe('installQliroListeners', () => {
     delete win.q1Ready
   })
 
+  it('does NOT register onOrderUpdated before there is a lock', () => {
+    // Qliro's contract: registering it "initiates the order sync process".
+    // Registered at ready, with no lock and no update coming, the widget sits
+    // loading and polls its orders endpoint forever. Observed live.
+    const c = installQliroListeners({ checkoutId: 'chk-1' })
+    const { q1, cb } = fakeQ1()
+    win.q1Ready(q1)
+    expect(cb.updated).toBeUndefined()
+    c.destroy()
+  })
+
+  it('registers it on the first lock, and only once', async () => {
+    vi.mocked(executeCartGraphQL).mockResolvedValue(syncResult('v-1') as any)
+    const c = installQliroListeners({ checkoutId: 'chk-1', unlockTimeoutMs: 40 })
+    const { q1, cb } = fakeQ1()
+    win.q1Ready(q1)
+    expect(cb.updated).toBeUndefined()
+
+    const first = c.sync()
+    await vi.waitFor(() => expect(cb.updated).toBeTypeOf('function'))
+    const registered = cb.updated
+    cb.updated({ merchantUpdateVersion: 'v-1' })
+    await first
+
+    await c.sync()
+    // Same callback: re-registering would start another sync.
+    expect(cb.updated).toBe(registered)
+    c.destroy()
+  })
+
   it('defines q1Ready so the widget can hand us q1', () => {
     const c = installQliroListeners({ checkoutId: 'chk-1' })
     expect(typeof win.q1Ready).toBe('function')

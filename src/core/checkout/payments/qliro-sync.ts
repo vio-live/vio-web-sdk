@@ -116,6 +116,8 @@ export function installQliroListeners(options: QliroListenerOptions): QliroContr
 
   let q1: Q1 | null = null
   let destroyed = false
+  /** `onOrderUpdated` starts a sync, so it is registered on first lock only. */
+  let orderUpdatedRegistered = false
   /**
    * The synchronization in flight.
    *
@@ -191,15 +193,16 @@ export function installQliroListeners(options: QliroListenerOptions): QliroContr
 
     instance.onCheckoutLoaded(() => emit({ type: 'loaded' }))
 
-    instance.onOrderUpdated((order: any) => {
-      // Qliro echoes the version once the checkout is actually showing it.
-      if (!pending) return
-      const echoed: string | null =
-        order?.merchantUpdateVersion ?? order?.MerchantUpdateVersion ?? null
-      // Recorded even when the version is not known yet — see `pending`.
-      pending.echoes.push(echoed)
-      settleIfAcknowledged()
-    })
+    // NOT registered here. Qliro's own words: "onOrderUpdated() — Requires
+    // q1.lock() to have been called first. Initiates the order sync process
+    // towards the checkout front end." Registering it is not passive: it puts
+    // the widget INTO a synchronization it then waits to complete. Registered
+    // at ready, with no lock and no update coming, the widget sits on a
+    // loading panel and polls its orders endpoint forever — observed on a live
+    // page as a request storm and a checkout that never advanced.
+    //
+    // So it is registered lazily, inside `sync()`, right after the lock — the
+    // order their documentation actually describes.
 
     // Qliro owns the shipping choice: it is made inside the widget, and Qliro
     // writes the resulting line onto the order itself. These are reported so
@@ -241,6 +244,19 @@ export function installQliroListeners(options: QliroListenerOptions): QliroContr
       // cannot complete the purchase mid-synchronization.
       try {
         q1?.lock()
+        // Only now, and only once: see the note where the other listeners are
+        // registered. Registering this one starts a synchronization, so it
+        // must not exist before there is one.
+        if (q1 && !orderUpdatedRegistered) {
+          orderUpdatedRegistered = true
+          q1.onOrderUpdated((order: any) => {
+            if (!pending) return
+            const echoed: string | null =
+              order?.merchantUpdateVersion ?? order?.MerchantUpdateVersion ?? null
+            pending.echoes.push(echoed)
+            settleIfAcknowledged()
+          })
+        }
       } catch {
         /* no widget yet — the sync still has to reach the server */
       }

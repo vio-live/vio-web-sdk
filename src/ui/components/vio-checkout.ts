@@ -2224,19 +2224,23 @@ export class VioCheckout extends LitElement {
                     <h3 class="section-heading" style="margin:0;">
                       Betalingsmåte: <b>${this.methodLabel(method)}</b>
                     </h3>
-                    <button
-                      type="button"
-                      style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
-                      @click=${() => {
-                        this.unmountKlarna()
-                        this.unmountKustom()
-                        this.unmountQliro()
-                        this.unmountWalley()
-                        Vio.checkout.selectPaymentMethod('' as PaymentMethod)
-                      }}
-                    >
-                      Endre
-                    </button>
+                    ${(this.availableMethods?.length ?? 2) > 1
+                      ? html`
+                          <button
+                            type="button"
+                            style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
+                            @click=${() => {
+                              this.unmountKlarna()
+                              this.unmountKustom()
+                              this.unmountQliro()
+                              this.unmountWalley()
+                              Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+                            }}
+                          >
+                            Endre
+                          </button>
+                        `
+                      : ''}
                   </div>
 
                   ${method === 'klarna' ? this.renderKlarnaPanel() : ''}

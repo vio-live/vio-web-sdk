@@ -100,6 +100,8 @@ export class VioCheckout extends LitElement {
    * enabled — a shopper can click one that is not there.
    */
   @state() private paymentMethodsResolved = false
+  /** Guards `autoSelectSoleMethod` to ONE attempt per opening — see there. */
+  private autoSelectAttempted = false
   /** In-flight + attempted guards for loadAvailableShippings (change events
    * fire per keystroke — without these, typing an address hammers the API). */
   private loadingShippings = false
@@ -133,6 +135,7 @@ export class VioCheckout extends LitElement {
       this.express = false
       this.availableMethods = null
       this.paymentMethodsResolved = false
+      this.autoSelectAttempted = false
       this.unmountKlarna()
     }
   }
@@ -1261,6 +1264,14 @@ export class VioCheckout extends LitElement {
    */
   private autoSelectSoleMethod(): void {
     if (!this.open) return
+    // ONCE per opening, whatever the outcome. `selectPaymentMethod` is a
+    // request, not a guarantee: if it does not stick, the resulting state
+    // change reloads the method list, which calls this again, selects again,
+    // and spins — remounting the provider's widget on every pass. Observed
+    // hammering Qliro's orders endpoint with hundreds of requests. A
+    // convenience must never be able to livelock the checkout.
+    if (this.autoSelectAttempted) return
+    this.autoSelectAttempted = true
     if (this.checkoutState?.paymentMethod) return
     const methods = this.availableMethods
     if (!Array.isArray(methods) || methods.length !== 1) return

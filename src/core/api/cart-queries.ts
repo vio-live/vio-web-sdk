@@ -961,22 +961,33 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
       }
     }
   ).__VIO_FACADE__
-  if (facade && typeof facade.bootstrap === 'function' && !facade.bootstrapCache) {
+  // Hosts that mount several independent components (Vev blocks mount in no
+  // guaranteed order) may have one query the commerce API before another has
+  // called Vio.init(). Wait for initialization FIRST: bootstrap needs the
+  // apiKey, so attempting it before init throws "Not initialized", and it used
+  // to be attempted here and never retried. The sponsor then stayed unknown,
+  // `commerceKey` fell back to the platform apiKey, and every commerce call
+  // answered "Authentication failed" — a wrong key, not a missing one, which
+  // is why it read as a credentials problem instead of a load-order one.
+  if (!Configuration.isInitialized) {
+    await Configuration.whenReady()
+  }
+
+  // Only now can bootstrap succeed. Without it there is no sponsor, and
+  // without a sponsor there is no commerce key.
+  if (
+    Configuration.isInitialized &&
+    facade &&
+    typeof facade.bootstrap === 'function' &&
+    !facade.bootstrapCache
+  ) {
     try {
       await facade.bootstrap()
     } catch (err) {
       if (typeof console !== 'undefined') {
-        console.warn('[Vio] getCartGraphQLOptions bootstrap await failed:', err)
+        console.warn('[Vio] getCartGraphQLOptions bootstrap failed:', err)
       }
     }
-  }
-
-  // Hosts that mount several independent components (Vev blocks mount in no
-  // guaranteed order) may have one query the commerce API before another has
-  // called Vio.init(). Give that race a brief window to resolve rather than
-  // silently sending an unauthenticated request.
-  if (!Configuration.isInitialized) {
-    await Configuration.whenReady()
   }
 
   const cfg = Configuration.isInitialized
@@ -993,6 +1004,16 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
       commerceKey = sponsor.commerce.apiKey
       sponsorResolved = true
     }
+  }
+  if (sponsorId && !sponsorResolved && typeof console !== 'undefined') {
+    // Say it plainly: the call is about to go out with the platform key, which
+    // commerce rejects. Silence here is what made this look like bad
+    // credentials for a whole day.
+    console.warn(
+      `[Vio] no commerce key for sponsor ${sponsorId} — falling back to the ` +
+        'platform apiKey, which the commerce API will reject. Is the sponsor ' +
+        'configured, and did Vio.init run before this call?',
+    )
   }
   return {
     endpoint: anyCfg.graphQLBase || 'https://graph-ql-dev.vio.live',

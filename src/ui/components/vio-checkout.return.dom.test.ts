@@ -173,4 +173,43 @@ describe('returning from a paid embedded checkout', () => {
     await renderCycles(el)
     expect(mountSpy).toHaveBeenCalledTimes(1)
   })
+
+  it('the next purchase gets a widget for the NEW cart, not the one just paid for', async () => {
+    // Alan, 2026-09-10: paid 2100 kr, closed the receipt, put 3300 kr in the
+    // cart and went to pay with Qliro again — the widget asked for 2100 kr.
+    // The return had mounted a new order for the OLD cart (the bug above); that
+    // widget sat hidden behind the receipt, and on the next purchase the
+    // "already mounted" guard kept it instead of creating one for the new cart.
+    let cartTotal = 2100
+    vi.spyOn(manager, 'open').mockImplementation((...args: unknown[]) => {
+      manager.state = { sponsorId: args[0], subtotal: cartTotal, currency: 'NOK' }
+      manager.emit()
+      return manager.state
+    })
+    const mountSpy = vi.spyOn(manager, 'mountQliroCheckout').mockImplementation(async (...args: unknown[]) => {
+      const container = args[0] as HTMLElement
+      container.innerHTML = `<iframe data-total="${manager.state?.subtotal}"></iframe>`
+      return { order_id: `ORDER-${manager.state?.subtotal}`, html_snippet: '' }
+    })
+    landOn('?checkout_id=CHK-PAID&payment_processor=QLIRO')
+    vi.spyOn(manager, 'getQliroOrder')
+      .mockResolvedValue({ order_id: 'PAID', status: 'Completed', total_price: 2100 })
+
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Takk')
+
+    // Close the receipt, fill a new cart, pay with Qliro again.
+    el.close()
+    await renderCycles(el)
+    cartTotal = 3300
+    manager.open(SPONSOR)
+    manager.selectPaymentMethod('qliro')
+    el.show()
+    await renderCycles(el)
+
+    const shown = el.querySelector('#vio-qliro-checkout-container iframe')
+    expect(shown?.getAttribute('data-total')).toBe('3300')
+    expect(mountSpy).toHaveBeenCalledTimes(1)
+  })
 })

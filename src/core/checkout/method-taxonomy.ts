@@ -33,7 +33,7 @@ export function normalizeMethodName(name: string): string {
  * generic "go to checkout" CTA; and our delivery-address form is pointless
  * when every offered method is one of them.
  */
-export const EMBEDDED_METHODS = ['kustom', 'qliro', 'walley'] as const
+export const EMBEDDED_METHODS = ['kustom', 'qliro', 'walley', 'nexi'] as const
 
 /**
  * Methods that collect the shipping address themselves. The embedded ones do,

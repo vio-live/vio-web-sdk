@@ -66,6 +66,21 @@ import {
   type WalleyOrder,
 } from './payments/walley.js'
 import {
+  createPaymentNexi as gqlCreatePaymentNexi,
+  getNexiOrder as gqlGetNexiOrder,
+  updateNexiShipping as gqlUpdateNexiShipping,
+  mountNexi,
+  nexiLanguageFor,
+  nexiThemeFrom,
+  isNexiPaid,
+  rememberNexiPending,
+  readNexiPending,
+  clearNexiPending,
+  type NexiOrder,
+  type NexiCheckoutHandle,
+  type NexiShippingUpdate,
+} from './payments/nexi.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -453,6 +468,8 @@ export class CheckoutManager extends EventTarget {
   private klarnaAvailableCache: boolean | null = null
   /** Live q1 listeners while a Qliro widget is mounted. */
   private qliroController: QliroController | null = null
+  /** Live Dibs.Checkout handle while a Nexi widget is mounted. */
+  private nexiHandle: NexiCheckoutHandle | null = null
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
   private lastFetchedShippings: KlarnaShippingOption[] = []
@@ -1079,6 +1096,166 @@ export class CheckoutManager extends EventTarget {
   async getWalleyOrder(checkoutId: string, sponsorId?: number): Promise<WalleyOrder | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetWalleyOrder(checkoutId, opts)
+  }
+
+  /**
+   * Mount the Nexi embedded checkout — Nexi's own JS SDK, not a snippet.
+   *
+   * `onCompleted` fires on Nexi's `payment-completed` (no redirect: Nexi
+   * renders no receipt, the component shows Vio's confirmation). Shipping is
+   * Vio's: Nexi holds its pay button until `address-changed` has been
+   * re-priced through `UpdateNexiShipping` — the widget is frozen meanwhile
+   * and `onShipping` reports the outcome (NO_SHIPPING keeps it held).
+   *
+   * A session interrupted by a third-party redirect inside Nexi (Vipps,
+   * Swish, MobilePay) is remembered in sessionStorage and resumed on the
+   * same paymentId instead of creating a new payment.
+   */
+  async mountNexiCheckout(
+    container: HTMLElement,
+    sponsorId?: number,
+    handlers: {
+      onCompleted?: (order: NexiOrder) => void
+      onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void
+    } = {},
+  ): Promise<NexiOrder> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    if (!spId) throw new Error('[CheckoutManager] no sponsor for Nexi')
+    const cart = this.cartManager.getCart(spId)
+    let cartId = cart?.cartId
+    if (!cartId) cartId = await this.cartManager.ensureCartId(spId)
+    if (!cartId) {
+      throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
+    }
+    const opts = await getCartGraphQLOptions(spId)
+    const pending = readNexiPending()
+    let checkoutId = this.state?.checkoutId
+    // Back from a redirect inside Nexi: the page reloaded and the state is
+    // fresh, but the checkout and its payment still exist.
+    if (!checkoutId && pending && pending.sponsorId === spId) {
+      checkoutId = pending.checkoutId
+      if (this.state) this.state = { ...this.state, checkoutId }
+    }
+    if (!checkoutId) {
+      // createCheckout(), NOT the raw mutation — see mountWalleyCheckout.
+      const checkoutRes = await this.createCheckout(spId)
+      checkoutId = checkoutRes?.id
+      if (checkoutId && this.state) {
+        this.state = { ...this.state, checkoutId }
+      }
+    }
+    if (!checkoutId) {
+      throw new Error('[CheckoutManager] no backend checkout for the Nexi payment')
+    }
+    const ownedCheckoutId: string = checkoutId
+
+    let order: NexiOrder | null = null
+    if (pending && pending.checkoutId === ownedCheckoutId) {
+      try {
+        order = await gqlGetNexiOrder(ownedCheckoutId, opts)
+      } catch {
+        order = null
+      }
+      if (order && isNexiPaid(order.status)) {
+        // Paid while we were away (the redirect completed it): nothing to
+        // mount, just confirm.
+        clearNexiPending()
+        handlers.onCompleted?.(order)
+        return order
+      }
+      if (order && (order.status !== 'Created' || order.order_id !== pending.paymentId)) {
+        order = null
+      }
+    }
+    if (!order) {
+      // href MUST be the page's own URL, query-less: Nexi checks it.
+      const created = await gqlCreatePaymentNexi(
+        {
+          checkoutId: ownedCheckoutId,
+          countryCode: getGlobalCountryCode(),
+          href: kustomCleanHref(),
+          email: this.state?.address?.email || undefined,
+        },
+        opts,
+      )
+      if (!created?.order_id || !created.checkout_key) {
+        throw new Error('Nexi payment creation failed: missing paymentId/checkout key')
+      }
+      order = created
+      rememberNexiPending({ checkoutId: ownedCheckoutId, sponsorId: spId, paymentId: order.order_id })
+    }
+
+    this.destroyNexi()
+    const handle = await mountNexi(container, order, {
+      language: nexiLanguageFor(getGlobalCountryCode()),
+      theme: nexiThemeFrom(readVioTheme()),
+    })
+    this.nexiHandle = handle
+    const mounted = order
+    handle.on('address-changed', (address: any) => {
+      void this.repriceNexiShipping(handle, ownedCheckoutId, address, opts, handlers.onShipping)
+    })
+    handle.on('payment-completed', (result: any) => {
+      clearNexiPending()
+      handlers.onCompleted?.({
+        ...mounted,
+        order_id: String(result?.paymentId ?? mounted.order_id),
+        status: 'Reserved',
+      })
+    })
+    return order
+  }
+
+  /** address-changed → freeze → UpdateNexiShipping → thaw. */
+  private async repriceNexiShipping(
+    handle: NexiCheckoutHandle,
+    checkoutId: string,
+    address: any,
+    opts: CartQueryOptions,
+    onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void,
+  ): Promise<void> {
+    const countryCode = String(address?.countryCode ?? address?.country ?? '')
+    if (!countryCode) return
+    try {
+      handle.freezeCheckout()
+    } catch {
+      /* widget already gone */
+    }
+    try {
+      const result = await gqlUpdateNexiShipping(
+        {
+          checkoutId,
+          countryCode,
+          postalCode: address?.postalCode ? String(address.postalCode) : undefined,
+        },
+        opts,
+      )
+      onShipping?.(result)
+    } catch (err) {
+      onShipping?.(null, err)
+    } finally {
+      try {
+        handle.thawCheckout()
+      } catch {
+        /* widget already gone */
+      }
+    }
+  }
+
+  /** Release the Dibs.Checkout listeners with the widget they belong to. */
+  destroyNexi(): void {
+    try {
+      this.nexiHandle?.cleanup()
+    } catch {
+      /* noop */
+    }
+    this.nexiHandle = null
+  }
+
+  /** Re-read the Nexi payment owned by a checkout. */
+  async getNexiOrder(checkoutId: string, sponsorId?: number): Promise<NexiOrder | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetNexiOrder(checkoutId, opts)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

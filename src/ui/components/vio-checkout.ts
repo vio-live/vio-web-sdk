@@ -85,6 +85,23 @@ export class VioCheckout extends LitElement {
   private qliroMountedOrderId: string | null = null
   @state() private walleyMounting = false
   private walleyMountedOrderId: string | null = null
+  /**
+   * Set while this page load is showing the outcome of an embedded checkout's
+   * confirmation redirect (Kustom, Qliro, Walley). While set, nothing may start
+   * a new payment.
+   *
+   * The return handler selects the method so the panel has something to show,
+   * and only THEN asks the provider whether the order was paid. Selecting is a
+   * state change; the render it schedules runs `updated()` → `mount*IfNeeded()`
+   * long before the provider answers, and in a fresh page load there is no
+   * mounted order to stop it — so every return created a new backend checkout
+   * and a new provider order for a cart that had just been paid. Not a race
+   * that needs a slow network: a microtask always beats a round trip.
+   * Reproduced in `vio-checkout.return.dom.test.ts` before this existed.
+   *
+   * Cleared when the checkout closes: reopening it is a fresh checkout.
+   */
+  private returningFrom: PaymentMethod | null = null
   /** Redirecting to the Stripe / Vipps hosted page. */
   @state() private stripeLoading = false
   @state() private vippsLoading = false
@@ -151,6 +168,7 @@ export class VioCheckout extends LitElement {
       this.availableMethods = null
       this.paymentMethodsResolved = false
       this.autoSelectAttempted = false
+      this.returningFrom = null
       this.unmountKlarna()
     }
   }
@@ -724,6 +742,10 @@ export class VioCheckout extends LitElement {
     'terminated', 'error', 'voided', 'unpaid',
   ])
 
+  /** The payment may or may not have gone through, and we could not find out. */
+  private static readonly RETURN_UNVERIFIED_MESSAGE =
+    'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
+
   /** Waits between GetCheckout attempts — PSP webhooks (Vipps especially) can
    * land seconds after the shopper is redirected back, so a single immediate
    * check misreads a successful charge as unpaid. ~20s total. */
@@ -808,8 +830,7 @@ export class VioCheckout extends LitElement {
       this.open = true
     } else {
       // Never got an answer from the backend: keep the cart, tell the user.
-      this.paymentError =
-        'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
+      this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
       this.open = true
     }
   }
@@ -837,6 +858,9 @@ export class VioCheckout extends LitElement {
       // the push webhook, never from the browser.
       const kustomOrderId = urlParams.get('order_id') || ''
       if (urlParams.get('payment_processor') === 'KUSTOM' && kustomOrderId) {
+        // BEFORE open()/selectPaymentMethod(): both emit, and the render they
+        // schedule must already see it — see `returningFrom`.
+        this.returningFrom = 'kustom'
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -890,6 +914,9 @@ export class VioCheckout extends LitElement {
           }
         } catch (err) {
           this.paymentNotice = null
+          // The order may well be paid — offering to pay again is the one
+          // thing this must not do. Same wording as the redirect methods.
+          this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
           if (typeof console !== 'undefined') {
             console.warn('[VioCheckout] Kustom confirmation read failed:', err)
           }
@@ -903,6 +930,9 @@ export class VioCheckout extends LitElement {
       // and render Qliro's own receipt; the Commerce order is created
       // server-side by the push webhook, never from the browser.
       if (urlParams.get('payment_processor') === 'QLIRO' && checkoutId) {
+        // BEFORE open()/selectPaymentMethod(): both emit, and the render they
+        // schedule must already see it — see `returningFrom`.
+        this.returningFrom = 'qliro'
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -960,6 +990,9 @@ export class VioCheckout extends LitElement {
           }
         } catch (err) {
           this.paymentNotice = null
+          // The order may well be paid — offering to pay again is the one
+          // thing this must not do. Same wording as the redirect methods.
+          this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
           if (typeof console !== 'undefined') {
             console.warn('[VioCheckout] Qliro confirmation read failed:', err)
           }
@@ -974,6 +1007,9 @@ export class VioCheckout extends LitElement {
       // was missed — tab backgrounded, page reload). Re-read the session BY
       // CHECKOUT and render Walley's own receipt.
       if (urlParams.get('payment_processor') === 'WALLEY' && checkoutId) {
+        // BEFORE open()/selectPaymentMethod(): both emit, and the render they
+        // schedule must already see it — see `returningFrom`.
+        this.returningFrom = 'walley'
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1024,6 +1060,9 @@ export class VioCheckout extends LitElement {
           }
         } catch (err) {
           this.paymentNotice = null
+          // The order may well be paid — offering to pay again is the one
+          // thing this must not do. Same wording as the redirect methods.
+          this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
           if (typeof console !== 'undefined') {
             console.warn('[VioCheckout] Walley confirmation read failed:', err)
           }
@@ -1758,11 +1797,22 @@ export class VioCheckout extends LitElement {
     `
   }
 
+  /**
+   * Whether mounting an embedded checkout now would be starting a payment the
+   * shopper asked for. Mounting CREATES an order at the provider (and a backend
+   * checkout if there is none), so it must not happen on a confirmation return
+   * or once this checkout's order is confirmed.
+   */
+  private mayStartEmbeddedPayment(): boolean {
+    return !this.returningFrom && !this.orderConfirmed
+  }
+
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
   /** Mount the Kustom embedded checkout once it's the chosen method. */
   private async mountKustomIfNeeded(): Promise<void> {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'kustom') return
+    if (!this.mayStartEmbeddedPayment()) return
     if (this.kustomMounting) return
     const container = this.renderRoot?.querySelector(
       '#vio-kustom-checkout-container',
@@ -1840,6 +1890,7 @@ export class VioCheckout extends LitElement {
   private async mountQliroIfNeeded(): Promise<void> {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'qliro') return
+    if (!this.mayStartEmbeddedPayment()) return
     if (this.qliroMounting) return
     const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
     if (this.qliroMountedOrderId && container.childElementCount > 0) return
@@ -1893,6 +1944,7 @@ export class VioCheckout extends LitElement {
   private async mountWalleyIfNeeded(): Promise<void> {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'walley') return
+    if (!this.mayStartEmbeddedPayment()) return
     if (this.walleyMounting) return
     const container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
     if (this.walleyMountedOrderId && container.childElementCount > 0) return

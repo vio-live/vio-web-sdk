@@ -86,6 +86,14 @@ export class VioCheckout extends LitElement {
   @state() private walleyMounting = false
   private walleyMountedOrderId: string | null = null
   /**
+   * The shipping the customer picked INSIDE the Qliro widget, as Qliro
+   * reports it. Qliro owns that choice in the modes where it shows a picker,
+   * so while Qliro is the method the summary follows it instead of our own
+   * preselected rate. Null until Qliro reports one — in `Vio rate as an order
+   * line` it never does, and our rate is the one Qliro charges.
+   */
+  @state() private qliroShipping: { ref?: string; price?: number } | null = null
+  /**
    * Set while this page load is showing the outcome of an embedded checkout's
    * confirmation redirect (Kustom, Qliro, Walley). While set, nothing may start
    * a new payment.
@@ -129,6 +137,26 @@ export class VioCheckout extends LitElement {
   private loadingShippings = false
   private shippingsAttempted = false
 
+  private boundOnQliroEvent = (e: Event): void => {
+    const event = (e as CustomEvent<any>).detail
+    if (!event) return
+    if (event.type === 'shipping-price-changed' && typeof event.price === 'number') {
+      this.qliroShipping = { ...(this.qliroShipping ?? {}), price: event.price }
+    } else if (event.type === 'shipping-changed') {
+      const shipping = event.shipping ?? {}
+      const ref = shipping.method ?? shipping.merchantReference ?? shipping.MerchantReference
+      const price =
+        typeof shipping.price === 'number'
+          ? shipping.price
+          : this.availableShippingsList.find((o) => o.id === String(ref))?.priceMajor
+      this.qliroShipping = {
+        ...(this.qliroShipping ?? {}),
+        ...(ref != null ? { ref: String(ref) } : {}),
+        ...(typeof price === 'number' ? { price } : {}),
+      }
+    }
+  }
+
   private boundOnCheckoutChange = (e: Event): void => {
     const detail = (e as CustomEvent<CheckoutChangeDetail>).detail
     const prevSponsorId = this.checkoutState?.sponsorId
@@ -170,6 +198,14 @@ export class VioCheckout extends LitElement {
       this.autoSelectAttempted = false
       this.returningFrom = null
       this.unmountKlarna()
+      // The embedded widgets go with the checkout they were opened for, as
+      // "Endre" already does. Kept, the "already mounted" guard reused them on
+      // the next open — with the order they were created for: Alan
+      // (2026-09-14) closed with the X, changed the cart, reopened, and Qliro
+      // still asked for the old total. Paying there charges the old cart.
+      this.unmountKustom()
+      this.unmountQliro()
+      this.unmountWalley()
     }
   }
 
@@ -713,6 +749,7 @@ export class VioCheckout extends LitElement {
     Vio.checkout.addEventListener('change', this.boundOnCheckoutChange)
     Vio.checkout.addEventListener('payment-complete', this.boundOnPaymentComplete)
     Vio.checkout.addEventListener('payment-error', this.boundOnPaymentError)
+    Vio.checkout.addEventListener('qliro-event', this.boundOnQliroEvent)
     if (this.checkoutState) {
       void this.refreshApplePay()
       void this.refreshKlarna()
@@ -1187,6 +1224,7 @@ export class VioCheckout extends LitElement {
     Vio.checkout.removeEventListener('change', this.boundOnCheckoutChange)
     Vio.checkout.removeEventListener('payment-complete', this.boundOnPaymentComplete)
     Vio.checkout.removeEventListener('payment-error', this.boundOnPaymentError)
+    Vio.checkout.removeEventListener('qliro-event', this.boundOnQliroEvent)
     this.unmountKlarna()
     super.disconnectedCallback()
   }
@@ -1723,10 +1761,25 @@ export class VioCheckout extends LitElement {
    * express always has one; the normal flow has one once the backend
    * shippings loaded (the choice IS persisted on the cart and charged). */
   private shippingMajor(): number {
+    if (this.checkoutState?.paymentMethod === 'qliro' && typeof this.qliroShipping?.price === 'number') {
+      return this.qliroShipping.price
+    }
     if (!this.express && this.availableShippingsList.length === 0) return 0
     const o = this.shippingOption
     if (!o) return 0
     return o.priceMajor ?? o.price / 100
+  }
+
+  /** The rate the summary names — Qliro's own pick while Qliro is the method. */
+  private summaryShippingName(): string {
+    if (this.checkoutState?.paymentMethod === 'qliro' && this.qliroShipping) {
+      const ref = this.qliroShipping.ref
+      const picked = ref ? this.availableShippingsList.find((o) => o.id === ref) : undefined
+      // A price with no rate we recognise: show the price, never another name.
+      return picked ? picked.method || picked.name || '' : ''
+    }
+    const o = this.shippingOption
+    return o ? o.method || o.name || '' : ''
   }
 
   /** Total to charge — items + shipping (express). */
@@ -1918,6 +1971,7 @@ export class VioCheckout extends LitElement {
 
   private unmountQliro(): void {
     this.qliroMountedOrderId = null
+    this.qliroShipping = null
     // Release the q1 listeners with the widget they belong to — and any lock
     // still held, which would otherwise outlive the iframe.
     Vio.checkout.destroyQliroListeners()
@@ -2499,7 +2553,7 @@ export class VioCheckout extends LitElement {
                     <span>Sum</span><span>${this.orderTotal()}</span>
                   </div>
                   <div class="order-row">
-                    <span>Frakt${this.shippingMajor() > 0 && this.shippingOption ? ` – ${this.shippingOption.method || this.shippingOption.name}` : ''}</span>
+                    <span>Frakt${this.shippingMajor() > 0 && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
                     <span>${this.shippingMajor() > 0
                       ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
                       : this.shippingLabel}</span>

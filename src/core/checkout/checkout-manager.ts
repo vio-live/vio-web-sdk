@@ -648,6 +648,15 @@ export class CheckoutManager extends EventTarget {
             preselected: idx === 0,
           }
         })
+        // Cheapest first, and that one preselected. The backend lists them in
+        // database order, which on 2026-09-14 made the dearest rate the
+        // default — and, since the checkout saves the preselected one on the
+        // cart, the rate Qliro opened with. Stable: equal prices keep their
+        // order.
+        mapped.sort((a, b) => a.price - b.price)
+        mapped.forEach((m, idx) => {
+          m.preselected = idx === 0
+        })
         this.lastFetchedShippings = mapped
         return mapped
       }

@@ -81,6 +81,10 @@ export class VioCheckout extends LitElement {
   @state() private availableMethods: string[] | null = null
   @state() private kustomMounting = false
   private kustomMountedOrderId: string | null = null
+  /** The cart (see cartFingerprint) each embedded widget's order was created for. */
+  private kustomMountedFor: string | null = null
+  private qliroMountedFor: string | null = null
+  private walleyMountedFor: string | null = null
   @state() private qliroMounting = false
   private qliroMountedOrderId: string | null = null
   @state() private walleyMounting = false
@@ -1860,6 +1864,27 @@ export class VioCheckout extends LitElement {
     return !this.returningFrom && !this.orderConfirmed
   }
 
+  /**
+   * The cart an embedded widget's order is created for. Kustom, Qliro and
+   * Walley price the order when it is created, so a widget kept for a
+   * different cart shows — and charges — the wrong total.
+   *
+   * Closing the checkout already drops the widgets, but the cart can change
+   * without a close: in Vev the cart view opens on top of the checkout, and
+   * "Til kassen" calls `Vio.checkout.open()`, which replaces the state without
+   * ever clearing it. Angelo, 2026-09-14: quantities raised in the cart view,
+   * back to the checkout, and Qliro still asked for the old total. So each
+   * mount remembers this, and a mismatch starts over with a fresh order.
+   */
+  private cartFingerprint(): string {
+    const s = this.checkoutState
+    const lines = (this.items ?? [])
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
+      .sort()
+      .join('|')
+    return `${s?.sponsorId ?? ''}|${s?.currency ?? ''}|${s?.subtotal ?? ''}|${lines}`
+  }
+
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
   /** Mount the Kustom embedded checkout once it's the chosen method. */
   private async mountKustomIfNeeded(): Promise<void> {
@@ -1871,10 +1896,14 @@ export class VioCheckout extends LitElement {
       '#vio-kustom-checkout-container',
     ) as HTMLElement | null
     if (!container) return
-    // Already mounted for this session — the KCO iframe manages itself
-    // (address, shipping and totals live inside it; no re-mount on change).
-    if (this.kustomMountedOrderId && container.childElementCount > 0) return
+    // Already mounted for THIS cart — the KCO iframe manages itself (address,
+    // shipping and totals live inside it). A different cart needs a new order.
+    if (this.kustomMountedOrderId && container.childElementCount > 0) {
+      if (this.kustomMountedFor === this.cartFingerprint()) return
+      this.unmountKustom()
+    }
 
+    const mountedFor = this.cartFingerprint()
     this.kustomMounting = true
     container.innerHTML = ''
     try {
@@ -1883,6 +1912,7 @@ export class VioCheckout extends LitElement {
         this.checkoutState.sponsorId,
       )
       this.kustomMountedOrderId = order.order_id
+      this.kustomMountedFor = mountedFor
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Kustom mount failed:', err)
@@ -1898,6 +1928,7 @@ export class VioCheckout extends LitElement {
 
   private unmountKustom(): void {
     this.kustomMountedOrderId = null
+    this.kustomMountedFor = null
     const container = this.renderRoot?.querySelector(
       '#vio-kustom-checkout-container',
     ) as HTMLElement | null
@@ -1945,9 +1976,14 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState.paymentMethod !== 'qliro') return
     if (!this.mayStartEmbeddedPayment()) return
     if (this.qliroMounting) return
-    const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
-    if (this.qliroMountedOrderId && container.childElementCount > 0) return
+    let container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
+    if (this.qliroMountedOrderId && container.childElementCount > 0) {
+      if (this.qliroMountedFor === this.cartFingerprint()) return
+      this.unmountQliro()
+      container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
+    }
 
+    const mountedFor = this.cartFingerprint()
     this.qliroMounting = true
     container.innerHTML = ''
     try {
@@ -1956,6 +1992,7 @@ export class VioCheckout extends LitElement {
         this.checkoutState.sponsorId,
       )
       this.qliroMountedOrderId = order.order_id
+      this.qliroMountedFor = mountedFor
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Qliro mount failed:', err)
@@ -1971,6 +2008,7 @@ export class VioCheckout extends LitElement {
 
   private unmountQliro(): void {
     this.qliroMountedOrderId = null
+    this.qliroMountedFor = null
     this.qliroShipping = null
     // Release the q1 listeners with the widget they belong to — and any lock
     // still held, which would otherwise outlive the iframe.
@@ -2000,9 +2038,14 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState.paymentMethod !== 'walley') return
     if (!this.mayStartEmbeddedPayment()) return
     if (this.walleyMounting) return
-    const container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
-    if (this.walleyMountedOrderId && container.childElementCount > 0) return
+    let container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
+    if (this.walleyMountedOrderId && container.childElementCount > 0) {
+      if (this.walleyMountedFor === this.cartFingerprint()) return
+      this.unmountWalley()
+      container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
+    }
 
+    const mountedFor = this.cartFingerprint()
     this.walleyMounting = true
     container.innerHTML = ''
     try {
@@ -2030,6 +2073,7 @@ export class VioCheckout extends LitElement {
         },
       )
       this.walleyMountedOrderId = order.order_id
+      this.walleyMountedFor = mountedFor
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Walley mount failed:', err)
@@ -2045,6 +2089,7 @@ export class VioCheckout extends LitElement {
 
   private unmountWalley(): void {
     this.walleyMountedOrderId = null
+    this.walleyMountedFor = null
     this.querySelector<HTMLElement>('#vio-walley-checkout-container')?.remove()
   }
 

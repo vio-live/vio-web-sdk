@@ -16,6 +16,7 @@ import { VioCheckout } from './vio-checkout.js'
 const SPONSOR = 5
 const manager = Vio.checkout as any
 let cartTotal = 2100
+let sessionSeq = 0
 
 beforeEach(() => {
   const proto = VioCheckout.prototype as any
@@ -23,8 +24,9 @@ beforeEach(() => {
     vi.spyOn(proto, m).mockResolvedValue(undefined)
   }
   vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map([[SPONSOR, {} as any]]))
+  // Like the real open(): every call is a new checkout session.
   vi.spyOn(manager, 'open').mockImplementation((...args: unknown[]) => {
-    manager.state = { sponsorId: args[0], subtotal: cartTotal, currency: 'NOK' }
+    manager.state = { sponsorId: args[0], session: ++sessionSeq, subtotal: cartTotal, currency: 'NOK' }
     manager.emit()
     return manager.state
   })
@@ -110,22 +112,43 @@ for (const method of ['qliro', 'walley'] as const) {
     expect(mountSpy).toHaveBeenCalledTimes(2)
   })
 
-  it(`${method}: reopening with the SAME cart keeps the widget (no needless new order)`, async () => {
-    cartTotal = 2100
-    const mountName = method === 'qliro' ? 'mountQliroCheckout' : 'mountWalleyCheckout'
-    const mountSpy = vi.spyOn(manager, mountName).mockImplementation(async (...args: unknown[]) => {
-      ;(args[0] as HTMLElement).innerHTML = `<iframe data-total="${manager.state?.subtotal}"></iframe>`
-      return { order_id: `ORDER-${manager.state?.subtotal}`, html_snippet: '' }
+}
+
+/**
+ * Alan, 2026-09-14 — the regression 0.11.3 shipped. It compared the cart LINES
+ * to decide whether a widget was stale, but within one session the backend
+ * rewrites them: saving the shipping re-reads the cart (unit price, variant id
+ * as the backend spells them). The next Qliro event — the customer picking a
+ * shipping — re-rendered, the lines no longer matched, and the widget was torn
+ * down mid-purchase. Nothing about the checkout had changed.
+ */
+for (const [label, rewritten] of [
+  ['unit price re-read from the backend', { productId: 411896, variantId: undefined, quantity: 1, unitPrice: 160 }],
+  ['variant id normalised by the backend', { productId: 411896, variantId: 0, quantity: 1, unitPrice: 200 }],
+] as const) {
+  it(`qliro: same session, lines rewritten by the backend (${label}) — picking a shipping keeps the widget`, async () => {
+    let items: any[] = [{ id: 'local-1', productId: 411896, variantId: undefined, quantity: 1, unitPrice: 200 }]
+    vi.spyOn(manager, 'items', 'get').mockImplementation(() => items)
+    const mountSpy = vi.spyOn(manager, 'mountQliroCheckout').mockImplementation(async (...args: unknown[]) => {
+      ;(args[0] as HTMLElement).innerHTML = '<iframe></iframe>'
+      // What the real mount does: create the backend checkout, and emit.
+      manager.state = { ...manager.state, checkoutId: 'CHK-1' }
+      manager.emit()
+      return { order_id: 'Q-1', html_snippet: '' }
     })
     const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
     manager.open(SPONSOR)
-    manager.selectPaymentMethod(method)
-    el.show()
-    await renderCycles(el)
-    manager.open(SPONSOR)
-    manager.selectPaymentMethod(method)
+    manager.selectPaymentMethod('qliro')
     el.show()
     await renderCycles(el)
     expect(mountSpy).toHaveBeenCalledTimes(1)
+
+    items = [{ id: 'backend-1', ...rewritten }]
+    manager.dispatchEvent(new CustomEvent('qliro-event', { detail: { type: 'shipping-changed', shipping: { method: 'x' } } }))
+    manager.emit()
+    await renderCycles(el)
+
+    expect(mountSpy).toHaveBeenCalledTimes(1)
+    expect(el.querySelector('#vio-qliro-checkout-container iframe')).not.toBeNull()
   })
 }

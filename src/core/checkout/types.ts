@@ -39,4 +39,10 @@ export interface CheckoutState {
   sessionId?: string
   /** Klarna Payments client token (native GraphQL flow). */
   clientToken?: string
+  /**
+   * Which `open()` this state belongs to — a new number every time a checkout
+   * is opened, kept by every later update. An embedded widget belongs to the
+   * session it was mounted in: a new session means a new order.
+   */
+  session?: number
 }

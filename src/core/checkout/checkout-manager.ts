@@ -443,6 +443,8 @@ export interface KlarnaPaymentsHandle {
 
 export class CheckoutManager extends EventTarget {
   private state: CheckoutState | null = null
+  /** Counts `open()` calls — see CheckoutState.session. */
+  private sessionSeq = 0
   private applePayAvailableCache: boolean | null = null
 
   /** Gateway hints learned from CreatePaymentApplePay (per session). The
@@ -476,6 +478,7 @@ export class CheckoutManager extends EventTarget {
     }
     this.state = {
       sponsorId,
+      session: ++this.sessionSeq,
       subtotal: this.cartManager.subtotalForSponsor(sponsorId),
       // Page-level currency wins over whatever the persisted cart carries —
       // the host may have switched currency since the cart was created.

@@ -81,7 +81,7 @@ export class VioCheckout extends LitElement {
   @state() private availableMethods: string[] | null = null
   @state() private kustomMounting = false
   private kustomMountedOrderId: string | null = null
-  /** The cart (see cartFingerprint) each embedded widget's order was created for. */
+  /** The checkout session (see embedSession) each embedded widget's order belongs to. */
   private kustomMountedFor: string | null = null
   private qliroMountedFor: string | null = null
   private walleyMountedFor: string | null = null
@@ -1865,24 +1865,25 @@ export class VioCheckout extends LitElement {
   }
 
   /**
-   * The cart an embedded widget's order is created for. Kustom, Qliro and
-   * Walley price the order when it is created, so a widget kept for a
-   * different cart shows — and charges — the wrong total.
+   * The checkout an embedded widget's order belongs to. Kustom, Qliro and
+   * Walley price the order when it is created, so a widget kept into a NEW
+   * checkout shows — and charges — the cart it was created for.
    *
-   * Closing the checkout already drops the widgets, but the cart can change
-   * without a close: in Vev the cart view opens on top of the checkout, and
-   * "Til kassen" calls `Vio.checkout.open()`, which replaces the state without
-   * ever clearing it. Angelo, 2026-09-14: quantities raised in the cart view,
-   * back to the checkout, and Qliro still asked for the old total. So each
-   * mount remembers this, and a mismatch starts over with a fresh order.
+   * Closing drops the widgets, but a checkout can start again without a
+   * close: in Vev the cart view opens on top of the checkout and "Til kassen"
+   * calls `Vio.checkout.open()` again (Angelo, 2026-09-14: quantities raised
+   * in the cart view, Qliro kept the old total). Every `open()` is a new
+   * session, so a widget from an earlier one starts over.
+   *
+   * 0.11.3 compared the cart LINES instead, and that was wrong: within one
+   * session the backend rewrites them (saving the shipping re-reads the cart),
+   * so the first Qliro event after that — the customer picking a shipping —
+   * tore the widget down mid-purchase (Alan, 2026-09-14). The session does
+   * not change under the customer's hands.
    */
-  private cartFingerprint(): string {
+  private embedSession(): string {
     const s = this.checkoutState
-    const lines = (this.items ?? [])
-      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
-      .sort()
-      .join('|')
-    return `${s?.sponsorId ?? ''}|${s?.currency ?? ''}|${s?.subtotal ?? ''}|${lines}`
+    return `${s?.sponsorId ?? ''}|${s?.session ?? ''}`
   }
 
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
@@ -1899,11 +1900,11 @@ export class VioCheckout extends LitElement {
     // Already mounted for THIS cart — the KCO iframe manages itself (address,
     // shipping and totals live inside it). A different cart needs a new order.
     if (this.kustomMountedOrderId && container.childElementCount > 0) {
-      if (this.kustomMountedFor === this.cartFingerprint()) return
+      if (this.kustomMountedFor === this.embedSession()) return
       this.unmountKustom()
     }
 
-    const mountedFor = this.cartFingerprint()
+    const mountedFor = this.embedSession()
     this.kustomMounting = true
     container.innerHTML = ''
     try {
@@ -1978,12 +1979,12 @@ export class VioCheckout extends LitElement {
     if (this.qliroMounting) return
     let container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
     if (this.qliroMountedOrderId && container.childElementCount > 0) {
-      if (this.qliroMountedFor === this.cartFingerprint()) return
+      if (this.qliroMountedFor === this.embedSession()) return
       this.unmountQliro()
       container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
     }
 
-    const mountedFor = this.cartFingerprint()
+    const mountedFor = this.embedSession()
     this.qliroMounting = true
     container.innerHTML = ''
     try {
@@ -2040,12 +2041,12 @@ export class VioCheckout extends LitElement {
     if (this.walleyMounting) return
     let container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
     if (this.walleyMountedOrderId && container.childElementCount > 0) {
-      if (this.walleyMountedFor === this.cartFingerprint()) return
+      if (this.walleyMountedFor === this.embedSession()) return
       this.unmountWalley()
       container = this.lightContainer('vio-walley-checkout-container', 'vio-walley')
     }
 
-    const mountedFor = this.cartFingerprint()
+    const mountedFor = this.embedSession()
     this.walleyMounting = true
     container.innerHTML = ''
     try {

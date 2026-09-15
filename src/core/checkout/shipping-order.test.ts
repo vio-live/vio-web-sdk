@@ -37,3 +37,20 @@ describe('fetchAvailableShippings', () => {
     expect(list.map((s) => s.preselected)).toEqual([true, false, false])
   })
 })
+
+describe('checkout sessions', () => {
+  it('every open() is a new session, and later updates keep it', async () => {
+    const cart = {
+      waitForCartMutations: async () => {},
+      getCart: () => ({ cartId: 'cart-1', items: [{ id: 'a', quantity: 1, unitPrice: 100 }] }),
+      ensureCartId: async () => 'cart-1',
+      subtotalForSponsor: () => 100,
+    } as never
+    const m = new CheckoutManager(cart)
+    const first = m.open(5).session
+    m.selectPaymentMethod('qliro')
+    expect(m.currentState?.session).toBe(first)
+    const second = m.open(5).session
+    expect(second).toBeGreaterThan(first ?? 0)
+  })
+})

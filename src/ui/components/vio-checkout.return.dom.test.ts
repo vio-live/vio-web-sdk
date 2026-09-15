@@ -213,3 +213,58 @@ describe('returning from a paid embedded checkout', () => {
     expect(mountSpy).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * Angelo, 2026-09-15: after paying with Qliro our own "Takk!" card showed up
+ * in the middle of the screen. When the provider has a receipt of its own,
+ * that is the one the shopper sees. The trap this must not fall back into
+ * (2026-09-08): the payment step is rendered from the cart, so clearing the
+ * cart after the purchase took the receipt away and brought back "how do you
+ * want to pay".
+ */
+describe('the provider shows its own receipt', () => {
+  for (const [method, processor, reader, status] of [
+    ['qliro', 'QLIRO', 'getQliroOrder', 'Completed'],
+    ['walley', 'WALLEY', 'getWalleyOrder', 'PurchaseCompleted'],
+  ] as const) {
+    it(`${method}: a completed order shows ${method}'s receipt, not ours — and keeps it once the cart is cleared`, async () => {
+      landOn(`?checkout_id=CHK-PAID&payment_processor=${processor}`)
+      vi.spyOn(manager, reader).mockResolvedValue({
+        order_id: 'PAID', status, total_price: 6998, html_snippet: `<p id="${method}-receipt">receipt</p>`,
+      })
+      vi.spyOn(manager, 'renderKustomSnippet').mockImplementation((c: any, h: any) => { c.innerHTML = h })
+      const mountSpy = vi.spyOn(manager, method === 'qliro' ? 'mountQliroCheckout' : 'mountWalleyCheckout')
+        .mockImplementation(fakeMount)
+      const cleared = vi.mocked(Vio.cart.clearSponsorCart)
+      const successes: unknown[] = []
+      document.addEventListener('vio:payment-success', (e) => successes.push((e as CustomEvent).detail))
+
+      const el = await mount<HTMLElement>('vio-checkout')
+      await renderCycles(el)
+
+      const receipt = () => el.querySelector(`#vio-${method}-checkout-container #${method}-receipt`)
+      expect(receipt()).not.toBeNull()
+      expect(shadowText(el)).not.toContain('Takk for bestillingen')
+      expect(el.shadowRoot?.querySelector(`slot[name="vio-${method}"]`)).not.toBeNull()
+      expect(cleared).toHaveBeenCalled()
+      expect(successes.length).toBe(1)
+
+      // The cart is now empty; the next state change must not take the receipt
+      // away nor start a new payment.
+      vi.spyOn(manager, 'items', 'get').mockReturnValue([])
+      manager.emit()
+      await renderCycles(el)
+      expect(receipt()).not.toBeNull()
+      expect(el.shadowRoot?.querySelector(`slot[name="vio-${method}"]`)).not.toBeNull()
+      expect(mountSpy).not.toHaveBeenCalled()
+    })
+  }
+
+  it('qliro: with no receipt from Qliro, ours is shown — never nothing', async () => {
+    landOn('?checkout_id=CHK-PAID&payment_processor=QLIRO')
+    vi.spyOn(manager, 'getQliroOrder').mockResolvedValue({ order_id: 'PAID', status: 'Completed', total_price: 6998 })
+    const el = await mount<HTMLElement>('vio-checkout')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Takk')
+  })
+})

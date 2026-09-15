@@ -51,6 +51,13 @@ export class VioCheckout extends LitElement {
   @state() private applePayInProgress = false
   @state() private klarnaAvailable = false
   @state() private orderConfirmed = false
+  /**
+   * The embedded provider whose OWN receipt is on screen after a completed
+   * purchase (Qliro, Walley). Set instead of `orderConfirmed`: when the
+   * provider renders a receipt, that is the one the shopper sees, not ours
+   * (Angelo, 2026-09-15). See showProviderReceipt.
+   */
+  @state() private providerReceipt: 'qliro' | 'walley' | null = null
   @state() private confirmedMethod: PaymentMethod | null = null
   @state() private paymentError: string | null = null
   /** Neutral (non-error) status line: "verifying payment…" / "still processing". */
@@ -192,6 +199,7 @@ export class VioCheckout extends LitElement {
       this.applePayAvailable = false
       this.klarnaAvailable = false
       this.orderConfirmed = false
+      this.providerReceipt = null
       this.confirmedMethod = null
       this.confirmedOrder = null
       this.paymentError = null
@@ -1001,24 +1009,23 @@ export class VioCheckout extends LitElement {
           )
           this.paymentNotice = null
           if (order?.status === 'Completed') {
-            // Through the SHARED confirmation path. Rendering Qliro's receipt and
-            // THEN clearing the cart loses it: clearing is a state change, so the
-            // component re-renders with zero items and the payment step takes the
-            // screen back — the customer sees their confirmation flash and then
-            // "how do you want to pay", which invites paying twice.
-            //
-            // `confirmOrder` snapshots the order BEFORE clearing, sets the confirmed
-            // state and keeps it, and clears the cart itself.
-            //
-            // The snippet is deliberately NOT re-rendered for a paid order: remounting
-            // a completed order's widget is the other half of how this looped back
-            // into payment.
+            // Qliro's own receipt is the one shown, not ours (Angelo,
+            // 2026-09-15). It goes through showProviderReceipt, whose view does
+            // not depend on the cart — clearing the cart is what took the
+            // receipt away on 2026-09-08 and brought back the payment step.
+            // No order is created meanwhile: mayStartEmbeddedPayment() is false
+            // while a receipt is on screen. If Qliro sends no receipt, ours.
+            const spId = this.checkoutState?.sponsorId ?? sponsorId ?? 0
+            const result = { order: { orderId: order.order_id }, chargedTotal: order.total_price }
             this.qliroMountedOrderId = order.order_id
-            this.confirmOrder(
-              'qliro',
-              this.checkoutState?.sponsorId ?? sponsorId ?? 0,
-              { order: { orderId: order.order_id }, chargedTotal: order.total_price },
-            )
+            if (order.html_snippet) {
+              this.showProviderReceipt('qliro', spId, result)
+              await this.updateComplete
+              const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
+              Vio.checkout.renderKustomSnippet(container, order.html_snippet)
+            } else {
+              this.confirmOrder('qliro', spId, result)
+            }
           } else if (order?.html_snippet) {
             // Not completed (OnHold, still InProcess): Qliro's own screen explains
             // that state better than we could.
@@ -1082,21 +1089,10 @@ export class VioCheckout extends LitElement {
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
             }
             if (order.status === 'PurchaseCompleted') {
-              this.dispatchEvent(
-                new CustomEvent('vio:payment-success', {
-                  detail: { method: 'walley', orderId: order.order_id },
-                  bubbles: true,
-                  composed: true,
-                }),
-              )
-              const spId = this.checkoutState?.sponsorId
-              if (spId) {
-                try {
-                  Vio.cart.clearSponsorCart(spId)
-                } catch {
-                  /* noop */
-                }
-              }
+              // Walley's receipt stays on screen — see showProviderReceipt.
+              this.showProviderReceipt('walley', this.checkoutState?.sponsorId ?? 0, {
+                orderId: order.order_id,
+              })
             }
           }
         } catch (err) {
@@ -1808,7 +1804,9 @@ export class VioCheckout extends LitElement {
         </div>
 
         <div class="body">
-          ${this.orderConfirmed
+          ${this.providerReceipt
+            ? this.renderProviderReceipt()
+            : this.orderConfirmed
             ? this.renderConfirmation()
             : this.express
               ? this.renderKlarnaExpress()
@@ -1816,6 +1814,53 @@ export class VioCheckout extends LitElement {
         </div>
       </div>
     `
+  }
+
+  /**
+   * The provider's receipt on its own. It must not depend on the cart: the
+   * payment step is rendered from the cart, and clearing the cart after a
+   * purchase is what took Qliro's receipt away on 2026-09-08 and brought back
+   * "how do you want to pay". The provider's container lives in the light DOM
+   * and is projected here, untouched.
+   */
+  private renderProviderReceipt() {
+    const slot = this.providerReceipt === 'walley' ? 'vio-walley' : 'vio-qliro'
+    return html`
+      <section class="section provider-receipt">
+        <slot name=${slot}></slot>
+        <button class="confirm-close" @click=${this.close}>Lukk</button>
+      </section>
+    `
+  }
+
+  /**
+   * A completed purchase whose receipt the PROVIDER shows. Same side effects as
+   * confirmOrder — `vio:payment-success` for the host and analytics, the
+   * sponsor's cart cleared — but the screen is the provider's receipt, not our
+   * "Takk!": two receipts for one purchase is one too many.
+   */
+  private showProviderReceipt(
+    method: 'qliro' | 'walley',
+    sponsorId: number,
+    result?: unknown,
+  ): void {
+    this.providerReceipt = method
+    this.confirmedMethod = method
+    this.open = true
+    this.dispatchEvent(
+      new CustomEvent('vio:payment-success', {
+        bubbles: true,
+        composed: true,
+        detail: { method, sponsorId, result },
+      }),
+    )
+    if (sponsorId) {
+      try {
+        Vio.cart.clearSponsorCart(sponsorId)
+      } catch {
+        /* noop */
+      }
+    }
   }
 
   private renderConfirmation() {
@@ -1861,7 +1906,7 @@ export class VioCheckout extends LitElement {
    * or once this checkout's order is confirmed.
    */
   private mayStartEmbeddedPayment(): boolean {
-    return !this.returningFrom && !this.orderConfirmed
+    return !this.returningFrom && !this.orderConfirmed && !this.providerReceipt
   }
 
   /**
@@ -2054,23 +2099,11 @@ export class VioCheckout extends LitElement {
         container,
         this.checkoutState.sponsorId,
         () => {
-          // The widget confirmed the purchase inline — same success wiring
-          // as the confirmation-URL path (see `updated()`'s param handling).
-          this.dispatchEvent(
-            new CustomEvent('vio:payment-success', {
-              detail: { method: 'walley', orderId: order.order_id },
-              bubbles: true,
-              composed: true,
-            }),
-          )
-          const spId = this.checkoutState?.sponsorId
-          if (spId) {
-            try {
-              Vio.cart.clearSponsorCart(spId)
-            } catch {
-              /* noop */
-            }
-          }
+          // The widget confirmed the purchase inline and shows its own
+          // receipt — keep it on screen, as the confirmation-URL path does.
+          this.showProviderReceipt('walley', this.checkoutState?.sponsorId ?? 0, {
+            orderId: order.order_id,
+          })
         },
       )
       this.walleyMountedOrderId = order.order_id

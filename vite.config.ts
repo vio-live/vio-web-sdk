@@ -25,7 +25,7 @@ export default defineConfig({
     host: '127.0.0.1',
     proxy: {
       '/proxy-vio': {
-        target: 'https://api-dev.vio.live',
+        target: 'https://api-staging.vio.live',
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path.replace(/^\/proxy-vio/, ''),

@@ -1,5 +1,5 @@
 /**
- * Vio REST API client — talks to `api-dev.vio.live` (or override).
+ * Vio REST API client — talks to `api-staging.vio.live` (or override).
  *
  * Endpoints (mirrors the iOS SDK's surface):
  *   GET  /v2/mobile/config                                bootstrap (sponsors + market)
@@ -16,7 +16,7 @@
 import type { BootstrapResponse, PlacementComponent } from '../types.js'
 
 export interface VioApiOptions {
-  /** REST API base URL, e.g. `https://api-dev.vio.live`. */
+  /** REST API base URL, e.g. `https://api-staging.vio.live`. */
   apiBase: string
   /** Top-level Vio apiKey for this client app. */
   apiKey: string

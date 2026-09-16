@@ -61,10 +61,12 @@ const DEFAULT_URLS: Record<
   Environment,
   { apiBase: string; graphQLBase: string; eventsBase: string }
 > = {
+  // The Vio Backend development environment was removed on 2026-09-16; its REST
+  // and events hosts now point at staging (Commerce GraphQL dev is unaffected).
   development: {
-    apiBase: 'https://api-dev.vio.live',
+    apiBase: 'https://api-staging.vio.live',
     graphQLBase: 'https://graph-ql-dev.vio.live',
-    eventsBase: 'https://events-dev.vio.live',
+    eventsBase: 'https://events-staging.vio.live',
   },
   // No separate staging GraphQL deployment yet — shares dev's.
   testing: {

@@ -44,14 +44,17 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** Each embedded method's order-creating mount on the manager. */
+const MOUNT = { qliro: 'mountQliroCheckout', walley: 'mountWalleyCheckout', nexi: 'mountNexiCheckout' } as const
+
 async function renderCycles(el: HTMLElement, n = 5) {
   for (let i = 0; i < n; i++) await settle(el)
 }
 
-for (const method of ['qliro', 'walley'] as const) {
+for (const method of ['qliro', 'walley', 'nexi'] as const) {
   it(`${method}: closing with the X, changing the cart and reopening shows the NEW total`, async () => {
     cartTotal = 2100
-    const mountName = method === 'qliro' ? 'mountQliroCheckout' : 'mountWalleyCheckout'
+    const mountName = MOUNT[method]
     const mountSpy = vi.spyOn(manager, mountName).mockImplementation(async (...args: unknown[]) => {
       const container = args[0] as HTMLElement
       container.innerHTML = `<iframe data-total="${manager.state?.subtotal}"></iframe>`
@@ -87,10 +90,10 @@ for (const method of ['qliro', 'walley'] as const) {
  * it — so the reset that runs on close never ran. Quantities raised in the
  * cart, back to the checkout, and Qliro still asked for the old total.
  */
-for (const method of ['qliro', 'walley'] as const) {
+for (const method of ['qliro', 'walley', 'nexi'] as const) {
   it(`${method}: a cart changed in the cart view (no close) gets a new order`, async () => {
     cartTotal = 2100
-    const mountName = method === 'qliro' ? 'mountQliroCheckout' : 'mountWalleyCheckout'
+    const mountName = MOUNT[method]
     const mountSpy = vi.spyOn(manager, mountName).mockImplementation(async (...args: unknown[]) => {
       const container = args[0] as HTMLElement
       container.innerHTML = `<iframe data-total="${manager.state?.subtotal}"></iframe>`

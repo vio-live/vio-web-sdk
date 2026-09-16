@@ -28,6 +28,7 @@ import {
   isEmbeddedMethod,
   everyMethodCollectsAddress as allCollectAddress,
 } from '../../core/checkout/method-taxonomy.js'
+import { nexiReturnPaymentId, readNexiPending } from '../../core/checkout/payments/nexi.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -92,10 +93,15 @@ export class VioCheckout extends LitElement {
   private kustomMountedFor: string | null = null
   private qliroMountedFor: string | null = null
   private walleyMountedFor: string | null = null
+  private nexiMountedFor: string | null = null
   @state() private qliroMounting = false
   private qliroMountedOrderId: string | null = null
   @state() private walleyMounting = false
   private walleyMountedOrderId: string | null = null
+  @state() private nexiMounting = false
+  private nexiMountedOrderId: string | null = null
+  /** What Nexi's shipping re-pricing last said, shown under the widget. */
+  @state() private nexiShippingNotice: string | null = null
   /**
    * The shipping the customer picked INSIDE the Qliro widget, as Qliro
    * reports it. Qliro owns that choice in the modes where it shows a picker,
@@ -228,6 +234,7 @@ export class VioCheckout extends LitElement {
       this.unmountKustom()
       this.unmountQliro()
       this.unmountWalley()
+      this.unmountNexi()
     }
   }
 
@@ -916,6 +923,30 @@ export class VioCheckout extends LitElement {
       // re-verifies against Vipps directly, never trusts the URL) — so only
       // bail here when there's neither a payment param NOR a checkout to
       // check.
+      // Nexi's third-party return (Vipps/Swish/MobilePay inside the widget):
+      // Nexi sends the shopper back to the SAME page with ?paymentId=…. If it
+      // is the session we remembered, re-open and re-mount on it — the widget
+      // then finishes and fires payment-completed.
+      const nexiPaymentId = nexiReturnPaymentId()
+      const nexiPending = readNexiPending()
+      if (nexiPaymentId && nexiPending && nexiPending.paymentId === nexiPaymentId) {
+        this.cleanReturnQueryParams(['paymentId'])
+        if (!this.checkoutState && nexiPending.sponsorId) {
+          try {
+            Vio.checkout.open(nexiPending.sponsorId)
+          } catch {
+            /* noop */
+          }
+        }
+        try {
+          Vio.checkout.selectPaymentMethod('nexi')
+        } catch {
+          /* noop */
+        }
+        this.open = true
+        return
+      }
+
       if (!vioPayment && !checkoutId) return
 
       // Kustom's confirmation return: shopcart registers the confirmation URL
@@ -1244,6 +1275,7 @@ export class VioCheckout extends LitElement {
     Vio.checkout.removeEventListener('payment-error', this.boundOnPaymentError)
     Vio.checkout.removeEventListener('qliro-event', this.boundOnQliroEvent)
     this.unmountKlarna()
+    this.unmountNexi()
     super.disconnectedCallback()
   }
 
@@ -1272,6 +1304,7 @@ export class VioCheckout extends LitElement {
       this.unmountKustom()
       this.unmountQliro()
       this.unmountWalley()
+      this.unmountNexi()
       this.paymentError = null
     }
     // Mount the Klarna Express button once its slot is in the DOM, the
@@ -1281,6 +1314,7 @@ export class VioCheckout extends LitElement {
     void this.mountKustomIfNeeded()
     void this.mountQliroIfNeeded()
     void this.mountWalleyIfNeeded()
+    void this.mountNexiIfNeeded()
   }
 
   close(): void {
@@ -1442,6 +1476,7 @@ export class VioCheckout extends LitElement {
       kustom: 'kustom',
       qliro: 'qliro',
       walley: 'walley',
+      nexi: 'nexi',
       vipps: 'vipps',
       klarna: this.klarnaAvailable ? 'klarna' : undefined,
       applepay: this.applePayAvailable ? 'apple-pay' : undefined,
@@ -1662,6 +1697,11 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('walley')
       return
     }
+    // Nexi: same widget-does-everything category.
+    if (method === 'nexi') {
+      Vio.checkout.selectPaymentMethod('nexi')
+      return
+    }
     // Vipps collects the address in its own flow but still needs an email
     // for the order receipt; every other method needs the full form + a
     // shipping choice before we mint sessions/links.
@@ -1795,6 +1835,8 @@ export class VioCheckout extends LitElement {
         return 'Qliro'
       case 'walley':
         return 'Walley'
+      case 'nexi':
+        return 'Nexi'
       case 'vipps':
         return 'Vipps'
       case 'stripe':
@@ -2231,6 +2273,87 @@ export class VioCheckout extends LitElement {
     `
   }
 
+  /**
+   * Mount the Nexi embedded checkout once it's the chosen method. Nexi's own
+   * JS SDK renders into a LIGHT-DOM container (it refuses a shadow root);
+   * completion is its `payment-completed` event — Nexi neither redirects nor
+   * shows a receipt, so success lands in Vio's confirmation drawer. Shipping
+   * is re-priced on `address-changed` (see the manager).
+   */
+  private async mountNexiIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'nexi') return
+    if (!this.mayStartEmbeddedPayment()) return
+    if (this.nexiMounting) return
+    let container = this.lightContainer('vio-nexi-checkout-container', 'vio-nexi')
+    if (this.nexiMountedOrderId && container.childElementCount > 0) {
+      if (this.nexiMountedFor === this.embedSession()) return
+      this.unmountNexi()
+      container = this.lightContainer('vio-nexi-checkout-container', 'vio-nexi')
+    }
+
+    const mountedFor = this.embedSession()
+    this.nexiMounting = true
+    this.nexiShippingNotice = null
+    container.innerHTML = ''
+    try {
+      const order = await Vio.checkout.mountNexiCheckout(container, this.checkoutState.sponsorId, {
+        onCompleted: (paid) => this.onNexiCompleted(paid.order_id),
+        onShipping: (result, err) => {
+          if (err || !result) {
+            this.nexiShippingNotice = 'Kunne ikke beregne frakt. Prøv å endre adressen.'
+          } else if (!result.ok) {
+            this.nexiShippingNotice = 'Vi kan dessverre ikke sende til dette landet.'
+          } else {
+            this.nexiShippingNotice = null
+          }
+        },
+      })
+      this.nexiMountedOrderId = order.order_id
+      this.nexiMountedFor = mountedFor
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] Nexi mount failed:', err)
+      }
+      this.paymentError = `Kunne ikke laste Nexi: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+    } finally {
+      this.nexiMounting = false
+    }
+  }
+
+  /** payment-completed: the reservation exists — confirm like the redirect methods do. */
+  private onNexiCompleted(paymentId: string): void {
+    const spId = this.checkoutState?.sponsorId ?? 0
+    const checkoutId = this.checkoutState?.checkoutId ?? ''
+    this.unmountNexi()
+    this.applyReturnOutcome('paid', true, 'nexi', spId, checkoutId || paymentId)
+  }
+
+  private unmountNexi(): void {
+    this.nexiMountedOrderId = null
+    this.nexiMountedFor = null
+    this.nexiShippingNotice = null
+    Vio.checkout.destroyNexi()
+    this.querySelector<HTMLElement>('#vio-nexi-checkout-container')?.remove()
+  }
+
+  private renderNexiPanel() {
+    return html`
+      <div class="nexi-panel">
+        ${this.nexiMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Nexi…</div>`
+          : ''}
+        <slot name="vio-nexi"></slot>
+        ${this.nexiShippingNotice
+          ? html`<div class="payment-notice">${this.nexiShippingNotice}</div>`
+          : ''}
+      </div>
+    `
+  }
+
   private renderKlarnaPanel() {
     const currency = this.checkoutState?.currency || getGlobalCurrency()
     return html`
@@ -2522,6 +2645,7 @@ export class VioCheckout extends LitElement {
                               this.unmountKustom()
                               this.unmountQliro()
                               this.unmountWalley()
+                              this.unmountNexi()
                               Vio.checkout.selectPaymentMethod('' as PaymentMethod)
                             }}
                           >
@@ -2535,6 +2659,7 @@ export class VioCheckout extends LitElement {
                   ${method === 'kustom' ? this.renderKustomPanel() : ''}
                   ${method === 'qliro' ? this.renderQliroPanel() : ''}
                   ${method === 'walley' ? this.renderWalleyPanel() : ''}
+                  ${method === 'nexi' ? this.renderNexiPanel() : ''}
                   ${method === 'stripe'
                     ? html`
                         <button
@@ -2674,6 +2799,13 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button class="payment-btn" @click=${() => this.onPay('walley')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Walley</span>
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('nexi')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('nexi')}>
+                            <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Nexi</span>
                           </button>
                         `
                       : ''}

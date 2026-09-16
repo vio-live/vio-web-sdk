@@ -135,4 +135,48 @@ describe('vio-checkout — Nexi shipping choice', () => {
     expect(rates(el)).toHaveLength(0)
     expect(shadowText(el)).toContain('ikke sende til dette landet')
   })
+
+  it('shows the market\'s rates before any address, with the suggested one marked', async () => {
+    // Angelo, 2026-09-16: the choice appeared only after the address, mid-typing.
+    const el = await openNexi()
+    onShipping!(answer('10', { ok: false, reason: 'AWAITING_ADDRESS', total_price: undefined }))
+    await renderCycles(el)
+    expect(rates(el)).toHaveLength(2)
+    expect(rates(el)[0]!.getAttribute('aria-checked')).toBe('true')
+    expect(shadowText(el)).not.toContain('ikke sende')
+  })
+
+  it('a pick before the address is shown at once', async () => {
+    const pick = vi.spyOn(manager, 'pickNexiShipping').mockImplementation(async (...args: unknown[]) => {
+      onShipping!(answer(String(args[0]), { ok: false, reason: 'AWAITING_ADDRESS' }))
+    })
+    const el = await openNexi()
+    onShipping!(answer('10', { ok: false, reason: 'AWAITING_ADDRESS' }))
+    await renderCycles(el)
+    rates(el)[1]!.click()
+    await renderCycles(el)
+    expect(pick).toHaveBeenCalledWith('20')
+    expect(rates(el)[1]!.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('says so when the address does not take the rate the shopper had', async () => {
+    const el = await openNexi()
+    onShipping!(answer('20', { ok: false, reason: 'AWAITING_ADDRESS' }))
+    await renderCycles(el)
+    // The address arrives; Express does not reach it, Standard is charged.
+    onShipping!(answer('10', { options: [{ id: '10', name: 'Standard', price: 199 }, { id: '30', name: 'Pickup', price: 49 }] }))
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Valgt frakt leveres ikke til denne adressen')
+    expect(shadowText(el)).toContain('Standard')
+  })
+
+  it('no such notice when the address takes the rate', async () => {
+    const el = await openNexi()
+    onShipping!(answer('20', { ok: false, reason: 'AWAITING_ADDRESS' }))
+    await renderCycles(el)
+    onShipping!(answer('20'))
+    await renderCycles(el)
+    expect(shadowText(el)).not.toContain('leveres ikke')
+    expect(rates(el)[1]!.getAttribute('aria-checked')).toBe('true')
+  })
 })

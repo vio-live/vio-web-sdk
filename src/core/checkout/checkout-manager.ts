@@ -472,6 +472,14 @@ export class CheckoutManager extends EventTarget {
   private qliroController: QliroController | null = null
   /** Live Dibs.Checkout handle while a Nexi widget is mounted. */
   private nexiHandle: NexiCheckoutHandle | null = null
+  /**
+   * The rate the shopper wants. Before an address it is only remembered (the
+   * suggested one, or their pick); every re-pricing asks for it, and the
+   * backend charges it if it reaches the address.
+   */
+  private nexiPreferredShipping: string | null = null
+  /** The rates offered before an address was typed. */
+  private nexiShippingPreview: NexiShippingUpdate | null = null
   /** What the last `address-changed` was priced with — a picked rate re-prices the same address. */
   private nexiShippingContext: {
     handle: NexiCheckoutHandle
@@ -1242,6 +1250,8 @@ export class CheckoutManager extends EventTarget {
     // so hand the checkout the rate and the choices, and let a pick re-price
     // that same address.
     const carried = order.shipping
+    this.nexiPreferredShipping = carried?.shipping_id ?? null
+    this.nexiShippingPreview = null
     if (carried?.ok && carried.country) {
       this.nexiShippingContext = {
         handle,
@@ -1251,10 +1261,29 @@ export class CheckoutManager extends EventTarget {
         onShipping: handlers.onShipping,
       }
       handlers.onShipping?.(carried)
+    } else if (carried?.reason === 'AWAITING_ADDRESS') {
+      // The rates are shown from the start; nothing is charged until Nexi
+      // announces the address.
+      this.nexiShippingPreview = carried
+      this.nexiShippingContext = {
+        handle,
+        checkoutId: ownedCheckoutId,
+        address: null,
+        opts,
+        onShipping: handlers.onShipping,
+      }
+      handlers.onShipping?.(carried)
     }
     handle.on('address-changed', (address: any) => {
       this.nexiShippingContext = { handle, checkoutId: ownedCheckoutId, address, opts, onShipping: handlers.onShipping }
-      void this.repriceNexiShipping(handle, ownedCheckoutId, address, opts, handlers.onShipping)
+      void this.repriceNexiShipping(
+        handle,
+        ownedCheckoutId,
+        address,
+        opts,
+        handlers.onShipping,
+        this.nexiPreferredShipping ?? undefined,
+      )
     })
     handle.on('payment-completed', (result: any) => {
       clearNexiPending()
@@ -1276,6 +1305,23 @@ export class CheckoutManager extends EventTarget {
   async pickNexiShipping(shippingId: string): Promise<void> {
     const ctx = this.nexiShippingContext
     if (!ctx || ctx.handle !== this.nexiHandle) return
+    this.nexiPreferredShipping = shippingId
+    if (!ctx.address) {
+      // No address yet: remember the pick and show it; it is charged once the
+      // address is priced.
+      const preview = this.nexiShippingPreview
+      const picked = preview?.options?.find((o) => o.id === shippingId)
+      if (preview && picked) {
+        this.nexiShippingPreview = {
+          ...preview,
+          shipping_id: picked.id,
+          shipping_name: picked.name,
+          shipping_price: picked.price,
+        }
+        ctx.onShipping?.(this.nexiShippingPreview)
+      }
+      return
+    }
     await this.repriceNexiShipping(ctx.handle, ctx.checkoutId, ctx.address, ctx.opts, ctx.onShipping, shippingId)
   }
 
@@ -1305,6 +1351,7 @@ export class CheckoutManager extends EventTarget {
         },
         opts,
       )
+      if (result?.ok && result.shipping_id) this.nexiPreferredShipping = result.shipping_id
       onShipping?.(result)
     } catch (err) {
       onShipping?.(null, err)
@@ -1326,6 +1373,8 @@ export class CheckoutManager extends EventTarget {
     }
     this.nexiHandle = null
     this.nexiShippingContext = null
+    this.nexiPreferredShipping = null
+    this.nexiShippingPreview = null
   }
 
   /** Re-read the Nexi payment owned by a checkout. */

@@ -20,9 +20,14 @@ let sessionSeq = 0
 
 beforeEach(() => {
   const proto = VioCheckout.prototype as any
-  for (const m of ['loadAvailablePaymentMethods', 'loadAvailableShippings', 'refreshApplePay', 'refreshKlarna']) {
+  for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)
   }
+  // The shippings answer at once and the cart can ship. Since 0.11.6 an
+  // embedded widget waits for that answer before creating an order.
+  vi.spyOn(proto, 'loadAvailableShippings').mockImplementation(async function (this: any) {
+    this.shippingsReadyFor = this.embedSession()
+  })
   vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map([[SPONSOR, {} as any]]))
   // Like the real open(): every call is a new checkout session.
   vi.spyOn(manager, 'open').mockImplementation((...args: unknown[]) => {

@@ -1238,6 +1238,20 @@ export class CheckoutManager extends EventTarget {
     })
     this.nexiHandle = handle
     const mounted = order
+    // Resumed with an address already priced: Nexi will not announce it again,
+    // so hand the checkout the rate and the choices, and let a pick re-price
+    // that same address.
+    const carried = order.shipping
+    if (carried?.ok && carried.country) {
+      this.nexiShippingContext = {
+        handle,
+        checkoutId: ownedCheckoutId,
+        address: { countryCode: carried.country, postalCode: carried.postal_code },
+        opts,
+        onShipping: handlers.onShipping,
+      }
+      handlers.onShipping?.(carried)
+    }
     handle.on('address-changed', (address: any) => {
       this.nexiShippingContext = { handle, checkoutId: ownedCheckoutId, address, opts, onShipping: handlers.onShipping }
       void this.repriceNexiShipping(handle, ownedCheckoutId, address, opts, handlers.onShipping)

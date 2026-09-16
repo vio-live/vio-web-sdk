@@ -45,6 +45,11 @@ export interface NexiOrder {
   purchase_country?: string
   purchase_currency?: string
   total_price?: number
+  /**
+   * Shipping already on the payment — null before an address was priced.
+   * Only read when resuming: a resumed widget does not announce the address.
+   */
+  shipping?: NexiShippingUpdate | null
 }
 
 export interface NexiShippingUpdate {
@@ -62,6 +67,9 @@ export interface NexiShippingUpdate {
    * no shipping picker of its own, so the checkout shows these.
    */
   options?: NexiShippingOption[]
+  /** The address it was priced for (alpha-2 country). */
+  country?: string
+  postal_code?: string
 }
 
 export interface NexiShippingOption {
@@ -89,19 +97,7 @@ mutation CreatePaymentNexi($checkoutId: String!, $countryCode: String!, $href: S
 }
 `
 
-export const GET_NEXI_ORDER_QUERY = `
-query GetNexiOrder($checkoutId: String!) {
-  Payment {
-    GetNexiOrder(checkout_id: $checkoutId) {${NEXI_ORDER_FIELDS}
-    }
-  }
-}
-`
-
-export const UPDATE_NEXI_SHIPPING_MUTATION = `
-mutation UpdateNexiShipping($checkoutId: String!, $countryCode: String!, $postalCode: String, $shippingId: String) {
-  Payment {
-    UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode, shipping_id: $shippingId) {
+const NEXI_SHIPPING_FIELDS = `
       ok
       reason
       order_id
@@ -110,6 +106,24 @@ mutation UpdateNexiShipping($checkoutId: String!, $countryCode: String!, $postal
       shipping_price
       shipping_id
       options { id name price }
+      country
+      postal_code`
+
+export const GET_NEXI_ORDER_QUERY = `
+query GetNexiOrder($checkoutId: String!) {
+  Payment {
+    GetNexiOrder(checkout_id: $checkoutId) {${NEXI_ORDER_FIELDS}
+      shipping {${NEXI_SHIPPING_FIELDS}
+      }
+    }
+  }
+}
+`
+
+export const UPDATE_NEXI_SHIPPING_MUTATION = `
+mutation UpdateNexiShipping($checkoutId: String!, $countryCode: String!, $postalCode: String, $shippingId: String) {
+  Payment {
+    UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode, shipping_id: $shippingId) {${NEXI_SHIPPING_FIELDS}
     }
   }
 }

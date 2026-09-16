@@ -21,6 +21,7 @@ vi.mock('./payments/nexi.js', async (importOriginal) => {
     getNexiOrder: vi.fn(async () => ({
       order_id: 'OLD', status: 'Created', checkout_key: 'k', checkout_js_url: 'x', total_price: 2247,
     })),
+    updateNexiShipping: vi.fn(async () => ({ ok: true, order_id: 'OLD', shipping_id: '10' })),
     mountNexi: vi.fn(async () => ({
       on: () => {}, freezeCheckout: () => {}, thawCheckout: () => {}, cleanup: () => {},
     })),
@@ -89,5 +90,36 @@ describe('CheckoutManager.mountNexiCheckout — resuming', () => {
 
     expect(order.order_id).toBe('NEW')
     expect(nexi.getNexiOrder).not.toHaveBeenCalled()
+  })
+
+  it('a resumed payment hands over the shipping it carries, and a pick re-prices that address', async () => {
+    // The widget comes back with the address filled in and Nexi does not
+    // announce it again: without this the rates never showed.
+    const carried = {
+      ok: true, order_id: 'OLD', shipping_id: '10', shipping_name: 'Standard', shipping_price: 199,
+      options: [{ id: '10', name: 'Standard', price: 199 }, { id: '20', name: 'Express', price: 300 }],
+      country: 'NO', postal_code: '0250',
+    }
+    vi.mocked(nexi.getNexiOrder).mockResolvedValueOnce({
+      order_id: 'OLD', status: 'Created', checkout_key: 'k', checkout_js_url: 'x', shipping: carried,
+    } as never)
+    const onShipping = vi.fn()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping }, { paymentId: 'OLD' })
+
+    expect(onShipping).toHaveBeenCalledWith(carried)
+
+    await m.pickNexiShipping('20')
+    expect(nexi.updateNexiShipping).toHaveBeenCalledWith(
+      { checkoutId: 'CHK-OLD', countryCode: 'NO', postalCode: '0250', shippingId: '20' },
+      expect.anything(),
+    )
+  })
+
+  it('a new payment hands over nothing — its address is still to come', async () => {
+    const onShipping = vi.fn()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping })
+    expect(onShipping).not.toHaveBeenCalled()
   })
 })

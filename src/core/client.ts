@@ -81,7 +81,7 @@ class VioFacade {
 
   // MARK: - Backend-bound
 
-  /** Lazy VioApi for REST endpoints on `api-dev.vio.live`. */
+  /** Lazy VioApi for REST endpoints on `api-staging.vio.live`. */
   get api(): VioApi {
     if (!this.apiInstance) {
       const cfg = Configuration.get()

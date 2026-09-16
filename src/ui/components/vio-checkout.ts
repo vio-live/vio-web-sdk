@@ -93,6 +93,7 @@ export class VioCheckout extends LitElement {
   private kustomMountedFor: string | null = null
   private qliroMountedFor: string | null = null
   private walleyMountedFor: string | null = null
+  private nexiMountedFor: string | null = null
   @state() private qliroMounting = false
   private qliroMountedOrderId: string | null = null
   @state() private walleyMounting = false
@@ -233,6 +234,7 @@ export class VioCheckout extends LitElement {
       this.unmountKustom()
       this.unmountQliro()
       this.unmountWalley()
+      this.unmountNexi()
     }
   }
 
@@ -1302,6 +1304,7 @@ export class VioCheckout extends LitElement {
       this.unmountKustom()
       this.unmountQliro()
       this.unmountWalley()
+      this.unmountNexi()
       this.paymentError = null
     }
     // Mount the Klarna Express button once its slot is in the DOM, the
@@ -2282,9 +2285,14 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState.paymentMethod !== 'nexi') return
     if (!this.mayStartEmbeddedPayment()) return
     if (this.nexiMounting) return
-    const container = this.lightContainer('vio-nexi-checkout-container', 'vio-nexi')
-    if (this.nexiMountedOrderId && container.childElementCount > 0) return
+    let container = this.lightContainer('vio-nexi-checkout-container', 'vio-nexi')
+    if (this.nexiMountedOrderId && container.childElementCount > 0) {
+      if (this.nexiMountedFor === this.embedSession()) return
+      this.unmountNexi()
+      container = this.lightContainer('vio-nexi-checkout-container', 'vio-nexi')
+    }
 
+    const mountedFor = this.embedSession()
     this.nexiMounting = true
     this.nexiShippingNotice = null
     container.innerHTML = ''
@@ -2302,6 +2310,7 @@ export class VioCheckout extends LitElement {
         },
       })
       this.nexiMountedOrderId = order.order_id
+      this.nexiMountedFor = mountedFor
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Nexi mount failed:', err)
@@ -2325,6 +2334,7 @@ export class VioCheckout extends LitElement {
 
   private unmountNexi(): void {
     this.nexiMountedOrderId = null
+    this.nexiMountedFor = null
     this.nexiShippingNotice = null
     Vio.checkout.destroyNexi()
     this.querySelector<HTMLElement>('#vio-nexi-checkout-container')?.remove()

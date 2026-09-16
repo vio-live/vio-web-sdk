@@ -2320,14 +2320,26 @@ export class VioCheckout extends LitElement {
       const order = await Vio.checkout.mountNexiCheckout(container, this.checkoutState.sponsorId, {
         onCompleted: (paid) => this.onNexiCompleted(paid.order_id),
         onShipping: (result, err) => {
+          const wanted = this.nexiShipping?.shipping_id
+          const pickedNow = this.nexiPicking
           this.nexiPicking = false
-          this.nexiShipping = result?.ok ? result : null
           if (err || !result) {
+            this.nexiShipping = null
             this.nexiShippingNotice = 'Kunne ikke beregne frakt. Prøv å endre adressen.'
+          } else if (result.reason === 'AWAITING_ADDRESS') {
+            // The rates of the market, shown before any address; nothing charged.
+            this.nexiShipping = result
+            this.nexiShippingNotice = null
           } else if (!result.ok) {
+            this.nexiShipping = null
             this.nexiShippingNotice = 'Vi kan dessverre ikke sende til dette landet.'
           } else {
-            this.nexiShippingNotice = null
+            this.nexiShipping = result
+            // The address changed and the rate the shopper had does not reach it.
+            this.nexiShippingNotice =
+              !pickedNow && wanted && result.shipping_id !== wanted
+                ? `Valgt frakt leveres ikke til denne adressen. Vi har valgt ${result.shipping_name ?? 'en annen'}.`
+                : null
           }
         },
       }, resumePaymentId ? { paymentId: resumePaymentId } : undefined)

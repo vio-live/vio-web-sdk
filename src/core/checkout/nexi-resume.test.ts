@@ -11,6 +11,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+const widgetEvents: Record<string, (...a: any[]) => void> = {}
+
 vi.mock('./payments/nexi.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('./payments/nexi.js')>()
   return {
@@ -23,7 +25,8 @@ vi.mock('./payments/nexi.js', async (importOriginal) => {
     })),
     updateNexiShipping: vi.fn(async () => ({ ok: true, order_id: 'OLD', shipping_id: '10' })),
     mountNexi: vi.fn(async () => ({
-      on: () => {}, freezeCheckout: () => {}, thawCheckout: () => {}, cleanup: () => {},
+      on: (event: string, cb: (...a: any[]) => void) => { widgetEvents[event] = cb },
+      freezeCheckout: () => {}, thawCheckout: () => {}, cleanup: () => {},
     })),
   }
 })
@@ -116,10 +119,39 @@ describe('CheckoutManager.mountNexiCheckout — resuming', () => {
     )
   })
 
-  it('a new payment hands over nothing — its address is still to come', async () => {
+  it('a payment with no shipping state hands over nothing', async () => {
     const onShipping = vi.fn()
     const m = manager()
     await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping })
     expect(onShipping).not.toHaveBeenCalled()
+  })
+
+  it('a new payment offers its rates at once; a pick is remembered and asked for with the address', async () => {
+    const preview = {
+      ok: false, reason: 'AWAITING_ADDRESS', order_id: 'NEW', shipping_id: '10',
+      shipping_name: 'Standard', shipping_price: 199, country: 'NO',
+      options: [{ id: '10', name: 'Standard', price: 199 }, { id: '20', name: 'Express', price: 300 }],
+    }
+    vi.mocked(nexi.createPaymentNexi).mockResolvedValueOnce({
+      order_id: 'NEW', status: 'Created', checkout_key: 'k', checkout_js_url: 'x', shipping: preview,
+    } as never)
+    vi.mocked(nexi.updateNexiShipping).mockClear()
+    const onShipping = vi.fn()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping })
+    expect(onShipping).toHaveBeenLastCalledWith(preview)
+
+    // Picked before any address: shown, nothing sent.
+    await m.pickNexiShipping('20')
+    expect(nexi.updateNexiShipping).not.toHaveBeenCalled()
+    expect(onShipping).toHaveBeenLastCalledWith(expect.objectContaining({ shipping_id: '20', shipping_price: 300 }))
+
+    // The address arrives: the pick travels with it.
+    widgetEvents['address-changed']!({ countryCode: 'NOR', postalCode: '0250' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(nexi.updateNexiShipping).toHaveBeenCalledWith(
+      { checkoutId: 'CHK-NEW', countryCode: 'NOR', postalCode: '0250', shippingId: '20' },
+      expect.anything(),
+    )
   })
 })

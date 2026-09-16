@@ -46,15 +46,21 @@ export interface NexiOrder {
   purchase_currency?: string
   total_price?: number
   /**
-   * Shipping already on the payment — null before an address was priced.
-   * Only read when resuming: a resumed widget does not announce the address.
+   * Shipping to show next to the widget: the purchase country's rates while
+   * no address is known (`reason: AWAITING_ADDRESS`, nothing charged), or what
+   * the payment carries once one was priced (a resumed widget does not
+   * announce its address again).
    */
   shipping?: NexiShippingUpdate | null
 }
 
 export interface NexiShippingUpdate {
   ok: boolean
-  /** When !ok: NO_SHIPPING — Vio does not ship to that country. */
+  /**
+   * When !ok: NO_SHIPPING — Vio does not ship to that country; or
+   * AWAITING_ADDRESS — nothing charged yet, `options` are the purchase
+   * country's rates and `shipping_id` the suggested one.
+   */
   reason?: string
   order_id: string
   total_price?: number
@@ -79,24 +85,6 @@ export interface NexiShippingOption {
   price: number
 }
 
-const NEXI_ORDER_FIELDS = `
-      order_id
-      status
-      checkout_key
-      checkout_js_url
-      purchase_country
-      purchase_currency
-      total_price`
-
-export const CREATE_PAYMENT_NEXI_MUTATION = `
-mutation CreatePaymentNexi($checkoutId: String!, $countryCode: String!, $href: String!, $email: String) {
-  Payment {
-    CreatePaymentNexi(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email) {${NEXI_ORDER_FIELDS}
-    }
-  }
-}
-`
-
 const NEXI_SHIPPING_FIELDS = `
       ok
       reason
@@ -109,12 +97,30 @@ const NEXI_SHIPPING_FIELDS = `
       country
       postal_code`
 
+const NEXI_ORDER_FIELDS = `
+      order_id
+      status
+      checkout_key
+      checkout_js_url
+      purchase_country
+      purchase_currency
+      total_price
+      shipping {${NEXI_SHIPPING_FIELDS}
+      }`
+
+export const CREATE_PAYMENT_NEXI_MUTATION = `
+mutation CreatePaymentNexi($checkoutId: String!, $countryCode: String!, $href: String!, $email: String) {
+  Payment {
+    CreatePaymentNexi(checkout_id: $checkoutId, country_code: $countryCode, href: $href, email: $email) {${NEXI_ORDER_FIELDS}
+    }
+  }
+}
+`
+
 export const GET_NEXI_ORDER_QUERY = `
 query GetNexiOrder($checkoutId: String!) {
   Payment {
     GetNexiOrder(checkout_id: $checkoutId) {${NEXI_ORDER_FIELDS}
-      shipping {${NEXI_SHIPPING_FIELDS}
-      }
     }
   }
 }

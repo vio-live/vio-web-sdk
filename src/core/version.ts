@@ -5,4 +5,4 @@
  *
  * RELEASE CHECKLIST: bump together with package.json (see CONTRIBUTING).
  */
-export const SDK_VERSION = '0.12.0'
+export const SDK_VERSION = '0.12.1'

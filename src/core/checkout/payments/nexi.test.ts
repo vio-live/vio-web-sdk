@@ -55,8 +55,11 @@ describe('Nexi Payment Module', () => {
     expect(CREATE_PAYMENT_NEXI_MUTATION).not.toContain('html_snippet')
     expect(GET_NEXI_ORDER_QUERY).toContain('GetNexiOrder(checkout_id: $checkoutId)')
     expect(UPDATE_NEXI_SHIPPING_MUTATION).toContain(
-      'UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode)',
+      'UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode, shipping_id: $shippingId)',
     )
+    // The rates to pick from and the one charged — Nexi has no picker.
+    expect(UPDATE_NEXI_SHIPPING_MUTATION).toContain('options { id name price }')
+    expect(UPDATE_NEXI_SHIPPING_MUTATION).toContain('shipping_id')
   })
 
   it('createPaymentNexi unwraps Payment.CreatePaymentNexi', async () => {

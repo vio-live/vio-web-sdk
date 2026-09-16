@@ -472,6 +472,15 @@ export class CheckoutManager extends EventTarget {
   private qliroController: QliroController | null = null
   /** Live Dibs.Checkout handle while a Nexi widget is mounted. */
   private nexiHandle: NexiCheckoutHandle | null = null
+  /** What the last `address-changed` was priced with — a picked rate re-prices the same address. */
+  private nexiShippingContext: {
+    handle: NexiCheckoutHandle
+    checkoutId: string
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    address: any
+    opts: CartQueryOptions
+    onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void
+  } | null = null
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
   private lastFetchedShippings: KlarnaShippingOption[] = []
@@ -1219,6 +1228,7 @@ export class CheckoutManager extends EventTarget {
     this.nexiHandle = handle
     const mounted = order
     handle.on('address-changed', (address: any) => {
+      this.nexiShippingContext = { handle, checkoutId: ownedCheckoutId, address, opts, onShipping: handlers.onShipping }
       void this.repriceNexiShipping(handle, ownedCheckoutId, address, opts, handlers.onShipping)
     })
     handle.on('payment-completed', (result: any) => {
@@ -1232,6 +1242,18 @@ export class CheckoutManager extends EventTarget {
     return order
   }
 
+  /**
+   * The shopper picked another rate from the `options` Nexi's last
+   * re-pricing returned: charge that one instead. Nexi has no shipping picker,
+   * so the checkout shows the rates and calls this. A no-op until an address
+   * has been typed in the widget.
+   */
+  async pickNexiShipping(shippingId: string): Promise<void> {
+    const ctx = this.nexiShippingContext
+    if (!ctx || ctx.handle !== this.nexiHandle) return
+    await this.repriceNexiShipping(ctx.handle, ctx.checkoutId, ctx.address, ctx.opts, ctx.onShipping, shippingId)
+  }
+
   /** address-changed → freeze → UpdateNexiShipping → thaw. */
   private async repriceNexiShipping(
     handle: NexiCheckoutHandle,
@@ -1239,6 +1261,7 @@ export class CheckoutManager extends EventTarget {
     address: any,
     opts: CartQueryOptions,
     onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void,
+    shippingId?: string,
   ): Promise<void> {
     const countryCode = String(address?.countryCode ?? address?.country ?? '')
     if (!countryCode) return
@@ -1253,6 +1276,7 @@ export class CheckoutManager extends EventTarget {
           checkoutId,
           countryCode,
           postalCode: address?.postalCode ? String(address.postalCode) : undefined,
+          shippingId,
         },
         opts,
       )
@@ -1276,6 +1300,7 @@ export class CheckoutManager extends EventTarget {
       /* noop */
     }
     this.nexiHandle = null
+    this.nexiShippingContext = null
   }
 
   /** Re-read the Nexi payment owned by a checkout. */

@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const widgetEvents: Record<string, (...a: any[]) => void> = {}
+const widgetSent: unknown[][] = []
 
 vi.mock('./payments/nexi.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('./payments/nexi.js')>()
@@ -26,6 +27,7 @@ vi.mock('./payments/nexi.js', async (importOriginal) => {
     updateNexiShipping: vi.fn(async () => ({ ok: true, order_id: 'OLD', shipping_id: '10' })),
     mountNexi: vi.fn(async () => ({
       on: (event: string, cb: (...a: any[]) => void) => { widgetEvents[event] = cb },
+      send: (...a: unknown[]) => { widgetSent.push(a) },
       freezeCheckout: () => {}, thawCheckout: () => {}, cleanup: () => {},
     })),
   }
@@ -154,4 +156,59 @@ describe('CheckoutManager.mountNexiCheckout — resuming', () => {
       expect.anything(),
     )
   })
+
+  it('before charging, sets the shipping even if the widget never announced an address', async () => {
+    // 2026-09-16, payment 085277846ae44f7498ae94e112435d63: Nexi filled in a
+    // known shopper's address silently, nothing was priced, and Nexi refused
+    // the payment at "pay".
+    vi.mocked(nexi.updateNexiShipping).mockClear()
+    vi.mocked(nexi.updateNexiShipping).mockResolvedValueOnce({
+      ok: true, order_id: 'NEW', shipping_id: '10', country: 'NO', postal_code: '0250',
+    } as never)
+    widgetSent.length = 0
+    const onShipping = vi.fn()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping })
+
+    widgetEvents['pay-initialized']!({ paymentId: 'NEW' })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(nexi.updateNexiShipping).toHaveBeenCalledWith(
+      { checkoutId: 'CHK-NEW', countryCode: '', postalCode: undefined, shippingId: undefined },
+      expect.anything(),
+    )
+    expect(widgetSent).toEqual([['payment-order-finalized', true]])
+    expect(onShipping).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true }))
+  })
+
+  it('does not let Nexi charge when the shipping could not be set', async () => {
+    vi.mocked(nexi.updateNexiShipping).mockResolvedValueOnce({
+      ok: false, reason: 'NO_SHIPPING', order_id: 'NEW', options: [],
+    } as never)
+    widgetSent.length = 0
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, {})
+    widgetEvents['pay-initialized']!({ paymentId: 'NEW' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(widgetSent).toEqual([['payment-order-finalized', false]])
+
+    vi.mocked(nexi.updateNexiShipping).mockRejectedValueOnce(new Error('down'))
+    widgetSent.length = 0
+    widgetEvents['pay-initialized']!({ paymentId: 'NEW' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(widgetSent).toEqual([['payment-order-finalized', false]])
+  })
+
+  it('the Apple Pay sheet\'s contact prices the shipping like the address form', async () => {
+    vi.mocked(nexi.updateNexiShipping).mockClear()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, {})
+    widgetEvents['applepay-contact-updated']!({ countryCode: 'NOR', postalCode: '0150' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(nexi.updateNexiShipping).toHaveBeenCalledWith(
+      expect.objectContaining({ countryCode: 'NOR', postalCode: '0150' }),
+      expect.anything(),
+    )
+  })
 })
+

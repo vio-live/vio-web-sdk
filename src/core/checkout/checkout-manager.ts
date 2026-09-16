@@ -1274,7 +1274,7 @@ export class CheckoutManager extends EventTarget {
       }
       handlers.onShipping?.(carried)
     }
-    handle.on('address-changed', (address: any) => {
+    const onAddress = (address: any) => {
       this.nexiShippingContext = { handle, checkoutId: ownedCheckoutId, address, opts, onShipping: handlers.onShipping }
       void this.repriceNexiShipping(
         handle,
@@ -1284,6 +1284,15 @@ export class CheckoutManager extends EventTarget {
         handlers.onShipping,
         this.nexiPreferredShipping ?? undefined,
       )
+    }
+    handle.on('address-changed', onAddress)
+    // The same, from the Apple Pay sheet inside the widget.
+    handle.on('applepay-contact-updated', onAddress)
+    // Nexi does not charge until we answer: set the shipping first. Needed
+    // because Nexi can fill in a recognised shopper's address without
+    // announcing it, and then nothing would ever have been priced.
+    handle.on('pay-initialized', () => {
+      void this.finalizeNexiPayment(handle, ownedCheckoutId, opts, handlers.onShipping)
     })
     handle.on('payment-completed', (result: any) => {
       clearNexiPending()
@@ -1323,6 +1332,51 @@ export class CheckoutManager extends EventTarget {
       return
     }
     await this.repriceNexiShipping(ctx.handle, ctx.checkoutId, ctx.address, ctx.opts, ctx.onShipping, shippingId)
+  }
+
+  /**
+   * `pay-initialized` → make sure the payment carries the shipping for the
+   * address Nexi will ship to → `payment-order-finalized`. With no address
+   * from the widget, the backend reads the one on the payment. Anything but a
+   * priced shipping stops the payment: charging without it is what failed on
+   * 2026-09-16 (payment 085277846ae44f7498ae94e112435d63).
+   */
+  private async finalizeNexiPayment(
+    handle: NexiCheckoutHandle,
+    checkoutId: string,
+    opts: CartQueryOptions,
+    onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void,
+  ): Promise<void> {
+    const ctx = this.nexiShippingContext?.handle === handle ? this.nexiShippingContext : null
+    const address = ctx?.address ?? null
+    let ok = false
+    try {
+      const result = await gqlUpdateNexiShipping(
+        {
+          checkoutId,
+          countryCode: String(address?.countryCode ?? address?.country ?? ''),
+          postalCode: address?.postalCode ? String(address.postalCode) : undefined,
+          shippingId: this.nexiPreferredShipping ?? undefined,
+        },
+        opts,
+      )
+      ok = Boolean(result?.ok)
+      if (result?.ok) {
+        if (result.shipping_id) this.nexiPreferredShipping = result.shipping_id
+        // The address the backend priced, so a later pick can re-price it.
+        if (ctx && !ctx.address && result.country) {
+          ctx.address = { countryCode: result.country, postalCode: result.postal_code }
+        }
+      }
+      onShipping?.(result)
+    } catch (err) {
+      onShipping?.(null, err)
+    }
+    try {
+      handle.send?.('payment-order-finalized', ok)
+    } catch {
+      /* widget already gone */
+    }
   }
 
   /** address-changed → freeze → UpdateNexiShipping → thaw. */

@@ -28,7 +28,11 @@ import {
   isEmbeddedMethod,
   everyMethodCollectsAddress as allCollectAddress,
 } from '../../core/checkout/method-taxonomy.js'
-import { nexiReturnPaymentId, readNexiPending } from '../../core/checkout/payments/nexi.js'
+import {
+  nexiReturnPaymentId,
+  readNexiPending,
+  type NexiShippingUpdate,
+} from '../../core/checkout/payments/nexi.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -102,6 +106,10 @@ export class VioCheckout extends LitElement {
   private nexiMountedOrderId: string | null = null
   /** What Nexi's shipping re-pricing last said, shown under the widget. */
   @state() private nexiShippingNotice: string | null = null
+  /** Nexi's last re-pricing: the rate on the payment and the ones to pick from. */
+  @state() private nexiShipping: NexiShippingUpdate | null = null
+  /** A picked rate is being pushed to the payment. */
+  @state() private nexiPicking = false
   /**
    * The shipping the customer picked INSIDE the Qliro widget, as Qliro
    * reports it. Qliro owns that choice in the modes where it shows a picker,
@@ -608,6 +616,7 @@ export class VioCheckout extends LitElement {
     }
     /* Shipping selector (express) — Standard / Express options. */
     .ship-select { display: flex; flex-direction: column; gap: 8px; }
+    .nexi-ship { margin-bottom: 12px; }
     .ship-opt {
       display: flex; align-items: center; justify-content: space-between; gap: 12px;
       padding: 12px 14px; border: 1px solid var(--vio-color-border, #ddd);
@@ -1873,6 +1882,9 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState?.paymentMethod === 'qliro' && typeof this.qliroShipping?.price === 'number') {
       return this.qliroShipping.price
     }
+    if (this.checkoutState?.paymentMethod === 'nexi' && typeof this.nexiShipping?.shipping_price === 'number') {
+      return this.nexiShipping.shipping_price
+    }
     if (!this.express && this.availableShippingsList.length === 0) return 0
     const o = this.shippingOption
     if (!o) return 0
@@ -1886,6 +1898,9 @@ export class VioCheckout extends LitElement {
       const picked = ref ? this.availableShippingsList.find((o) => o.id === ref) : undefined
       // A price with no rate we recognise: show the price, never another name.
       return picked ? picked.method || picked.name || '' : ''
+    }
+    if (this.checkoutState?.paymentMethod === 'nexi' && this.nexiShipping) {
+      return this.nexiShipping.shipping_name ?? ''
     }
     const o = this.shippingOption
     return o ? o.method || o.name || '' : ''
@@ -2300,6 +2315,8 @@ export class VioCheckout extends LitElement {
       const order = await Vio.checkout.mountNexiCheckout(container, this.checkoutState.sponsorId, {
         onCompleted: (paid) => this.onNexiCompleted(paid.order_id),
         onShipping: (result, err) => {
+          this.nexiPicking = false
+          this.nexiShipping = result?.ok ? result : null
           if (err || !result) {
             this.nexiShippingNotice = 'Kunne ikke beregne frakt. Prøv å endre adressen.'
           } else if (!result.ok) {
@@ -2336,8 +2353,51 @@ export class VioCheckout extends LitElement {
     this.nexiMountedOrderId = null
     this.nexiMountedFor = null
     this.nexiShippingNotice = null
+    this.nexiShipping = null
+    this.nexiPicking = false
     Vio.checkout.destroyNexi()
     this.querySelector<HTMLElement>('#vio-nexi-checkout-container')?.remove()
+  }
+
+  /**
+   * Nexi has no shipping picker: once an address is typed in the widget, the
+   * rates that reach it are listed here and the pick is pushed to the payment.
+   * With a single rate there is nothing to choose, so nothing is shown.
+   */
+  private renderNexiShippingChoice() {
+    const options = this.nexiShipping?.options ?? []
+    if (options.length < 2) return ''
+    const currency = this.checkoutState?.currency || getGlobalCurrency()
+    const current = this.nexiShipping?.shipping_id
+    return html`
+      <div class="ship-select nexi-ship" role="radiogroup" aria-label="Frakt">
+        ${options.map(
+          (o) => html`
+            <button
+              class="ship-opt ${current === o.id ? 'active' : ''}"
+              role="radio"
+              aria-checked=${current === o.id}
+              ?disabled=${this.nexiPicking}
+              @click=${() => void this.onPickNexiShipping(o.id)}
+            >
+              <span class="ship-meta"><b>${o.name}</b></span>
+              <span class="ship-price">${formatPrice(o.price, currency)}</span>
+            </button>
+          `,
+        )}
+      </div>
+    `
+  }
+
+  private async onPickNexiShipping(id: string): Promise<void> {
+    if (this.nexiPicking || id === this.nexiShipping?.shipping_id) return
+    this.nexiPicking = true
+    try {
+      // The answer arrives through onShipping, which clears nexiPicking.
+      await Vio.checkout.pickNexiShipping(id)
+    } finally {
+      this.nexiPicking = false
+    }
   }
 
   private renderNexiPanel() {
@@ -2346,6 +2406,7 @@ export class VioCheckout extends LitElement {
         ${this.nexiMounting
           ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Nexi…</div>`
           : ''}
+        ${this.renderNexiShippingChoice()}
         <slot name="vio-nexi"></slot>
         ${this.nexiShippingNotice
           ? html`<div class="payment-notice">${this.nexiShippingNotice}</div>`

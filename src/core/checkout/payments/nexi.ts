@@ -55,6 +55,20 @@ export interface NexiShippingUpdate {
   total_price?: number
   shipping_name?: string
   shipping_price?: number
+  /** The rate on the payment now. */
+  shipping_id?: string
+  /**
+   * Every rate the shopper may pick for this address, best first. Nexi has
+   * no shipping picker of its own, so the checkout shows these.
+   */
+  options?: NexiShippingOption[]
+}
+
+export interface NexiShippingOption {
+  id: string
+  name: string
+  /** Incl. VAT, decimal. */
+  price: number
 }
 
 const NEXI_ORDER_FIELDS = `
@@ -85,15 +99,17 @@ query GetNexiOrder($checkoutId: String!) {
 `
 
 export const UPDATE_NEXI_SHIPPING_MUTATION = `
-mutation UpdateNexiShipping($checkoutId: String!, $countryCode: String!, $postalCode: String) {
+mutation UpdateNexiShipping($checkoutId: String!, $countryCode: String!, $postalCode: String, $shippingId: String) {
   Payment {
-    UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode) {
+    UpdateNexiShipping(checkout_id: $checkoutId, country_code: $countryCode, postal_code: $postalCode, shipping_id: $shippingId) {
       ok
       reason
       order_id
       total_price
       shipping_name
       shipping_price
+      shipping_id
+      options { id name price }
     }
   }
 }
@@ -110,6 +126,8 @@ export interface UpdateNexiShippingVariables extends Record<string, unknown> {
   checkoutId: string
   countryCode: string
   postalCode?: string
+  /** A rate from `options` of an earlier answer. */
+  shippingId?: string
 }
 
 export async function createPaymentNexi(

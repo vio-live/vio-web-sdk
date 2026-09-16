@@ -147,6 +147,14 @@ export class VioCheckout extends LitElement {
    * fire per keystroke — without these, typing an address hammers the API). */
   private loadingShippings = false
   private shippingsAttempted = false
+  /**
+   * The cart's products cannot ship together (see `someLineShipsOnItsOwn`).
+   * While set, no payment can start and the payment step says why.
+   */
+  @state() private shippingBlocked = false
+  /** The opening whose shippings have been answered for — see
+   * `shippingsSettled`. */
+  @state() private shippingsReadyFor: string | null = null
 
   private boundOnQliroEvent = (e: Event): void => {
     const event = (e as CustomEvent<any>).detail
@@ -209,6 +217,8 @@ export class VioCheckout extends LitElement {
       this.paymentMethodsResolved = false
       this.autoSelectAttempted = false
       this.returningFrom = null
+      // The next opening asks again: the cart may have changed meanwhile.
+      this.shippingBlocked = false
       this.unmountKlarna()
       // The embedded widgets go with the checkout they were opened for, as
       // "Endre" already does. Kept, the "already mounted" guard reused them on
@@ -791,6 +801,14 @@ export class VioCheckout extends LitElement {
     'terminated', 'error', 'voided', 'unpaid',
   ])
 
+  /**
+   * Shown instead of the payment step when the cart's products cannot ship
+   * together. Angelo, 2026-09-16: block the purchase rather than sell it
+   * without shipping, or with a rate that does not fit every product.
+   */
+  private static readonly SHIPPING_BLOCKED_MESSAGE =
+    'Produktene i handlekurven kan ikke sendes sammen. Fjern ett av dem for å fullføre kjøpet.'
+
   /** The payment may or may not have gone through, and we could not find out. */
   private static readonly RETURN_UNVERIFIED_MESSAGE =
     'Vi kunne ikke bekrefte betalingen. Handlekurven er uendret — prøv igjen, eller kontakt support hvis du ble belastet.'
@@ -1246,6 +1264,16 @@ export class VioCheckout extends LitElement {
     if (changed.has('open') && this.open) {
       this.autoSelectSoleMethod()
     }
+    // A cart that cannot ship takes down whatever payment is already on
+    // screen: a widget mounted before the shippings answered must not stay
+    // payable, and its load error is superseded by the reason.
+    if (changed.has('shippingBlocked') && this.shippingBlocked) {
+      this.unmountKlarna()
+      this.unmountKustom()
+      this.unmountQliro()
+      this.unmountWalley()
+      this.paymentError = null
+    }
     // Mount the Klarna Express button once its slot is in the DOM, the
     // express flow is available, and the overlay is open. Re-mount when the
     // amount changes (the payment request is captured at mount time).
@@ -1268,17 +1296,33 @@ export class VioCheckout extends LitElement {
     }
   }
 
-  /** Fetch the real per-supplier shippings and preselect + persist the first. */
+  /**
+   * Fetch the real per-supplier shippings and preselect + persist the first.
+   *
+   * Also decides whether the cart can ship at all (`shippingBlocked`), and
+   * records which opening the answer belongs to (`shippingsReadyFor`).
+   */
   private async loadAvailableShippings(): Promise<void> {
     const spId = this.checkoutState?.sponsorId
     if (!spId) return
     if (this.items.length === 0) return
     if (this.loadingShippings) return
+    const session = this.embedSession()
     this.loadingShippings = true
     this.shippingsAttempted = true
     try {
       const shippings = await Vio.checkout.fetchAvailableShippings(spId)
-      if (Array.isArray(shippings) && shippings.length > 0) {
+      // A newer opening owns the list now; its own load answers for it.
+      if (session !== this.embedSession()) return
+      if (!Array.isArray(shippings) || shippings.length === 0) {
+        if (Vio.checkout.lastShippingsResolved) {
+          // The backend answered: nothing ships this cart. A failed lookup
+          // keeps the list, and blocks nothing.
+          this.availableShippingsList = []
+          this.shippingBlocked = this.someLineShipsOnItsOwn()
+        }
+      } else {
+        this.shippingBlocked = false
         this.availableShippingsList = shippings
         if (!this.selectedShipping || !shippings.some((s) => s.id === this.selectedShipping)) {
           const firstOpt = shippings[0]!
@@ -1297,7 +1341,26 @@ export class VioCheckout extends LitElement {
       }
     } finally {
       this.loadingShippings = false
+      if (session === this.embedSession()) {
+        this.shippingsReadyFor = session
+      } else if (this.checkoutState && this.items.length > 0) {
+        // This answer came too late for its opening, and it held the guard
+        // while the new opening asked. Ask again for the one on screen.
+        void this.loadAvailableShippings()
+      }
     }
+  }
+
+  /**
+   * Whether some product in the cart has shipping rates of its own. With no
+   * rate shared by all of them, that means they cannot ship TOGETHER. A cart
+   * where no line has rates is left alone: digital products have none, and
+   * shopcart refuses the physical case on its side.
+   */
+  private someLineShipsOnItsOwn(): boolean {
+    return this.items.some(
+      (i) => Array.isArray(i.availableShippings) && i.availableShippings.length > 0,
+    )
   }
 
   /** Whether all mandatory Leveringsadresse fields are filled. */
@@ -1421,6 +1484,7 @@ export class VioCheckout extends LitElement {
     if (this.items.length > 0 && this.availableShippingsList.length === 0 && !this.shippingsAttempted) {
       await this.loadAvailableShippings()
     }
+    if (this.shippingBlocked) return
     const amount = this.checkoutState.subtotal
     // Re-mount when the amount OR the chosen shipping changes (a new shipping
     // option means a new session/total — Klarna's widget can't be updated live).
@@ -1532,7 +1596,7 @@ export class VioCheckout extends LitElement {
 
   /** Authorize the selected Klarna method → backend creates the order. */
   private async onKlarnaAuthorize(): Promise<void> {
-    if (!this.klarnaHandle || this.klarnaAuthorizing) return
+    if (!this.klarnaHandle || this.klarnaAuthorizing || this.shippingBlocked) return
     this.paymentError = null
     this.paymentNotice = null
     this.klarnaAuthorizing = true
@@ -1572,6 +1636,8 @@ export class VioCheckout extends LitElement {
   }
 
   private async onPay(method: PaymentMethod): Promise<void> {
+    // The payment step already says why nothing can be paid.
+    if (this.shippingBlocked) return
     this.paymentError = null
     this.paymentNotice = null
     // Apple Pay collects address, shipping AND email inside its own sheet —
@@ -1668,6 +1734,7 @@ export class VioCheckout extends LitElement {
   private onCompleteOrder(): void {
     const s = this.checkoutState
     if (!s || !s.paymentMethod) return
+    if (this.shippingBlocked) return
     if (s.paymentMethod !== 'vipps' && !this.isAddressValid) {
       this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
       return
@@ -1902,11 +1969,37 @@ export class VioCheckout extends LitElement {
   /**
    * Whether mounting an embedded checkout now would be starting a payment the
    * shopper asked for. Mounting CREATES an order at the provider (and a backend
-   * checkout if there is none), so it must not happen on a confirmation return
-   * or once this checkout's order is confirmed.
+   * checkout if there is none), so it must not happen on a confirmation return,
+   * once this checkout's order is confirmed, or for a cart that cannot ship.
    */
   private mayStartEmbeddedPayment(): boolean {
-    return !this.returningFrom && !this.orderConfirmed && !this.providerReceipt
+    return (
+      !this.returningFrom &&
+      !this.orderConfirmed &&
+      !this.providerReceipt &&
+      !this.shippingBlocked &&
+      this.shippingsSettled()
+    )
+  }
+
+  /**
+   * Whether we know enough about shipping to create an order. The provider
+   * prices the order when it is created, so a first opening waits for the
+   * shippings to answer: the cart may turn out unable to ship at all. A list
+   * already on screen counts, and a later answer that blocks the cart takes
+   * the widget down again (see `updated`).
+   */
+  private shippingsSettled(): boolean {
+    return (
+      this.items.length === 0 ||
+      this.availableShippingsList.length > 0 ||
+      this.shippingsReadyFor === this.embedSession()
+    )
+  }
+
+  /** Why nothing can be paid: the cart's products cannot ship together. */
+  private renderShippingBlocked() {
+    return html`<div class="payment-error" role="alert">${VioCheckout.SHIPPING_BLOCKED_MESSAGE}</div>`
   }
 
   /**
@@ -2252,7 +2345,7 @@ export class VioCheckout extends LitElement {
               </div>
             `
           : ''}
-        ${this.renderKlarnaPanel()}
+        ${this.shippingBlocked ? this.renderShippingBlocked() : this.renderKlarnaPanel()}
         ${this.paymentNotice
           ? html`<div class="payment-notice">${this.paymentNotice}</div>`
           : ''}
@@ -2411,7 +2504,9 @@ export class VioCheckout extends LitElement {
             <div class="section-label">
               ${isVipps || isKustom || everyMethodCollectsAddress ? 'Betaling' : 'Steg 2'}
             </div>
-            ${method
+            ${this.shippingBlocked
+              ? this.renderShippingBlocked()
+              : method
               ? html`
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
                     <h3 class="section-heading" style="margin:0;">

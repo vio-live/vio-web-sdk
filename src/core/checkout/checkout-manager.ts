@@ -458,6 +458,8 @@ export class CheckoutManager extends EventTarget {
   private klarnaOrderInFlight = false
   /** Last backend shippings fetched (per-supplier), for UI reuse. */
   private lastFetchedShippings: KlarnaShippingOption[] = []
+  /** See `lastShippingsResolved`. */
+  private shippingsResolved = false
   /** Per-sponsor payment methods cache + in-flight dedupe. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private paymentMethodsCache = new Map<number, any>()
@@ -609,6 +611,7 @@ export class CheckoutManager extends EventTarget {
    * this at all.
    */
   async fetchAvailableShippings(sponsorId?: number): Promise<KlarnaShippingOption[]> {
+    this.shippingsResolved = false
     try {
       const spId = sponsorId ?? this.state?.sponsorId
       if (!spId) return []
@@ -624,6 +627,7 @@ export class CheckoutManager extends EventTarget {
       if (!cartId) return []
       const opts = await getCartGraphQLOptions(spId)
       const supplierGroups = await gqlGetLineItemsBySupplier(cartId, opts)
+      this.shippingsResolved = Array.isArray(supplierGroups)
       const firstGroup = Array.isArray(supplierGroups) ? supplierGroups[0] : null
       const shippings = firstGroup?.available_shippings ?? []
       if (Array.isArray(shippings) && shippings.length > 0) {
@@ -669,6 +673,16 @@ export class CheckoutManager extends EventTarget {
       }
     }
     return []
+  }
+
+  /**
+   * Whether the last `fetchAvailableShippings` got an answer from the backend,
+   * possibly an empty one, rather than failing or finding no cart. The two
+   * return the same empty list, and only an answer means the cart has
+   * nothing it can ship with.
+   */
+  get lastShippingsResolved(): boolean {
+    return this.shippingsResolved
   }
 
   /** Set the chosen shipping per supplier on the backend cart. */

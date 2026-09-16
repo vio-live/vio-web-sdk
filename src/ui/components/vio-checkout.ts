@@ -110,6 +110,8 @@ export class VioCheckout extends LitElement {
   @state() private nexiShipping: NexiShippingUpdate | null = null
   /** A picked rate is being pushed to the payment. */
   @state() private nexiPicking = false
+  /** The Nexi payment to resume on the next mount — set only by the ?paymentId= return. */
+  private nexiResumePaymentId: string | null = null
   /**
    * The shipping the customer picked INSIDE the Qliro widget, as Qliro
    * reports it. Qliro owns that choice in the modes where it shows a picker,
@@ -939,6 +941,7 @@ export class VioCheckout extends LitElement {
       const nexiPaymentId = nexiReturnPaymentId()
       const nexiPending = readNexiPending()
       if (nexiPaymentId && nexiPending && nexiPending.paymentId === nexiPaymentId) {
+        this.nexiResumePaymentId = nexiPaymentId
         this.cleanReturnQueryParams(['paymentId'])
         if (!this.checkoutState && nexiPending.sponsorId) {
           try {
@@ -2308,6 +2311,8 @@ export class VioCheckout extends LitElement {
     }
 
     const mountedFor = this.embedSession()
+    const resumePaymentId = this.nexiResumePaymentId
+    this.nexiResumePaymentId = null
     this.nexiMounting = true
     this.nexiShippingNotice = null
     container.innerHTML = ''
@@ -2325,7 +2330,7 @@ export class VioCheckout extends LitElement {
             this.nexiShippingNotice = null
           }
         },
-      })
+      }, resumePaymentId ? { paymentId: resumePaymentId } : undefined)
       this.nexiMountedOrderId = order.order_id
       this.nexiMountedFor = mountedFor
     } catch (err) {

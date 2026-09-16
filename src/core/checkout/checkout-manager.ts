@@ -1144,7 +1144,8 @@ export class CheckoutManager extends EventTarget {
    *
    * A session interrupted by a third-party redirect inside Nexi (Vipps,
    * Swish, MobilePay) is remembered in sessionStorage and resumed on the
-   * same paymentId instead of creating a new payment.
+   * same paymentId instead of creating a new payment — only when `resume`
+   * names it. Every other opening creates a payment for the cart as it is.
    */
   async mountNexiCheckout(
     container: HTMLElement,
@@ -1153,6 +1154,11 @@ export class CheckoutManager extends EventTarget {
       onCompleted?: (order: NexiOrder) => void
       onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void
     } = {},
+    /**
+     * Set ONLY when the page came back from a redirect inside Nexi
+     * (Vipps/Swish/MobilePay) with `?paymentId=`: resume that payment.
+     */
+    resume?: { paymentId: string },
   ): Promise<NexiOrder> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for Nexi')
@@ -1163,7 +1169,12 @@ export class CheckoutManager extends EventTarget {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
     const opts = await getCartGraphQLOptions(spId)
-    const pending = readNexiPending()
+    // The remembered session is resumed only on the redirect return it exists
+    // for. Read on every opening, it put the NEXT purchase in the same tab on
+    // the previous cart's payment — its lines and its total (2026-09-16: an
+    // armchair for 4 999 opened Nexi asking for three lamps at 2 247).
+    const stored = resume ? readNexiPending() : null
+    const pending = stored && stored.paymentId === resume?.paymentId ? stored : null
     let checkoutId = this.state?.checkoutId
     // Back from a redirect inside Nexi: the page reloaded and the state is
     // fresh, but the checkout and its payment still exist.

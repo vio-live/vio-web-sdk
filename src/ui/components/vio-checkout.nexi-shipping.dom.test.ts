@@ -180,3 +180,68 @@ describe('vio-checkout — Nexi shipping choice', () => {
     expect(rates(el)[1]!.getAttribute('aria-checked')).toBe('true')
   })
 })
+
+describe('vio-checkout — Nexi confirmation', () => {
+  // Nexi shows no receipt of its own: ours says what was bought, what it cost,
+  // Nexi's reference, and — once Nexi has it — how it was paid.
+  let onCompleted: ((order: any) => void) | undefined
+
+  beforeEach(() => {
+    vi.spyOn(manager, 'mountNexiCheckout').mockImplementation(async (...args: unknown[]) => {
+      ;(args[0] as HTMLElement).innerHTML = '<iframe></iframe>'
+      onShipping = (args[2] as any).onShipping
+      onCompleted = (args[2] as any).onCompleted
+      return { order_id: 'PAY-123', status: 'Created', checkout_key: 'k', checkout_js_url: 'x' }
+    })
+    vi.spyOn(manager, 'items', 'get').mockReturnValue([
+      { id: 'l1', productId: 1, sponsorId: SPONSOR, brand: 'Bohus', name: 'Aole spisestol', unitPrice: 1000, currency: 'NOK', imageUrl: '', quantity: 1 },
+    ])
+    vi.spyOn(Vio.cart, 'clearSponsorCart').mockImplementation(() => {})
+  })
+
+  it('names the items, the shipping, the total and Nexi\'s payment id, then how it was paid', async () => {
+    const details = vi.spyOn(manager, 'getNexiOrder').mockResolvedValue({
+      order_id: 'PAY-123', status: 'Reserved', checkout_key: 'k', checkout_js_url: 'x',
+      payment_method: 'Visa', card_last4: '4847', email: 'kari@example.com',
+    })
+    const el = await openNexi()
+    manager.state = { ...manager.state, checkoutId: 'CHK-1' }
+    el.checkoutState = manager.state
+    onShipping!(answer('20'))
+    await renderCycles(el)
+
+    onCompleted!({ order_id: 'PAY-123', status: 'Reserved' })
+    await renderCycles(el, 8)
+
+    const text = shadowText(el)
+    expect(text).toContain('Takk for bestillingen')
+    expect(text).toContain('Aole spisestol')
+    expect(text).toContain('Frakt – Express')
+    expect(text).toMatch(/Totalt.*1\s?300/)
+    expect(text).toContain('Nexi betalings-ID')
+    expect(text).toContain('PAY-123')
+    expect(details).toHaveBeenCalledWith('CHK-1', SPONSOR)
+    expect(text).toContain('Visa •••• 4847')
+    expect(text).toContain('kari@example.com')
+    // The widget is gone, and the cart is emptied.
+    expect(el.querySelector('#vio-nexi-checkout-container')).toBeNull()
+    expect(Vio.cart.clearSponsorCart).toHaveBeenCalledWith(SPONSOR)
+  })
+
+  it('stands without the payment details when Nexi does not answer', async () => {
+    vi.spyOn(manager, 'getNexiOrder').mockRejectedValue(new Error('down'))
+    const el = await openNexi()
+    manager.state = { ...manager.state, checkoutId: 'CHK-1' }
+    el.checkoutState = manager.state
+    onShipping!(answer('10'))
+    await renderCycles(el)
+    onCompleted!({ order_id: 'PAY-123', status: 'Reserved' })
+    await renderCycles(el, 8)
+    const text = shadowText(el)
+    expect(text).toContain('Takk for bestillingen')
+    expect(text).toContain('Betalingsmåte')
+    expect(text).toContain('Nexi')
+    expect(text).not.toContain('Ordrenummer')
+  })
+})
+

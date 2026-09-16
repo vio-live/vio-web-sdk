@@ -52,6 +52,12 @@ export interface NexiOrder {
    * announce its address again).
    */
   shipping?: NexiShippingUpdate | null
+  /** How it was paid ("Visa", "Vipps"…) — once Nexi has the details. */
+  payment_method?: string | null
+  /** Last four digits of the card. */
+  card_last4?: string | null
+  /** Where the receipt goes. */
+  email?: string | null
 }
 
 export interface NexiShippingUpdate {
@@ -105,6 +111,9 @@ const NEXI_ORDER_FIELDS = `
       purchase_country
       purchase_currency
       total_price
+      payment_method
+      card_last4
+      email
       shipping {${NEXI_SHIPPING_FIELDS}
       }`
 

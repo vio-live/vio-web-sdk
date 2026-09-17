@@ -28,7 +28,7 @@ vi.mock('./payments/nexi.js', async (importOriginal) => {
     mountNexi: vi.fn(async () => ({
       on: (event: string, cb: (...a: any[]) => void) => { widgetEvents[event] = cb },
       send: (...a: unknown[]) => { widgetSent.push(a) },
-      freezeCheckout: () => {}, thawCheckout: () => {}, cleanup: () => {},
+      freezeCheckout: () => {}, thawCheckout: () => { widgetSent.push(['thaw']) }, cleanup: () => {},
     })),
   }
 })
@@ -157,13 +157,13 @@ describe('CheckoutManager.mountNexiCheckout — resuming', () => {
     )
   })
 
-  it('before charging, sets the shipping even if the widget never announced an address', async () => {
+  it('at pay, with no address from the widget, the backend checks the one Nexi holds; unchanged → Nexi charges', async () => {
     // 2026-09-16, payment 085277846ae44f7498ae94e112435d63: Nexi filled in a
-    // known shopper's address silently, nothing was priced, and Nexi refused
-    // the payment at "pay".
+    // known shopper's address silently and nothing had been priced.
     vi.mocked(nexi.updateNexiShipping).mockClear()
     vi.mocked(nexi.updateNexiShipping).mockResolvedValueOnce({
       ok: true, order_id: 'NEW', shipping_id: '10', country: 'NO', postal_code: '0250',
+      address_source: 'consumer', changed: false,
     } as never)
     widgetSent.length = 0
     const onShipping = vi.fn()
@@ -179,6 +179,42 @@ describe('CheckoutManager.mountNexiCheckout — resuming', () => {
     )
     expect(widgetSent).toEqual([['payment-order-finalized', true]])
     expect(onShipping).toHaveBeenLastCalledWith(expect.objectContaining({ ok: true }))
+  })
+
+  it('at pay, a shipping priced only for the market is re-checked against the shopper\'s address', async () => {
+    // The payment was created with the market's rate; Nexi never said where
+    // the shopper is. The market country must not be taken for theirs.
+    vi.mocked(nexi.createPaymentNexi).mockResolvedValueOnce({
+      order_id: 'NEW', status: 'Created', checkout_key: 'k', checkout_js_url: 'x',
+      shipping: { ok: true, order_id: 'NEW', shipping_id: '10', country: 'NO', address_source: 'market', options: [] },
+    } as never)
+    vi.mocked(nexi.updateNexiShipping).mockClear()
+    vi.mocked(nexi.updateNexiShipping).mockResolvedValueOnce({ ok: true, order_id: 'NEW', changed: false } as never)
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, {})
+    widgetEvents['pay-initialized']!({ paymentId: 'NEW' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(nexi.updateNexiShipping).toHaveBeenCalledWith(
+      expect.objectContaining({ countryCode: '', shippingId: '10' }),
+      expect.anything(),
+    )
+  })
+
+  it('at pay, an amount that changes stops the payment and reloads the widget', async () => {
+    // 2026-09-17, payment f6116e6d68294a88927d35b05d907f10: the shipping went
+    // on as the shopper pressed pay and Nexi failed the charge.
+    vi.mocked(nexi.updateNexiShipping).mockResolvedValueOnce({
+      ok: true, order_id: 'NEW', shipping_id: '10', changed: true, country: 'NO',
+    } as never)
+    widgetSent.length = 0
+    const onShipping = vi.fn()
+    const m = manager()
+    await m.mountNexiCheckout(document.createElement('div'), SPONSOR, { onShipping })
+    widgetEvents['pay-initialized']!({ paymentId: 'NEW' })
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(widgetSent).toEqual([['payment-order-finalized', false], ['thaw']])
+    expect(onShipping).toHaveBeenLastCalledWith(expect.objectContaining({ repriced_at_pay: true }))
   })
 
   it('does not let Nexi charge when the shipping could not be set', async () => {

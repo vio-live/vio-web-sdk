@@ -486,6 +486,8 @@ export class CheckoutManager extends EventTarget {
     checkoutId: string
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     address: any
+    /** The address is the shopper's (from the widget or Nexi), not the market default. */
+    fromShopper?: boolean
     opts: CartQueryOptions
     onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void
   } | null = null
@@ -1257,6 +1259,7 @@ export class CheckoutManager extends EventTarget {
         handle,
         checkoutId: ownedCheckoutId,
         address: { countryCode: carried.country, postalCode: carried.postal_code },
+        fromShopper: carried.address_source !== 'market',
         opts,
         onShipping: handlers.onShipping,
       }
@@ -1275,7 +1278,14 @@ export class CheckoutManager extends EventTarget {
       handlers.onShipping?.(carried)
     }
     const onAddress = (address: any) => {
-      this.nexiShippingContext = { handle, checkoutId: ownedCheckoutId, address, opts, onShipping: handlers.onShipping }
+      this.nexiShippingContext = {
+        handle,
+        checkoutId: ownedCheckoutId,
+        address,
+        fromShopper: true,
+        opts,
+        onShipping: handlers.onShipping,
+      }
       void this.repriceNexiShipping(
         handle,
         ownedCheckoutId,
@@ -1335,11 +1345,16 @@ export class CheckoutManager extends EventTarget {
   }
 
   /**
-   * `pay-initialized` → make sure the payment carries the shipping for the
-   * address Nexi will ship to → `payment-order-finalized`. With no address
-   * from the widget, the backend reads the one on the payment. Anything but a
-   * priced shipping stops the payment: charging without it is what failed on
-   * 2026-09-16 (payment 085277846ae44f7498ae94e112435d63).
+   * `pay-initialized` → confirm the shipping for the address Nexi will ship
+   * to → `payment-order-finalized`.
+   *
+   * The payment already carries a shipping (set at creation, re-priced on
+   * every address and pick), so normally nothing changes and Nexi charges.
+   * When the shopper's address was never announced — Nexi fills it in for a
+   * shopper it recognises — the backend reads it from the payment. If that
+   * changes the amount, the payment is STOPPED and the widget reloaded: an
+   * amount that changes while Nexi charges is what failed on 2026-09-16/17
+   * (payments 085277846ae44f7498ae94e112435d63, f6116e6d68294a88927d35b05d907f10).
    */
   private async finalizeNexiPayment(
     handle: NexiCheckoutHandle,
@@ -1348,8 +1363,11 @@ export class CheckoutManager extends EventTarget {
     onShipping?: (result: NexiShippingUpdate | null, error?: unknown) => void,
   ): Promise<void> {
     const ctx = this.nexiShippingContext?.handle === handle ? this.nexiShippingContext : null
-    const address = ctx?.address ?? null
-    let ok = false
+    // Only the shopper's own address is trusted here; otherwise the backend
+    // reads the one Nexi holds.
+    const address = ctx?.fromShopper ? ctx.address : null
+    let proceed = false
+    let reload = false
     try {
       const result = await gqlUpdateNexiShipping(
         {
@@ -1360,22 +1378,31 @@ export class CheckoutManager extends EventTarget {
         },
         opts,
       )
-      ok = Boolean(result?.ok)
       if (result?.ok) {
         if (result.shipping_id) this.nexiPreferredShipping = result.shipping_id
-        // The address the backend priced, so a later pick can re-price it.
-        if (ctx && !ctx.address && result.country) {
+        if (ctx && result.country) {
           ctx.address = { countryCode: result.country, postalCode: result.postal_code }
+          ctx.fromShopper = true
         }
+        reload = result.changed === true
+        proceed = !reload
       }
-      onShipping?.(result)
+      onShipping?.(result ? { ...result, ...(reload ? { repriced_at_pay: true } : {}) } : result)
     } catch (err) {
       onShipping?.(null, err)
     }
     try {
-      handle.send?.('payment-order-finalized', ok)
+      handle.send?.('payment-order-finalized', proceed)
     } catch {
       /* widget already gone */
+    }
+    if (reload) {
+      try {
+        // Show the amount the payment now carries before the shopper pays.
+        handle.thawCheckout()
+      } catch {
+        /* widget already gone */
+      }
     }
   }
 

@@ -81,6 +81,19 @@ import {
   type NexiShippingUpdate,
 } from './payments/nexi.js'
 import {
+  createPaymentAdyen as gqlCreatePaymentAdyen,
+  getAdyenPayment as gqlGetAdyenPayment,
+  confirmAdyenPayment as gqlConfirmAdyenPayment,
+  mountAdyen,
+  ADYEN_RETURN_METHOD,
+  ADYEN_RETURN_QUERY_KEYS,
+  type AdyenSession,
+  type AdyenPayment,
+  type AdyenResult,
+  type AdyenDropinHandle,
+} from './payments/adyen.js'
+import { SDK_VERSION } from '../version.js'
+import {
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -368,6 +381,41 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
  * page has, optionally appending query params (used to detect the redirect
  * return and show the confirmation).
  */
+/**
+ * Where Adyen sends the shopper back after a redirect: THIS page, naming the
+ * checkout, so the return can be finalised from a browser that never saw the
+ * session. Adyen appends `sessionId` and `redirectResult` itself, so a
+ * leftover pair from an earlier return is dropped first; a page URL too long
+ * for Adyen (1024) loses its own query rather than the payment.
+ */
+function adyenReturnUrl(params: Record<string, unknown>): string {
+  let page: URL | null = null
+  if (typeof window !== 'undefined' && window.location?.href) {
+    try {
+      page = new URL(window.location.href)
+      ADYEN_RETURN_QUERY_KEYS.forEach((k) => page?.searchParams.delete(k))
+    } catch {
+      page = null
+    }
+  }
+  // Adyen's TEST environment accepts a plain-http localhost return; the
+  // shared helper would turn it into an https URL nothing serves.
+  const local = page?.protocol === 'http:' && /^(localhost|127\.0\.0\.1)$/.test(page.hostname)
+  const build = (base: URL | null): string => {
+    if (base && local) {
+      const url = new URL(base.toString())
+      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, String(v)))
+      return url.toString()
+    }
+    return resolveHttpsReturnUrl(base ? base.toString() : null, params)
+  }
+  const full = build(page)
+  if (full.length <= 1024 || !page) return full
+  const bare = new URL(page.toString())
+  bare.search = ''
+  return build(bare)
+}
+
 function resolveHttpsReturnUrl(
   overrideUrl?: string | null,
   params: Record<string, unknown> | null = null,
@@ -472,6 +520,8 @@ export class CheckoutManager extends EventTarget {
   private qliroController: QliroController | null = null
   /** Live Dibs.Checkout handle while a Nexi widget is mounted. */
   private nexiHandle: NexiCheckoutHandle | null = null
+  /** Live Drop-in while an Adyen session is mounted. */
+  private adyenHandle: AdyenDropinHandle | null = null
   /**
    * The rate the shopper wants. Before an address it is only remembered (the
    * suggested one, or their pick); every re-pricing asks for it, and the
@@ -1462,6 +1512,105 @@ export class CheckoutManager extends EventTarget {
   async getNexiOrder(checkoutId: string, sponsorId?: number): Promise<NexiOrder | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetNexiOrder(checkoutId, opts)
+  }
+
+  /**
+   * Adyen: FORM-FIRST. Saves the shopper's form and shipping pick on the
+   * checkout (Adyen collects neither), creates a session with that final
+   * amount and mounts Adyen's Drop-in on it. A session is never updated —
+   * after ANY change the caller destroys this mount and calls again.
+   *
+   * At "Pay" the backend only confirms that the session still pays for the
+   * checkout; when it does not, Adyen is stopped and `onReplaced` tells the
+   * caller to remount. Completion is asked of Adyen through the backend
+   * (`GetAdyenPayment`) — the browser's own result is never the answer.
+   */
+  async mountAdyenCheckout(
+    container: HTMLElement,
+    sponsorId: number | undefined,
+    formData: unknown,
+    callbacks: {
+      onCompleted: (payment: AdyenPayment | null, session: AdyenSession) => void
+      onFailed: (result: AdyenResult, session: AdyenSession) => void
+      /** The session no longer pays for the checkout (reason from the backend). */
+      onReplaced: (reason: string) => void
+      onError?: (error: unknown) => void
+    },
+  ): Promise<AdyenSession> {
+    this.destroyAdyen()
+    const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
+      sponsorId,
+      formData,
+      { paymentMethod: 'Adyen' },
+    )
+    const session = await gqlCreatePaymentAdyen(
+      {
+        checkoutId,
+        returnUrl: adyenReturnUrl({
+          vio_payment: 'return',
+          vio_method: ADYEN_RETURN_METHOD,
+          vio_sponsor: spId,
+          checkout_id: checkoutId,
+        }),
+        countryCode: getGlobalCountryCode(),
+        channel: 'Web',
+        email: emailVal,
+        client: `web-sdk ${SDK_VERSION}`,
+      },
+      opts,
+    )
+    if (!session?.session_id) {
+      throw new Error('[CheckoutManager] Adyen session was not created')
+    }
+    const theme = readVioTheme()
+    this.adyenHandle = await mountAdyen(
+      container,
+      session,
+      {
+        onBeforePay: async () => {
+          const verdict = await gqlConfirmAdyenPayment(
+            { checkoutId, sessionId: session.session_id },
+            opts,
+          )
+          if (verdict?.ok === true) return true
+          callbacks.onReplaced(String(verdict?.reason ?? 'UNKNOWN'))
+          return false
+        },
+        onCompleted: (result) => {
+          void gqlGetAdyenPayment({ checkoutId, sessionResult: result?.sessionResult }, opts)
+            .catch(() => null)
+            .then((payment) => callbacks.onCompleted(payment, session))
+        },
+        onFailed: (result) => callbacks.onFailed(result, session),
+        onError: (error) => callbacks.onError?.(error),
+      },
+      { theme: { accent: theme?.accent, radiusMd: theme?.radiusMd } },
+    )
+    return session
+  }
+
+  /** Unmount Drop-in. Safe to call when nothing is mounted. */
+  destroyAdyen(): void {
+    try {
+      this.adyenHandle?.unmount()
+    } catch {
+      /* noop */
+    }
+    this.adyenHandle = null
+  }
+
+  /**
+   * Outcome of the Adyen session a checkout owns. With `redirectResult` (the
+   * return from Vipps, Klarna, Trustly or a redirect-3DS) the redirect is
+   * finalised on the server.
+   */
+  async getAdyenPayment(
+    checkoutId: string,
+    proof: { sessionResult?: string; redirectResult?: string } = {},
+    sponsorId?: number,
+  ): Promise<AdyenPayment | null> {
+    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    return gqlGetAdyenPayment({ checkoutId, ...proof }, opts)
   }
 
   /* eslint-enable @typescript-eslint/no-explicit-any */

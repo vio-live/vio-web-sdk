@@ -26,6 +26,7 @@ import type {
 import {
   isMethodEnabled,
   isEmbeddedMethod,
+  isFormFirstWidgetMethod,
   everyMethodCollectsAddress as allCollectAddress,
 } from '../../core/checkout/method-taxonomy.js'
 import {
@@ -33,6 +34,15 @@ import {
   readNexiPending,
   type NexiShippingUpdate,
 } from '../../core/checkout/payments/nexi.js'
+import {
+  ADYEN_RETURN_METHOD,
+  ADYEN_RETURN_QUERY_KEYS,
+  AdyenOriginError,
+  adyenReturnOutcome,
+  adyenReturnParams,
+  type AdyenPayment,
+  type AdyenSession,
+} from '../../core/checkout/payments/adyen.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -121,6 +131,22 @@ export class VioCheckout extends LitElement {
   @state() private nexiPicking = false
   /** The Nexi payment to resume on the next mount — set only by the ?paymentId= return. */
   private nexiResumePaymentId: string | null = null
+  @state() private adyenMounting = false
+  /**
+   * The shopper ASKED for the payment step (chose the method, or pressed the
+   * panel's button). Adyen needs our form first, so nothing creates a session
+   * while they are still typing: a session is a photo of a finished form.
+   */
+  @state() private adyenRequested = false
+  /** Drop-in is on screen. */
+  @state() private adyenMounted = false
+  /** The form, the shipping or the cart changed under a mounted session. */
+  @state() private adyenStale = false
+  /** Paid or pending in this opening: never offer to pay again. */
+  @state() private adyenSettled = false
+  /** The checkout session (see embedSession) and the purchase the mounted photo is of. */
+  private adyenMountedFor: string | null = null
+  private adyenMountedKey: string | null = null
   /**
    * The shipping the customer picked INSIDE the Qliro widget, as Qliro
    * reports it. Qliro owns that choice in the modes where it shows a picker,
@@ -254,6 +280,8 @@ export class VioCheckout extends LitElement {
       this.unmountQliro()
       this.unmountWalley()
       this.unmountNexi()
+      this.unmountAdyen()
+      this.adyenSettled = false
     }
   }
 
@@ -1211,6 +1239,64 @@ export class VioCheckout extends LitElement {
         return
       }
 
+      // Adyen's return (Vipps, Klarna, Trustly, redirect-3DS): OUR return URL
+      // names the checkout and Adyen appended `redirectResult`. It is
+      // finalised on the SERVER, so it works in a browser that never saw the
+      // session. The query is cleaned FIRST: a reload must not submit a used
+      // redirectResult again.
+      if (vioMethod === ADYEN_RETURN_METHOD && checkoutId) {
+        const adyenReturn = adyenReturnParams(window.location.search)
+        this.cleanReturnQueryParams(ADYEN_RETURN_QUERY_KEYS)
+        if (!adyenReturn) return
+        this.returningFrom = 'adyen'
+        this.adyenSettled = true
+        this.autoSelectAttempted = true
+        if (!this.checkoutState) {
+          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          if (spIdToUse) {
+            try {
+              Vio.checkout.open(spIdToUse)
+              Vio.checkout.selectPaymentMethod('adyen')
+            } catch {
+              /* noop */
+            }
+          }
+        }
+        this.open = true
+        this.paymentNotice = 'Bekrefter betalingen…'
+        let payment: AdyenPayment | null = null
+        let sawStatus = false
+        try {
+          payment = await Vio.checkout.getAdyenPayment(
+            checkoutId,
+            { redirectResult: adyenReturn.redirectResult },
+            sponsorId || undefined,
+          )
+          sawStatus = !!payment
+        } catch (err) {
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Adyen return could not be verified:', err)
+          }
+        }
+        this.paymentNotice = null
+        const outcome = sawStatus ? adyenReturnOutcome(payment) : 'pending'
+        this.applyReturnOutcome(outcome, sawStatus, 'adyen', sponsorId, checkoutId)
+        if (outcome === 'paid' && this.confirmedOrder) {
+          this.confirmedOrder = {
+            ...this.confirmedOrder,
+            currency: payment?.purchase_currency ?? this.confirmedOrder.currency,
+            total: payment?.total_price ?? this.confirmedOrder.total,
+          }
+          this.addAdyenPaymentDetails(payment)
+        }
+        if (outcome === 'failed') {
+          // Nothing was charged: the shopper may pay again, on a new session.
+          this.returningFrom = null
+          this.adyenSettled = false
+        }
+        return
+      }
+
       if (vioMethod === 'vipps' && checkoutId) {
         // Vipps-specific path: check Vipps' own state instead of the generic
         // checkout status (see pollVippsStatus for why) — deliberately
@@ -1319,6 +1405,7 @@ export class VioCheckout extends LitElement {
     Vio.checkout.removeEventListener('qliro-event', this.boundOnQliroEvent)
     this.unmountKlarna()
     this.unmountNexi()
+    this.unmountAdyen()
     super.disconnectedCallback()
   }
 
@@ -1348,6 +1435,7 @@ export class VioCheckout extends LitElement {
       this.unmountQliro()
       this.unmountWalley()
       this.unmountNexi()
+      this.unmountAdyen()
       this.paymentError = null
     }
     // Mount the Klarna Express button once its slot is in the DOM, the
@@ -1358,6 +1446,8 @@ export class VioCheckout extends LitElement {
     void this.mountQliroIfNeeded()
     void this.mountWalleyIfNeeded()
     void this.mountNexiIfNeeded()
+    this.dropStaleAdyen()
+    void this.mountAdyenIfNeeded()
   }
 
   close(): void {
@@ -1520,6 +1610,8 @@ export class VioCheckout extends LitElement {
       qliro: 'qliro',
       walley: 'walley',
       nexi: 'nexi',
+      // Selected, not mounted: Adyen waits for the form (see adyenRequested).
+      adyen: 'adyen',
       vipps: 'vipps',
       klarna: this.klarnaAvailable ? 'klarna' : undefined,
       applepay: this.applePayAvailable ? 'apple-pay' : undefined,
@@ -1765,6 +1857,12 @@ export class VioCheckout extends LitElement {
       }
     }
     Vio.checkout.selectPaymentMethod(method)
+    // Adyen: the form and the shipping are valid (checked above), and choosing
+    // the method is asking for the payment step — mountAdyenIfNeeded takes over.
+    if (method === 'adyen') {
+      this.adyenRequested = true
+      return
+    }
     // Stripe / Vipps: hosted payment pages — mint the link and redirect. The
     // return trip lands in checkReturnPaymentStatus().
     if (method === 'stripe') {
@@ -1886,6 +1984,9 @@ export class VioCheckout extends LitElement {
         return 'Walley'
       case 'nexi':
         return 'Nexi'
+      // Adyen is not a name shoppers know; what they pick from is inside it.
+      case 'adyen':
+        return 'Kort, Vipps og flere'
       case 'vipps':
         return 'Vipps'
       case 'stripe':
@@ -1905,7 +2006,9 @@ export class VioCheckout extends LitElement {
     return (
       method === 'apple-pay' ||
       method === 'klarna' ||
-      isEmbeddedMethod(method ?? '')
+      isEmbeddedMethod(method ?? '') ||
+      // Adyen's Drop-in brings its own Pay button.
+      isFormFirstWidgetMethod(method ?? '')
     )
   }
 
@@ -2537,6 +2640,200 @@ export class VioCheckout extends LitElement {
     }
   }
 
+  /* ── Adyen: our form first, then Adyen's Drop-in on a session ─────────── */
+
+  /**
+   * What an Adyen session is a photo OF. When any of it changes under a
+   * mounted Drop-in, that session no longer describes the purchase: it is
+   * dropped, and the shopper asks for the payment step again.
+   */
+  private adyenPurchaseKey(): string {
+    return JSON.stringify([
+      this.adyenFormKey(),
+      this.items.map((i) => [i.productId, i.variantId ?? '', i.quantity]),
+      this.checkoutState?.subtotal ?? 0,
+    ])
+  }
+
+  /** The part of the photo the shopper types and picks. */
+  private adyenFormKey(): string {
+    const f = this.form
+    return JSON.stringify([
+      f.firstName, f.lastName, f.email, f.address, f.postalCode, f.city, f.country ?? '',
+      this.selectedShipping,
+    ])
+  }
+
+  /** A mounted session whose purchase changed is taken down — never patched. */
+  private dropStaleAdyen(): void {
+    if (!this.adyenMounted || this.adyenMounting) return
+    if (this.adyenMountedKey === this.adyenPurchaseKey()) return
+    this.unmountAdyen()
+    this.adyenStale = true
+  }
+
+  private async mountAdyenIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'adyen') return
+    if (!this.mayStartEmbeddedPayment() || this.adyenSettled) return
+    if (this.adyenMounting) return
+    if (this.adyenMounted) {
+      if (this.adyenMountedFor === this.embedSession()) return
+      // A new checkout session: the photo belongs to the previous one.
+      this.unmountAdyen()
+    }
+    // Only on the shopper's request, and only with a finished form.
+    if (!this.adyenRequested || !this.isAddressValid || !this.hasSelectedShipping) return
+    this.adyenRequested = false
+    this.adyenMounting = true
+    this.adyenStale = false
+    this.paymentError = null
+    const spId = this.checkoutState.sponsorId
+    const mountedFor = this.embedSession()
+    const formKey = this.adyenFormKey()
+    try {
+      // The total depends on the shipping: persist the pick before the photo.
+      const selectedOpt = this.shippingList.find((o) => o.id === this.selectedShipping)
+      if (selectedOpt?.supplierId) {
+        await Vio.checkout.updateShippingsBySupplier(
+          [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+          spId,
+        )
+      }
+      await this.updateComplete
+      const container = this.lightContainer('vio-adyen-checkout-container', 'vio-adyen')
+      container.innerHTML = ''
+      await Vio.checkout.mountAdyenCheckout(container, spId, this.form, {
+        onCompleted: (payment, session) => this.onAdyenCompleted(spId, payment, session),
+        onFailed: () => {
+          // Refused or cancelled inside Drop-in. The session may be spent, so
+          // the next attempt starts on a new one — on the shopper's request.
+          this.unmountAdyen()
+          this.paymentError = 'Betalingen ble ikke gjennomført. Prøv igjen, eller velg en annen betalingsmåte.'
+        },
+        onReplaced: (reason) => {
+          // "Pay" was pressed on a session that no longer pays for this
+          // checkout: nothing was charged. Take it down and say why.
+          this.unmountAdyen()
+          this.adyenStale = true
+          if (reason === 'ALREADY_PAID') {
+            this.adyenSettled = true
+            this.paymentNotice = 'Denne bestillingen er allerede betalt.'
+          }
+        },
+        onError: (error) => {
+          if (typeof console !== 'undefined') console.warn('[VioCheckout] Adyen error:', error)
+        },
+      })
+      // The shopper may have moved on while the session was being created.
+      if (this.embedSession() !== mountedFor || this.checkoutState?.paymentMethod !== 'adyen' || !this.open) {
+        this.unmountAdyen()
+        return
+      }
+      // …or kept typing: the session was created from the form as it was.
+      if (this.adyenFormKey() !== formKey) {
+        this.unmountAdyen()
+        this.adyenStale = true
+        return
+      }
+      this.adyenMounted = true
+      this.adyenMountedFor = mountedFor
+      // Taken NOW, not before: saving the shipping makes the backend rewrite
+      // the cart lines, and that refresh is not a change by the shopper.
+      this.adyenMountedKey = this.adyenPurchaseKey()
+    } catch (err) {
+      this.unmountAdyen()
+      this.paymentError =
+        err instanceof AdyenOriginError
+          ? 'Betaling er ikke aktivert for denne siden ennå. Ta kontakt med butikken.'
+          : `Kunne ikke laste betaling: ${err instanceof Error ? err.message : String(err)}`
+      if (typeof console !== 'undefined') console.warn('[VioCheckout] Adyen mount failed:', err)
+    } finally {
+      this.adyenMounting = false
+    }
+  }
+
+  private onAdyenCompleted(sponsorId: number, payment: AdyenPayment | null, session: AdyenSession): void {
+    const outcome = adyenReturnOutcome(payment)
+    // Whatever Adyen said, this session is spent.
+    this.unmountAdyen()
+    if (outcome === 'paid') {
+      this.adyenSettled = true
+      this.confirmOrder('adyen', sponsorId, {
+        chargedTotal: payment?.total_price ?? session.total_price,
+      })
+      this.addAdyenPaymentDetails(payment)
+    } else if (outcome === 'pending') {
+      // Swish, Trustly…: Adyen confirms later, through its webhook. Same
+      // promise the redirect methods make, and the cart stays as it is.
+      this.adyenSettled = true
+      this.paymentNotice =
+        'Betalingen behandles fortsatt. Du får ordrebekreftelse på e-post når den er gjennomført. Handlekurven er uendret.'
+    } else {
+      this.paymentError = 'Betalingen ble ikke gjennomført. Prøv igjen, eller velg en annen betalingsmåte.'
+    }
+  }
+
+  /** What Adyen told us about the payment, on Vio's confirmation. */
+  private addAdyenPaymentDetails(payment: AdyenPayment | null): void {
+    if (!this.confirmedOrder || !payment) return
+    this.confirmedOrder = {
+      ...this.confirmedOrder,
+      ...(payment.psp_reference
+        ? { providerRef: { label: 'Betalingsreferanse', value: payment.psp_reference } }
+        : {}),
+      ...(payment.payment_method ? { paidWith: payment.payment_method } : {}),
+      ...(payment.email && !this.confirmedOrder.email ? { email: payment.email } : {}),
+      ...(payment.shipping_name && !this.confirmedOrder.shipping
+        ? { shipping: { name: payment.shipping_name, price: payment.shipping_price ?? 0 } }
+        : {}),
+    }
+  }
+
+  private unmountAdyen(): void {
+    Vio.checkout.destroyAdyen()
+    this.adyenMounted = false
+    this.adyenMountedFor = null
+    this.adyenMountedKey = null
+    this.adyenRequested = false
+    this.adyenStale = false
+    this.querySelector('#vio-adyen-checkout-container')?.remove()
+  }
+
+  private renderAdyenPanel() {
+    const ready = this.isAddressValid && this.hasSelectedShipping
+    const showButton = !this.adyenMounted && !this.adyenMounting && !this.adyenSettled
+    return html`
+      <div class="adyen-panel">
+        ${this.adyenMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster betaling…</div>`
+          : ''}
+        ${this.adyenStale && showButton
+          ? html`<div class="payment-notice">Bestillingen ble endret. Oppdater betalingen for å fortsette.</div>`
+          : ''}
+        ${showButton
+          ? html`
+              <button
+                class="payment-btn primary complete-cta"
+                ?disabled=${!ready}
+                title=${!this.isAddressValid
+                  ? 'Vennligst fyll ut leveringsadresse'
+                  : !this.hasSelectedShipping
+                    ? 'Vennligst velg en fraktmetode'
+                    : ''}
+                @click=${() => {
+                  this.adyenRequested = true
+                }}
+              >
+                ${this.adyenStale ? 'Oppdater betaling' : `Gå til betaling · ${this.payTotalLabel()}`}
+              </button>
+            `
+          : ''}
+        <slot name="vio-adyen"></slot>
+      </div>
+    `
+  }
+
   private renderNexiPanel() {
     return html`
       <div class="nexi-panel">
@@ -2844,6 +3141,7 @@ export class VioCheckout extends LitElement {
                               this.unmountQliro()
                               this.unmountWalley()
                               this.unmountNexi()
+                              this.unmountAdyen()
                               Vio.checkout.selectPaymentMethod('' as PaymentMethod)
                             }}
                           >
@@ -2858,6 +3156,7 @@ export class VioCheckout extends LitElement {
                   ${method === 'qliro' ? this.renderQliroPanel() : ''}
                   ${method === 'walley' ? this.renderWalleyPanel() : ''}
                   ${method === 'nexi' ? this.renderNexiPanel() : ''}
+                  ${method === 'adyen' ? this.renderAdyenPanel() : ''}
                   ${method === 'stripe'
                     ? html`
                         <button
@@ -3004,6 +3303,13 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button class="payment-btn" @click=${() => this.onPay('nexi')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Nexi</span>
+                          </button>
+                        `
+                      : ''}
+                    ${this.methodEnabled('adyen')
+                      ? html`
+                          <button class="payment-btn" @click=${() => this.onPay('adyen')}>
+                            <span style="font-weight:700;font-size:15px;letter-spacing:-0.01em">${this.methodLabel('adyen')}</span>
                           </button>
                         `
                       : ''}

@@ -5,16 +5,21 @@
  * Instead of a public `clientId` + origin handshake (which 403'd on the
  * `klarnaevt` bridge from localhost), it uses a **server-minted client_token**:
  *
- *   1. Backend creates a Payments session → `client_token` + categories
- *      (POST /v2/commerce/klarna/sessions, server-side Basic-auth API key).
+ *   1. Vio Commerce creates a Payments session → `client_token` + categories
+ *      (GraphQL `Payment { CreatePaymentKlarnaNative }`, authed with the
+ *      sponsor's commerce API key).
  *   2. We load Klarna's widget **inline** (an iframe) into a container via
  *      `Klarna.Payments.init({ client_token })` + `Klarna.Payments.load(...)`.
  *   3. The customer picks/fills a method; `Klarna.Payments.authorize(...)`
  *      yields an `authorization_token`.
- *   4. Backend exchanges the token for a real order (existing /orders route).
+ *   4. Vio Commerce exchanges the token for a real order
+ *      (GraphQL `Payment { ConfirmPaymentKlarnaNative }`).
  *
  * No redirect, no popup, no public clientId — so the origin/handshake failure
  * mode simply doesn't apply here.
+ *
+ * All payment legs go through **Vio Commerce**. The Vio backend has no
+ * payment routes — it never sees card data, tokens, or Klarna credentials.
  */
 
 /** Klarna Payments JS library (classic). Loaded via <script>, sets window.Klarna. */

@@ -82,6 +82,15 @@ export interface NexiShippingUpdate {
   /** The address it was priced for (alpha-2 country). */
   country?: string
   postal_code?: string
+  /** market — the checkout's country, priced at creation; consumer — the shopper's address. */
+  address_source?: 'market' | 'consumer' | null
+  /** Whether this call changed the amount on the payment. */
+  changed?: boolean | null
+  /**
+   * Client-side only: set when the amount changed as the shopper pressed pay,
+   * so the payment was stopped and the widget reloaded.
+   */
+  repriced_at_pay?: boolean
 }
 
 export interface NexiShippingOption {
@@ -101,7 +110,9 @@ const NEXI_SHIPPING_FIELDS = `
       shipping_id
       options { id name price }
       country
-      postal_code`
+      postal_code
+      address_source
+      changed`
 
 const NEXI_ORDER_FIELDS = `
       order_id

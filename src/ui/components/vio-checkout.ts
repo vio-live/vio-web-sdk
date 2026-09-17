@@ -2405,11 +2405,17 @@ export class VioCheckout extends LitElement {
             this.nexiShippingNotice = 'Vi kan dessverre ikke sende til dette landet.'
           } else {
             this.nexiShipping = result
-            // The address changed and the rate the shopper had does not reach it.
-            this.nexiShippingNotice =
-              !pickedNow && wanted && result.shipping_id !== wanted
-                ? `Valgt frakt leveres ikke til denne adressen. Vi har valgt ${result.shipping_name ?? 'en annen'}.`
-                : null
+            if (result.repriced_at_pay) {
+              // The payment was stopped: the total changed as the shopper pressed pay.
+              this.nexiShippingNotice =
+                'Frakten er oppdatert for leveringsadressen din. Sjekk totalen og trykk «Betal» igjen.'
+            } else {
+              // The address changed and the rate the shopper had does not reach it.
+              this.nexiShippingNotice =
+                !pickedNow && wanted && result.shipping_id !== wanted
+                  ? `Valgt frakt leveres ikke til denne adressen. Vi har valgt ${result.shipping_name ?? 'en annen'}.`
+                  : null
+            }
           }
         },
       }, resumePaymentId ? { paymentId: resumePaymentId } : undefined)

@@ -21,7 +21,7 @@ import {
   type ProductOption,
   type ProductVariant,
 } from '../../core/types.js'
-import { isMethodEnabled, EMBEDDED_METHODS } from '../../core/checkout/method-taxonomy.js'
+import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -1264,7 +1264,7 @@ export class VioProductDetail extends LitElement {
           </div>
 
           ${this.availableQuantity > 0 &&
-          this.methodEnabled(...EMBEDDED_METHODS)
+          this.methodEnabled(...NO_EXPRESS_BUTTON_METHODS)
             ? html`
                 <button
                   class="buy-now"

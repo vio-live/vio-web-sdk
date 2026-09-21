@@ -36,6 +36,25 @@ export function normalizeMethodName(name: string): string {
 export const EMBEDDED_METHODS = ['kustom', 'qliro', 'walley', 'nexi'] as const
 
 /**
+ * Methods whose provider renders ONLY the payment inside our page, after the
+ * shopper filled our own form and picked our shipping. Adyen's Drop-in lists
+ * cards, Vipps, Klarna… and charges; it collects no email, address or
+ * shipping. So these are NOT embedded checkouts: the delivery-address form
+ * stays, and the widget is created with the final amount.
+ */
+export const FORM_FIRST_WIDGET_METHODS = ['adyen'] as const
+
+/**
+ * Methods with no branded express button of their own. A page offering only
+ * these needs the generic "buy now" / "go to checkout" CTA, or it has no way
+ * into the checkout at all (the defect of 2026-09-08, for every new method).
+ */
+export const NO_EXPRESS_BUTTON_METHODS = [
+  ...EMBEDDED_METHODS,
+  ...FORM_FIRST_WIDGET_METHODS,
+] as const
+
+/**
  * Methods that collect the shipping address themselves. The embedded ones do,
  * and so does Vipps inside its own flow — it just isn't embedded in our page.
  */
@@ -44,6 +63,10 @@ export const COLLECTS_OWN_ADDRESS = [...EMBEDDED_METHODS, 'vipps'] as const
 /** Runs inside its own widget in our page (no branded express button). */
 export const isEmbeddedMethod = (name: string): boolean =>
   (EMBEDDED_METHODS as readonly string[]).includes(normalizeMethodName(name))
+
+/** Renders only the payment, after our own form (no address of its own). */
+export const isFormFirstWidgetMethod = (name: string): boolean =>
+  (FORM_FIRST_WIDGET_METHODS as readonly string[]).includes(normalizeMethodName(name))
 
 /** Asks the shopper for their address itself, so our form would ask twice. */
 export const collectsOwnAddress = (name: string): boolean =>

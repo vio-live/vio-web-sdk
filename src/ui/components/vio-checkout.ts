@@ -29,6 +29,7 @@ import {
   isFormFirstWidgetMethod,
   everyMethodCollectsAddress as allCollectAddress,
 } from '../../core/checkout/method-taxonomy.js'
+import { KUSTOM_RETURN_QUERY_KEYS, kustomReturnOutcome } from '../../core/checkout/payments/kustom.js'
 import {
   nexiReturnPaymentId,
   readNexiPending,
@@ -72,7 +73,7 @@ export class VioCheckout extends LitElement {
    * provider renders a receipt, that is the one the shopper sees, not ours
    * (Angelo, 2026-09-15). See showProviderReceipt.
    */
-  @state() private providerReceipt: 'qliro' | 'walley' | null = null
+  @state() private providerReceipt: 'qliro' | 'walley' | 'kustom' | null = null
   @state() private confirmedMethod: PaymentMethod | null = null
   @state() private paymentError: string | null = null
   /** Neutral (non-error) status line: "verifying payment…" / "still processing". */
@@ -111,6 +112,14 @@ export class VioCheckout extends LitElement {
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
   @state() private kustomMounting = false
+  /** The widget is being told about a cart change (suspend → sync → resume). */
+  @state() private kustomSyncing = false
+  /** What the widget shows: the rate picked inside it and its total (major). */
+  @state() private kustomShipping: { name?: string; price?: number } | null = null
+  @state() private kustomTotal: number | null = null
+  @state() private kustomNotice: string | null = null
+  /** The cart the mounted Kustom order describes — see kustomCartKey. */
+  private kustomMountedKey: string | null = null
   private kustomMountedOrderId: string | null = null
   /** The checkout session (see embedSession) each embedded widget's order belongs to. */
   private kustomMountedFor: string | null = null
@@ -1018,15 +1027,21 @@ export class VioCheckout extends LitElement {
         return
       }
 
-      if (!vioPayment && !checkoutId) return
-
-      // Kustom's confirmation return: shopcart registers the confirmation URL
-      // as ?order_id=…&payment_processor=KUSTOM (no vio_* params — the href
-      // is query-less by contract). Re-read the order and render KCO's own
-      // confirmation snippet; the Commerce order is created server-side by
-      // the push webhook, never from the browser.
-      const kustomOrderId = urlParams.get('order_id') || ''
-      if (urlParams.get('payment_processor') === 'KUSTOM' && kustomOrderId) {
+      // Kustom's round trip. The confirmation URL is
+      // ?order_id=…&payment_processor=KUSTOM&checkout_id=… (the href is
+      // query-less by contract); a purchase our validation callback refused
+      // comes back as ?vio_payment=rejected&vio_method=kustom. The backend
+      // completes a paid order as we read it; the browser confirms nothing.
+      const kustomReturn = kustomReturnOutcome(urlParams)
+      if (kustomReturn?.kind === 'rejected') {
+        // The widget already told the shopper why. Cleaning the URL FIRST:
+        // a reload must not repeat the notice as if it just happened.
+        this.cleanReturnQueryParams([...KUSTOM_RETURN_QUERY_KEYS])
+        this.kustomNotice = 'Bestillingen ble endret. Betalingen ble ikke gjennomført — prøv igjen.'
+        return
+      }
+      if (kustomReturn?.kind === 'confirmation') {
+        const kustomOrderId = kustomReturn.orderId
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'kustom'
@@ -1047,39 +1062,26 @@ export class VioCheckout extends LitElement {
         }
         this.open = true
         this.paymentNotice = 'Bekrefter betalingen…'
+        // A reload must not read a used return twice.
+        this.cleanReturnQueryParams([...KUSTOM_RETURN_QUERY_KEYS])
         try {
           const order = await Vio.checkout.getKustomOrder(
             kustomOrderId,
             this.checkoutState?.sponsorId,
           )
           this.paymentNotice = null
-          if (order?.html_snippet) {
-            // Render KCO's own receipt into the panel once it exists in the DOM.
-            this.kustomMountedOrderId = order.order_id
+          if (order?.status === 'checkout_complete' && order.html_snippet) {
+            // Kustom's own receipt, in the light DOM, projected into the
+            // receipt view — which does not depend on the cart we clear.
+            const spId = this.checkoutState?.sponsorId ?? 0
+            this.showProviderReceipt('kustom', spId, order)
             await this.updateComplete
-            const container = this.renderRoot?.querySelector(
-              '#vio-kustom-checkout-container',
-            ) as HTMLElement | null
-            if (container) {
-              Vio.checkout.renderKustomSnippet(container, order.html_snippet)
-            }
-            if (order.status === 'checkout_complete') {
-              this.dispatchEvent(
-                new CustomEvent('vio:payment-success', {
-                  detail: { method: 'kustom', orderId: order.order_id },
-                  bubbles: true,
-                  composed: true,
-                }),
-              )
-              const spId = this.checkoutState?.sponsorId
-              if (spId) {
-                try {
-                  Vio.cart.clearSponsorCart(spId)
-                } catch {
-                  /* noop */
-                }
-              }
-            }
+            const container = this.lightContainer('vio-kustom-checkout-container', 'vio-kustom')
+            Vio.checkout.renderKustomSnippet(container, order.html_snippet)
+          } else {
+            // Sent back, but Kustom does not call it paid: nothing to show
+            // as a receipt, and nothing to charge again from here.
+            this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
           }
         } catch (err) {
           this.paymentNotice = null
@@ -1090,9 +1092,10 @@ export class VioCheckout extends LitElement {
             console.warn('[VioCheckout] Kustom confirmation read failed:', err)
           }
         }
-        this.cleanReturnQueryParams(['order_id', 'payment_processor'])
         return
       }
+
+      if (!vioPayment && !checkoutId) return
 
       // Qliro's confirmation return: ?checkout_id=…&payment_processor=QLIRO
       // (the href is query-less by contract). Re-read the order BY CHECKOUT
@@ -1443,6 +1446,7 @@ export class VioCheckout extends LitElement {
     // amount changes (the payment request is captured at mount time).
     void this.mountKlarnaIfNeeded()
     void this.mountKustomIfNeeded()
+    this.syncKustomIfStale()
     void this.mountQliroIfNeeded()
     void this.mountWalleyIfNeeded()
     void this.mountNexiIfNeeded()
@@ -2028,6 +2032,9 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState?.paymentMethod === 'nexi' && typeof this.nexiShipping?.shipping_price === 'number') {
       return this.nexiShipping.shipping_price
     }
+    if (this.checkoutState?.paymentMethod === 'kustom' && typeof this.kustomShipping?.price === 'number') {
+      return this.kustomShipping.price
+    }
     if (!this.express && this.availableShippingsList.length === 0) return 0
     const o = this.shippingOption
     if (!o) return 0
@@ -2091,7 +2098,12 @@ export class VioCheckout extends LitElement {
    * and is projected here, untouched.
    */
   private renderProviderReceipt() {
-    const slot = this.providerReceipt === 'walley' ? 'vio-walley' : 'vio-qliro'
+    const slot =
+      this.providerReceipt === 'walley'
+        ? 'vio-walley'
+        : this.providerReceipt === 'kustom'
+          ? 'vio-kustom'
+          : 'vio-qliro'
     return html`
       <section class="section provider-receipt">
         <slot name=${slot}></slot>
@@ -2107,7 +2119,7 @@ export class VioCheckout extends LitElement {
    * "Takk!": two receipts for one purchase is one too many.
    */
   private showProviderReceipt(
-    method: 'qliro' | 'walley',
+    method: 'qliro' | 'walley' | 'kustom',
     sponsorId: number,
     result?: unknown,
   ): void {
@@ -2258,33 +2270,58 @@ export class VioCheckout extends LitElement {
   }
 
   /** Klarna Payments widget panel: shipping + category chips + widget + pay button. */
+  /**
+   * The cart a Kustom order describes. When it changes under a mounted
+   * widget, the order is UPDATED in place (Kustom's rule) — see
+   * syncKustomIfStale. The order is a photo of the lines, not of the form:
+   * address and shipping live inside the widget.
+   */
+  private kustomCartKey(): string {
+    return JSON.stringify([
+      this.items.map((i) => [i.productId, i.variantId ?? '', i.quantity]),
+      this.checkoutState?.subtotal ?? 0,
+    ])
+  }
+
   /** Mount the Kustom embedded checkout once it's the chosen method. */
   private async mountKustomIfNeeded(): Promise<void> {
     if (!this.open || !this.checkoutState) return
     if (this.checkoutState.paymentMethod !== 'kustom') return
     if (!this.mayStartEmbeddedPayment()) return
-    if (this.kustomMounting) return
-    const container = this.renderRoot?.querySelector(
-      '#vio-kustom-checkout-container',
-    ) as HTMLElement | null
-    if (!container) return
-    // Already mounted for THIS cart — the KCO iframe manages itself (address,
-    // shipping and totals live inside it). A different cart needs a new order.
-    if (this.kustomMountedOrderId && container.childElementCount > 0) {
+    if (this.kustomMounting || this.kustomSyncing) return
+    // Already mounted for THIS checkout session — the KCO iframe manages
+    // itself (address, shipping and totals live inside it). A new session
+    // (closed and reopened) asks the backend again, which updates the same
+    // order if it is still open.
+    if (this.kustomMountedOrderId) {
       if (this.kustomMountedFor === this.embedSession()) return
       this.unmountKustom()
     }
+    // Kustom's snippet resolves its mount point from the document: the
+    // container lives in the light DOM and is projected into the panel
+    // through a named slot, like every other third-party embed here.
+    const container = this.lightContainer('vio-kustom-checkout-container', 'vio-kustom')
 
     const mountedFor = this.embedSession()
+    const mountedKey = this.kustomCartKey()
     this.kustomMounting = true
+    this.kustomNotice = null
+    this.paymentError = null
     container.innerHTML = ''
     try {
       const order = await Vio.checkout.mountKustomCheckout(
         container,
         this.checkoutState.sponsorId,
+        this.kustomHandlers(),
       )
       this.kustomMountedOrderId = order.order_id
       this.kustomMountedFor = mountedFor
+      this.kustomMountedKey = mountedKey
+      this.kustomShipping =
+        order.shipping_name !== undefined || order.shipping_price !== undefined
+          ? { name: order.shipping_name, price: order.shipping_price }
+          : null
+      this.kustomTotal = typeof order.total_price === 'number' ? order.total_price : null
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Kustom mount failed:', err)
@@ -2298,13 +2335,66 @@ export class VioCheckout extends LitElement {
     }
   }
 
+  /** What the widget tells us, kept only to show — never acted on server-side. */
+  private kustomHandlers() {
+    return {
+      onOrderTotalChange: (minor: number) => {
+        this.kustomTotal = minor / 100
+      },
+      onShippingOptionChange: (o: { name?: string; price?: number }) => {
+        this.kustomShipping = {
+          name: o?.name,
+          price: typeof o?.price === 'number' ? o.price / 100 : undefined,
+        }
+      },
+      onCannotComplete: () => {
+        this.kustomNotice = 'Betalingen kunne ikke gjennomføres med valgt metode. Velg en annen betalingsmåte.'
+      },
+      onNetworkError: () => {
+        this.kustomNotice = 'Mistet kontakt med betalingsvinduet. Last inn siden på nytt.'
+      },
+    }
+  }
+
+  /**
+   * The cart changed under a mounted Kustom widget: suspend it, push the
+   * cart into the same order, resume it. Never a second order, never a
+   * widget showing a total the backend will not charge (the validation
+   * callback would refuse it). A failed sync takes the widget down.
+   */
+  private syncKustomIfStale(): void {
+    if (!this.kustomMountedOrderId || this.kustomMounting || this.kustomSyncing) return
+    if (this.providerReceipt || this.returningFrom) return
+    const key = this.kustomCartKey()
+    if (key === this.kustomMountedKey) return
+    this.kustomSyncing = true
+    this.kustomMountedKey = key
+    void Vio.checkout.syncKustomOrder(this.checkoutState?.sponsorId)
+      .then((order) => {
+        if (!order) throw new Error('no order')
+        this.kustomMountedOrderId = order.order_id
+        this.kustomTotal = typeof order.total_price === 'number' ? order.total_price : this.kustomTotal
+      })
+      .catch((err) => {
+        if (typeof console !== 'undefined') {
+          console.warn('[VioCheckout] Kustom sync failed:', err)
+        }
+        this.unmountKustom()
+        this.kustomNotice = 'Bestillingen ble endret. Last inn betalingen på nytt.'
+      })
+      .finally(() => {
+        this.kustomSyncing = false
+      })
+  }
+
   private unmountKustom(): void {
     this.kustomMountedOrderId = null
     this.kustomMountedFor = null
-    const container = this.renderRoot?.querySelector(
-      '#vio-kustom-checkout-container',
-    ) as HTMLElement | null
-    if (container) container.innerHTML = ''
+    this.kustomMountedKey = null
+    this.kustomShipping = null
+    this.kustomTotal = null
+    Vio.checkout.destroyKustomListeners()
+    this.querySelector<HTMLElement>('#vio-kustom-checkout-container')?.remove()
   }
 
   private renderKustomPanel() {
@@ -2313,7 +2403,13 @@ export class VioCheckout extends LitElement {
         ${this.kustomMounting
           ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster Kustom…</div>`
           : ''}
-        <div id="vio-kustom-checkout-container"></div>
+        ${this.kustomSyncing
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Oppdaterer bestillingen…</div>`
+          : ''}
+        ${this.kustomNotice
+          ? html`<div class="payment-notice">${this.kustomNotice}</div>`
+          : ''}
+        <slot name="vio-kustom"></slot>
       </div>
     `
   }

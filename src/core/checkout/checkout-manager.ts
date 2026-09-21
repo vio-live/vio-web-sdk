@@ -43,6 +43,11 @@ import {
 import {
   createPaymentKustom as gqlCreatePaymentKustom,
   getKustomOrder as gqlGetKustomOrder,
+  syncPaymentKustom as gqlSyncPaymentKustom,
+  installKustomListeners,
+  suspendKustom,
+  resumeKustom,
+  type KustomListenerHandlers,
   kustomCleanHref,
   renderKustomSnippet,
   type KustomOrder,
@@ -960,6 +965,7 @@ export class CheckoutManager extends EventTarget {
   async mountKustomCheckout(
     container: HTMLElement,
     sponsorId?: number,
+    handlers: KustomListenerHandlers = {},
   ): Promise<KustomOrder> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for Kustom')
@@ -996,14 +1002,46 @@ export class CheckoutManager extends EventTarget {
         countryCode: getGlobalCountryCode(),
         href,
         email: this.state?.address?.email || undefined,
+        client: `web-sdk ${SDK_VERSION}`,
       },
       opts,
     )
     if (!order?.html_snippet) {
       throw new Error('Kustom order creation failed: missing html_snippet')
     }
+    // The snippet defines window._klarnaCheckout; listeners registered right
+    // after it are queued until the iframe has rendered.
+    this.destroyKustomListeners()
     renderKustomSnippet(container, order.html_snippet)
+    this.kustomController = installKustomListeners(handlers)
     return order
+  }
+
+  private kustomController: { destroy(): void } | null = null
+
+  /** Disarm the widget's listeners with the widget they belong to. */
+  destroyKustomListeners(): void {
+    this.kustomController?.destroy()
+    this.kustomController = null
+  }
+
+  /**
+   * The cart changed under an open Kustom widget: lock it, push the cart
+   * into the SAME order, and let the widget refresh itself. Kustom's own
+   * rule — never a new order for a cart change. The widget auto-resumes
+   * after 10 s if the sync never comes back.
+   */
+  async syncKustomOrder(sponsorId?: number): Promise<KustomOrder | null> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    const checkoutId = this.state?.checkoutId
+    if (!spId || !checkoutId) return null
+    const opts = await getCartGraphQLOptions(spId)
+    suspendKustom()
+    try {
+      return await gqlSyncPaymentKustom(checkoutId, opts)
+    } finally {
+      resumeKustom()
+    }
   }
 
   /** Re-read a Kustom order — used on the confirmation return trip. */

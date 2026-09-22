@@ -868,6 +868,9 @@ export class VioCheckout extends LitElement {
     void Vio.checkout.resumeKlarnaReturn()
     // Landing back from a Stripe/Vipps/Klarna redirect? Verify, then confirm.
     void this.checkReturnPaymentStatus()
+    // Reattached after a removal: disconnectedCallback unmounted the widgets
+    // and updated() skips mounting while detached, so look again now.
+    this.requestUpdate()
   }
 
   /**
@@ -1441,6 +1444,12 @@ export class VioCheckout extends LitElement {
       this.unmountAdyen()
       this.paymentError = null
     }
+    // A checkout taken out of the page (a route change, the host re-rendering
+    // it) creates no payment sessions. Its own teardown unmounts the widgets,
+    // and the update that follows would otherwise mount them again, detached —
+    // a new Klarna, Nexi or Adyen session for a checkout nobody can see.
+    // Reattached, it mounts them again (connectedCallback asks for an update).
+    if (!this.isConnected) return
     // Mount the Klarna Express button once its slot is in the DOM, the
     // express flow is available, and the overlay is open. Re-mount when the
     // amount changes (the payment request is captured at mount time).
@@ -1597,6 +1606,11 @@ export class VioCheckout extends LitElement {
    */
   private autoSelectSoleMethod(): void {
     if (!this.open) return
+    // Nothing to decide before the list is in, and returning here must not
+    // use up the one attempt: on a first opening the list answers AFTER the
+    // overlay opens, and the attempt spent by the opening left a sole method
+    // unselected for good (found writing the method-first tests, 2026-09-22).
+    if (!this.paymentMethodsResolved) return
     // ONCE per opening, whatever the outcome. `selectPaymentMethod` is a
     // request, not a guarantee: if it does not stick, the resulting state
     // change reloads the method list, which calls this again, selects again,
@@ -1716,7 +1730,10 @@ export class VioCheckout extends LitElement {
     }
     this.klarnaMountedAmount = null
     this.klarnaMountedShipping = null
-    this.klarnaCategories = []
+    // A fresh [] is a change to Lit even when the list is already empty: every
+    // mount attempt would schedule another update, and a mount that fails
+    // fast would retry forever.
+    if (this.klarnaCategories.length > 0) this.klarnaCategories = []
     this.klarnaSelectedCat = ''
     this.klarnaAuthorizing = false
   }

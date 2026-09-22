@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   normalizeMethodName, isMethodEnabled, isEmbeddedMethod, collectsOwnAddress,
-  everyMethodCollectsAddress, EMBEDDED_METHODS, COLLECTS_OWN_ADDRESS,
+  EMBEDDED_METHODS, COLLECTS_OWN_ADDRESS,
   isFormFirstWidgetMethod,
   NO_EXPRESS_BUTTON_METHODS,
 } from './method-taxonomy.js'
@@ -64,23 +64,6 @@ describe('method taxonomy', () => {
     })
   })
 
-  describe('everyMethodCollectsAddress', () => {
-    it('is true only when ALL of them do', () => {
-      expect(everyMethodCollectsAddress(['Qliro'])).toBe(true)
-      expect(everyMethodCollectsAddress(['Qliro', 'Walley', 'Vipps'])).toBe(true)
-    })
-
-    it('is false as soon as one needs our form', () => {
-      // Klarna needs the address; the form has to come back.
-      expect(everyMethodCollectsAddress(['Qliro', 'Klarna'])).toBe(false)
-    })
-
-    it('is false when unknown or empty — that is not a positive answer', () => {
-      expect(everyMethodCollectsAddress(null)).toBe(false)
-      expect(everyMethodCollectsAddress([])).toBe(false)
-    })
-  })
-
   describe('Adyen — a payment widget, not an embedded checkout', () => {
     it('asks for no address of its own, so our form must stay', () => {
       // Drop-in lists cards, Vipps, Klarna… and charges. Treating it like
@@ -88,8 +71,6 @@ describe('method taxonomy', () => {
       expect(isFormFirstWidgetMethod('Adyen')).toBe(true)
       expect(isEmbeddedMethod('Adyen')).toBe(false)
       expect(collectsOwnAddress('Adyen')).toBe(false)
-      expect(everyMethodCollectsAddress(['Adyen'])).toBe(false)
-      expect(everyMethodCollectsAddress(['Qliro', 'Adyen'])).toBe(false)
     })
 
     it('has no express button, so a page offering only Adyen still needs the generic CTA', () => {

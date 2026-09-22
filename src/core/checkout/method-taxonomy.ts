@@ -93,19 +93,3 @@ export function isMethodEnabled(
     names.some((n) => normalizeMethodName(m) === normalizeMethodName(n)),
   )
 }
-
-/**
- * Do ALL the offered methods collect the address themselves?
- *
- * "All", not "any": with Klarna alongside Qliro the form is still needed, so
- * it must come back. Answers false when the list is unknown or empty — that is
- * not a positive answer, and hiding the form on a guess would strand a shopper
- * whose method does need it.
- */
-export function everyMethodCollectsAddress(available: string[] | null): boolean {
-  return (
-    Array.isArray(available) &&
-    available.length > 0 &&
-    available.every(collectsOwnAddress)
-  )
-}

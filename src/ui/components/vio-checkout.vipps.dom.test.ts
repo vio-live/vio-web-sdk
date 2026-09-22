@@ -94,10 +94,11 @@ describe('Vipps among several methods', () => {
     expect(start.mock.calls[0]![1]).toMatchObject({ email: 'kari@example.no' })
   })
 
-  it('with the delivery form on screen and the email typed, one click still starts Vipps', async () => {
+  it('with the email already known (typed for another method), one click still starts Vipps', async () => {
     const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue(undefined)
-    const el = await openWith(['Klarna', 'Vipps'], { email: 'kari@example.no' })
-    expect(shadowText(el)).toContain('Leveringsadresse')
+    const el = await openWith(['Stripe', 'Vipps'], { email: 'kari@example.no' })
+    // Method first: no delivery form before a method is chosen.
+    expect(shadowText(el)).not.toContain('Leveringsadresse')
 
     methodButton(el, 'vipps')!.click()
     await renderCycles(el)

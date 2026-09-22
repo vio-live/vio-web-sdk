@@ -27,7 +27,7 @@ import {
   isMethodEnabled,
   isEmbeddedMethod,
   isFormFirstWidgetMethod,
-  everyMethodCollectsAddress as allCollectAddress,
+  collectsOwnAddress,
 } from '../../core/checkout/method-taxonomy.js'
 import { KUSTOM_RETURN_QUERY_KEYS, kustomReturnOutcome } from '../../core/checkout/payments/kustom.js'
 import {
@@ -1432,6 +1432,18 @@ export class VioCheckout extends LitElement {
     if (changed.has('open') && this.open) {
       this.autoSelectSoleMethod()
     }
+    // A sole Klarna or Apple Pay can turn usable after the list resolved (its
+    // script loads, the browser answers). One more try, only on that flip —
+    // the once-per-opening guard exists to stop a livelock, not this.
+    if (
+      ((changed.has('klarnaAvailable') && this.klarnaAvailable) ||
+        (changed.has('applePayAvailable') && this.applePayAvailable)) &&
+      this.paymentMethodsResolved &&
+      !this.checkoutState?.paymentMethod
+    ) {
+      this.autoSelectAttempted = false
+      this.autoSelectSoleMethod()
+    }
     // A cart that cannot ship takes down whatever payment is already on
     // screen: a widget mounted before the shippings answered must not stay
     // payable, and its load error is superseded by the reason.
@@ -1594,15 +1606,18 @@ export class VioCheckout extends LitElement {
 
   /**
    * With exactly one payment method there is no choice to make, so making the
-   * shopper click it is a step that can only have one outcome. Select it.
+   * shopper click it is a step that can only have one outcome. Select it —
+   * and since the checkout asks for the method first (2026-09-22), this is
+   * what skips that step: the form, or the provider's widget, comes straight
+   * up.
    *
    * Deliberately narrow:
    * - never overrides a method the shopper already picked;
    * - only for methods usable RIGHT NOW — Apple Pay and Klarna depend on the
    *   browser and on their script loading, and auto-selecting an unusable one
-   *   would strand the shopper on a panel that cannot pay;
-   * - Stripe is excluded: it charges a saved card on click, and arriving at a
-   *   payment step already armed is not the same as choosing it.
+   *   would strand the shopper on a panel that cannot pay (see `updated`: a
+   *   late "available" gets one more try);
+   * - selecting never pays: Stripe and Vipps still wait for their own button.
    */
   private autoSelectSoleMethod(): void {
     if (!this.open) return
@@ -1631,6 +1646,7 @@ export class VioCheckout extends LitElement {
       // Selected, not mounted: Adyen waits for the form (see adyenRequested).
       adyen: 'adyen',
       vipps: 'vipps',
+      stripe: 'stripe',
       klarna: this.klarnaAvailable ? 'klarna' : undefined,
       applepay: this.applePayAvailable ? 'apple-pay' : undefined,
     }
@@ -1666,6 +1682,9 @@ export class VioCheckout extends LitElement {
     // backend call, so don't fire it until the user picks Klarna (or we're in
     // express mode, which is Klarna-only).
     if (this.checkoutState.paymentMethod !== 'klarna' && !this.express) return
+    // Method first: Klarna can now be chosen before the form is filled. Its
+    // session is still created only once the form is complete, as before.
+    if (!this.express && (!this.isAddressValid || !this.hasSelectedShipping)) return
     if (this.klarnaMounting) return
     // Make sure the real shippings are in before mounting — Klarna's total
     // needs to reflect them, not the (removed) static fallback.
@@ -1809,6 +1828,19 @@ export class VioCheckout extends LitElement {
     Vio.checkout.setAddress(this.form)
   }
 
+  /** After choosing a method that needs our form, bring the form into view. */
+  private revealAddressForm(): void {
+    void this.updateComplete.then(() => {
+      const form = this.renderRoot?.querySelector<HTMLElement>('.address-section')
+      if (!form) return
+      // The topbar is sticky inside the scrolling modal: aligned to the top,
+      // the form's "Steg 1 · Leveringsadresse" heading would land under it.
+      const bar = this.renderRoot?.querySelector<HTMLElement>('.topbar')
+      form.style.scrollMarginTop = `${(bar?.offsetHeight ?? 0) + 8}px`
+      form.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
+    })
+  }
+
   private async onApplePay(): Promise<void> {
     if (this.applePayInProgress) return
     this.applePayInProgress = true
@@ -1877,12 +1909,22 @@ export class VioCheckout extends LitElement {
         return
       }
     } else {
-      if (!this.isAddressValid) {
-        this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
-        return
-      }
-      if (!this.hasSelectedShipping) {
-        this.paymentError = 'Vennligst velg en fraktmetode.'
+      const missing = !this.isAddressValid
+        ? 'Vennligst fyll ut alle feltene i leveringsadresse.'
+        : !this.hasSelectedShipping
+          ? 'Vennligst velg en fraktmetode.'
+          : null
+      if (missing) {
+        // Method first (Angelo, 2026-09-22): our delivery form appears only
+        // once a method that needs it is chosen, so choosing the method IS
+        // the way to the form. Refusing before selecting would leave the
+        // shopper with an error and no form — the Vipps dead end again.
+        if (this.checkoutState?.paymentMethod !== method) {
+          Vio.checkout.selectPaymentMethod(method)
+          this.revealAddressForm()
+          return
+        }
+        this.paymentError = missing
         return
       }
     }
@@ -3026,7 +3068,10 @@ export class VioCheckout extends LitElement {
         <button
           class="payment-btn primary complete-cta"
           @click=${() => void this.onKlarnaAuthorize()}
-          ?disabled=${this.klarnaAuthorizing || !this.klarnaHandle || this.klarnaMounting}
+          ?disabled=${this.klarnaAuthorizing ||
+          !this.klarnaHandle ||
+          this.klarnaMounting ||
+          (!this.express && (!this.isAddressValid || !this.hasSelectedShipping))}
         >
           ${this.klarnaAuthorizing
             ? 'Behandler…'
@@ -3099,21 +3144,19 @@ export class VioCheckout extends LitElement {
   private renderCheckoutBody() {
     const method = this.checkoutState?.paymentMethod
     const showCompleteCta = !!method && !this.isExpressMethod(method)
-    // Vipps collects the address in its own flow — skip the form entirely.
+    // Vipps collects the address in its own flow; it only needs an email.
     const isVipps = method === 'vipps'
-    // Kustom's and Qliro's embedded checkouts collect address, shipping AND
-    // email themselves — skip the form AND the contact section entirely.
-    const isKustom = isEmbeddedMethod(method ?? '')
-    // …and skip it BEFORE a method is chosen too, when every method the
-    // channel offers collects the address itself. Otherwise a Qliro-only
-    // checkout opens on a delivery-address form the shopper fills in, only
-    // for it to vanish and Qliro to ask for the same thing again.
-    const everyMethodCollectsAddress =
-      this.paymentMethodsResolved && allCollectAddress(this.availableMethods)
+    // Method first (Angelo, 2026-09-22): our delivery form is asked only once
+    // the shopper has chosen a method that needs it. Asking it up front made
+    // anyone who then chose Nexi, Qliro, Kustom or Walley type it all again
+    // in the provider's widget (Alan, QA 2026-09-21). With a single method
+    // there is no choice to make: it is selected on opening
+    // (autoSelectSoleMethod), so the form — or the widget — comes straight up.
+    const needsOurForm = !!method && !collectsOwnAddress(method)
     return html`
-          ${!isVipps && !isKustom && !everyMethodCollectsAddress
+          ${needsOurForm
             ? html`
-          <section class="section">
+          <section class="section address-section">
             <div class="section-label">Steg 1</div>
             <h3 class="section-heading">Leveringsadresse</h3>
             <div class="form-row">
@@ -3242,7 +3285,7 @@ export class VioCheckout extends LitElement {
 
           <section class="section">
             <div class="section-label">
-              ${isVipps || isKustom || everyMethodCollectsAddress ? 'Betaling' : 'Steg 2'}
+              ${needsOurForm ? 'Steg 2' : 'Betaling'}
             </div>
             ${this.shippingBlocked
               ? this.renderShippingBlocked()
@@ -3344,13 +3387,13 @@ export class VioCheckout extends LitElement {
                         </button>
                       `
                     : ''}
-                  ${!isVipps && !isKustom && !everyMethodCollectsAddress && !this.isAddressValid
+                  ${needsOurForm && !this.isAddressValid
                     ? html`
                         <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
                           Vennligst fyll ut leveringsadresse for å fullføre betalingen
                         </div>
                       `
-                    : !isVipps && !isKustom && !everyMethodCollectsAddress && !this.hasSelectedShipping
+                    : needsOurForm && !this.hasSelectedShipping
                       ? html`
                           <div style="font-size: 12px; color: var(--vio-color-accent, #c14a3b); text-align: center; margin-top: 8px;">
                             Vennligst velg en fraktmetode for å fullføre betalingen

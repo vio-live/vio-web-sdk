@@ -1847,6 +1847,15 @@ export class VioCheckout extends LitElement {
     if (method === 'vipps') {
       const email = String(this.form.email ?? '').trim()
       if (!email || !email.includes('@')) {
+        // The email field Vipps needs is its own "Kontakt" section, which
+        // renders only once Vipps is the selected method. Refusing BEFORE
+        // selecting was a dead end on a channel whose methods all collect
+        // the address (no delivery form either): Alan, 2026-09-21, Nexi +
+        // Qliro + Vipps, web and mobile. Select first; the pay button asks.
+        if (this.checkoutState?.paymentMethod !== 'vipps') {
+          Vio.checkout.selectPaymentMethod('vipps')
+          return
+        }
         this.paymentError = 'Vennligst fyll inn e-postadressen din.'
         return
       }

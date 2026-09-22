@@ -78,14 +78,26 @@ describe('vio-checkout — the payment step', () => {
     expect(shadowText(el)).not.toContain('Leveringsadresse')
   })
 
-  it('keeps the form when a method that needs it is also offered', async () => {
+  it('asks for the method first: our form only once a method that needs it is chosen', async () => {
+    // Before 2026-09-22 the form came first whenever one offered method
+    // needed it, and whoever then chose an embedded method typed it all again
+    // in the provider's widget (Alan, QA 2026-09-21).
     const el = await withState({
       open: true,
       checkoutState: { ...CART },
       availableMethods: ['Klarna', 'Qliro'],
       paymentMethodsResolved: true,
     })
+    expect(shadowText(el)).not.toContain('Leveringsadresse')
+    expect(shadowText(el)).toContain('Velg betalingsmåte')
+
+    el.checkoutState = { ...CART, paymentMethod: 'klarna' }
+    await settle(el)
     expect(shadowText(el)).toContain('Leveringsadresse')
+
+    el.checkoutState = { ...CART, paymentMethod: 'qliro' }
+    await settle(el)
+    expect(shadowText(el)).not.toContain('Leveringsadresse')
   })
 
   it('hides "Endre" when there is only one method to choose from', async () => {

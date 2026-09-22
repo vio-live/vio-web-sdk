@@ -593,13 +593,6 @@ export class VioCheckout extends LitElement {
     .payment-btn[aria-pressed='true'] {
       border-color: var(--vio-color-accent, #c14a3b);
     }
-    .apple-pay-note {
-      grid-column: 1 / -1;
-      font-size: 12px;
-      color: var(--vio-color-text-tertiary, #999);
-      text-align: center;
-      margin-top: 4px;
-    }
     /* Klarna Payments — inline widget panel, shown once Klarna is selected. */
     .klarna-panel {
       grid-column: 1 / -1;
@@ -3483,13 +3476,6 @@ export class VioCheckout extends LitElement {
                           <button class="payment-btn" @click=${() => this.onPay('vipps')}>
                             <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
                           </button>
-                        `
-                      : ''}
-                    ${this.methodEnabled('apple-pay') && !this.applePayAvailable
-                      ? html`
-                          <div class="apple-pay-note">
-                             Pay krever Safari på iOS eller macOS med Apple Pay konfigurert.
-                          </div>
                         `
                       : ''}
                   </div>

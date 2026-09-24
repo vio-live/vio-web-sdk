@@ -175,6 +175,8 @@ export class VioCheckout extends LitElement {
   @state() private stripeSettled = false
   /** Stripe is confirming right now — one press, not two. */
   @state() private stripePaying = false
+  /** Stripe has PAINTED its form: until then the panel says it is loading. */
+  @state() private stripeReady = false
   private stripeMountedFor: string | null = null
   private stripeMountedKey: string | null = null
   /** The checkout the mounted PaymentIntent pays for. */
@@ -3081,7 +3083,18 @@ export class VioCheckout extends LitElement {
       await this.updateComplete
       const container = this.lightContainer('vio-stripe-checkout-container', 'vio-stripe')
       container.innerHTML = ''
-      const mounted = await Vio.checkout.mountStripeCheckout(container, spId, this.form)
+      this.stripeReady = false
+      const mounted = await Vio.checkout.mountStripeCheckout(container, spId, this.form, {
+        // `mount()` resolves before Stripe paints anything — seconds before,
+        // on a cold cache. Its own "ready" is what turns the spinner off.
+        onReady: () => {
+          this.stripeReady = true
+        },
+        onLoadError: (message) => {
+          this.unmountStripe()
+          this.paymentError = `Kunne ikke laste betaling: ${message}`
+        },
+      })
       // The shopper may have moved on while the intent was being created.
       if (
         this.embedSession() !== mountedFor ||
@@ -3124,6 +3137,8 @@ export class VioCheckout extends LitElement {
     if (!this.stripeElement || this.stripePaying) return
     const spId = this.checkoutState?.sponsorId ?? 0
     const checkoutId = this.stripeCheckoutId
+    // Taken before the Element goes away: the receipt prints what was charged.
+    const charged = (this.checkoutState?.subtotal ?? 0) + this.shippingMajor()
     this.stripePaying = true
     this.paymentError = null
     try {
@@ -3143,7 +3158,9 @@ export class VioCheckout extends LitElement {
         ? await this.waitForStripeOrder(checkoutId, spId)
         : ('pending' as const)
       if (settled === 'paid') {
-        this.confirmOrder('stripe', spId)
+        // What Stripe charged is the total WITH shipping — the subtotal alone
+        // would print a receipt for less than the shopper paid.
+        this.confirmOrder('stripe', spId, { chargedTotal: charged })
       } else if (settled === 'failed') {
         this.stripeSettled = false
         this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
@@ -3191,6 +3208,7 @@ export class VioCheckout extends LitElement {
 
   private unmountStripe(): void {
     Vio.checkout.destroyStripe()
+    this.stripeReady = false
     this.stripeElement = null
     this.stripeCheckoutId = null
     this.stripeMounted = false
@@ -3206,7 +3224,7 @@ export class VioCheckout extends LitElement {
     const showButton = !this.stripeMounted && !this.stripeMounting && !this.stripeSettled
     return html`
       <div class="stripe-panel">
-        ${this.stripeMounting
+        ${this.stripeMounting || (this.stripeMounted && !this.stripeReady)
           ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster betaling…</div>`
           : ''}
         ${this.stripeStale && showButton
@@ -3235,7 +3253,7 @@ export class VioCheckout extends LitElement {
           ? html`
               <button
                 class="payment-btn primary complete-cta"
-                ?disabled=${this.stripePaying}
+                ?disabled=${this.stripePaying || !this.stripeReady}
                 @click=${() => void this.onStripePay()}
               >
                 ${this.stripePaying ? 'Betaler…' : `Betal ${this.payTotalLabel()}`}

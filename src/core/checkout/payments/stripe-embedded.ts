@@ -73,6 +73,14 @@ export interface MountStripeOptions {
   /** Where Stripe sends the shopper back when a method insists on leaving. */
   returnUrl: string
   theme?: { accent?: string; radiusMd?: string }
+  /**
+   * Stripe has PAINTED the form. `mount()` resolves long before that — up to
+   * ten seconds on a cold cache (QA, 2026-09-24) — and until then the panel
+   * is an empty box, so the caller keeps its "loading" state until this.
+   */
+  onReady?: () => void
+  /** Stripe could not load the form at all. */
+  onLoadError?: (message: string) => void
 }
 
 /** Stripe's own words for "the money is in". */
@@ -108,6 +116,12 @@ export async function mountStripeElement(
 
   const elements = stripe.elements({ clientSecret: intent.client_secret, appearance })
   const element = elements.create('payment', { layout: 'tabs' })
+  if (options.onReady) element.on('ready', () => options.onReady?.())
+  if (options.onLoadError) {
+    element.on('loaderror', (event: any) =>
+      options.onLoadError?.(String(event?.error?.message ?? 'Stripe could not load the form')),
+    )
+  }
   container.innerHTML = ''
   element.mount(container)
 

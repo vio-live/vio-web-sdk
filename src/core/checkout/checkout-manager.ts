@@ -1715,6 +1715,7 @@ export class CheckoutManager extends EventTarget {
     container: HTMLElement,
     sponsorId: number | undefined,
     formData: unknown,
+    callbacks?: { onReady?: () => void; onLoadError?: (message: string) => void },
   ): Promise<{ handle: StripeElementHandle; intent: StripeIntent; checkoutId: string }> {
     this.destroyStripe()
     const { spId, checkoutId, opts } = await this.prepareRedirectPayment(sponsorId, formData, {
@@ -1733,6 +1734,8 @@ export class CheckoutManager extends EventTarget {
         checkout_id: checkoutId,
       }),
       theme: { accent: theme?.accent, radiusMd: theme?.radiusMd },
+      onReady: callbacks?.onReady,
+      onLoadError: callbacks?.onLoadError,
     })
     this.stripeHandle = handle
     return { handle, intent, checkoutId }

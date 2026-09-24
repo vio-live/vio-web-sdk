@@ -38,8 +38,13 @@ const REAL_DELAYS = (VioCheckout as any).RETURN_VERIFY_DELAYS_MS
 
 let confirm: ReturnType<typeof vi.fn>
 let unmount: ReturnType<typeof vi.fn>
+/** A mount whose "ready" is held back, the way a slow Stripe behaves. */
+let holdReady = false
+let pendingReady: (() => void) | null = null
 
 beforeEach(() => {
+  holdReady = false
+  pendingReady = null
   ;(VioCheckout as any).RETURN_VERIFY_DELAYS_MS = [0, 0, 0]
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
@@ -60,6 +65,10 @@ beforeEach(() => {
   unmount = vi.fn()
   vi.spyOn(manager, 'mountStripeCheckout').mockImplementation(async (...args: unknown[]) => {
     ;(args[0] as HTMLElement).innerHTML = '<div class="stripe-element"></div>'
+    // Stripe paints after mount() resolves and says so itself.
+    const cbs = args[3] as { onReady?: () => void } | undefined
+    if (!holdReady) cbs?.onReady?.()
+    else pendingReady = () => cbs?.onReady?.()
     return {
       handle: { confirm, unmount },
       intent: { client_secret: 'pi_1_secret_x', publishable_key: 'pk_test' },
@@ -125,10 +134,30 @@ describe('Stripe native: the Payment Element on our page', () => {
     expect(manager.mountStripeCheckout).toHaveBeenCalledTimes(1)
   })
 
+  it('does not offer to pay an Element Stripe has not painted yet', async () => {
+    holdReady = true
+    const el = await openStripe('native', FULL_FORM)
+    button(el, 'gå til betaling')!.click()
+    await renderCycles(el)
+    // Mounted, but blank on screen: paying now would press a form nobody sees.
+    expect(el.stripeMounted).toBe(true)
+    expect(shadowText(el)).toContain('Laster betaling')
+    expect(button(el, 'betal')?.disabled).toBe(true)
+
+    pendingReady!()
+    await renderCycles(el)
+    expect(shadowText(el)).not.toContain('Laster betaling')
+    expect(button(el, 'betal')?.disabled).toBe(false)
+  })
+
   it('shows the receipt only once the checkout itself says it was paid', async () => {
     vi.spyOn(manager, 'getCheckout').mockResolvedValue({ status: 'paid' })
     const clear = vi.spyOn(Vio.cart, 'clearSponsorCart').mockImplementation(() => {})
     const el = await openStripe('native', FULL_FORM)
+    // A real cart pays for shipping too.
+    el.availableShippingsList = [{ id: 's1', name: 'Express', price: 30000, priceMajor: 300 }]
+    el.selectedShipping = 's1'
+    await renderCycles(el)
     button(el, 'gå til betaling')!.click()
     await renderCycles(el)
 
@@ -140,6 +169,9 @@ describe('Stripe native: the Payment Element on our page', () => {
     expect(el.orderConfirmed).toBe(true)
     expect(el.confirmedMethod).toBe('stripe')
     expect(clear).toHaveBeenCalledWith(SPONSOR)
+    // The receipt prints what Stripe charged — shipping included, not the
+    // bare subtotal (QA, 2026-09-24: 949 kr paid, 649 kr on the receipt).
+    expect(el.confirmedOrder.total).toBe(4999 + 300)
   })
 
   it('a charge whose order has not landed is "processing", and the cart is kept', async () => {

@@ -80,8 +80,8 @@ export function preloadStripeJs(): void {
   void loadStripeJs().catch(() => {})
 }
 
-/** Dynamically load Stripe.js exactly once. */
-function loadStripeJs(): Promise<unknown> {
+/** Dynamically load Stripe.js exactly once. Shared with the Payment Element. */
+export function loadStripeJs(): Promise<unknown> {
   if (stripeJsPromise) return stripeJsPromise
   if (typeof document === 'undefined') {
     return Promise.reject(new Error('[VioApplePay] Stripe.js requires a browser environment'))

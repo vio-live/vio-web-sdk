@@ -44,6 +44,7 @@ import {
   type AdyenPayment,
   type AdyenSession,
 } from '../../core/checkout/payments/adyen.js'
+import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -156,6 +157,29 @@ export class VioCheckout extends LitElement {
   /** The checkout session (see embedSession) and the purchase the mounted photo is of. */
   private adyenMountedFor: string | null = null
   private adyenMountedKey: string | null = null
+  /**
+   * Which Stripe this channel offers: `native` pays with Stripe's Payment
+   * Element on THIS page, `link` sends the shopper to a page hosted by
+   * Stripe. It travels in the method's config and is resolved with the
+   * method list; null means "not known yet", and the pay button asks.
+   */
+  @state() private stripeMode: 'native' | 'link' | null = null
+  /** The shopper asked for the payment step (see adyenRequested). */
+  @state() private stripeRequested = false
+  @state() private stripeMounting = false
+  /** The Payment Element is on screen. */
+  @state() private stripeMounted = false
+  /** The form, the shipping or the cart changed under a mounted Element. */
+  @state() private stripeStale = false
+  /** Paid or pending in this opening: never offer to pay again. */
+  @state() private stripeSettled = false
+  /** Stripe is confirming right now — one press, not two. */
+  @state() private stripePaying = false
+  private stripeMountedFor: string | null = null
+  private stripeMountedKey: string | null = null
+  /** The checkout the mounted PaymentIntent pays for. */
+  private stripeCheckoutId: string | null = null
+  private stripeElement: StripeElementHandle | null = null
   /**
    * The shipping the customer picked INSIDE the Qliro widget, as Qliro
    * reports it. Qliro owns that choice in the modes where it shows a picker,
@@ -291,6 +315,8 @@ export class VioCheckout extends LitElement {
       this.unmountNexi()
       this.unmountAdyen()
       this.adyenSettled = false
+      this.unmountStripe()
+      this.stripeSettled = false
     }
   }
 
@@ -1347,7 +1373,11 @@ export class VioCheckout extends LitElement {
               }
               if (
                 VioCheckout.PAID_STATUSES.has(status) ||
-                Boolean(checkout?.origin_payment_id)
+                // A Stripe checkout carries `origin_payment_id` from the
+                // moment the link or the intent is CREATED (shopcart), so for
+                // Stripe that pointer says nothing about who paid. Only the
+                // status does, and it is the webhook that sets it.
+                (vioMethod !== 'stripe' && Boolean(checkout?.origin_payment_id))
               ) {
                 outcome = 'paid'
                 break
@@ -1447,6 +1477,7 @@ export class VioCheckout extends LitElement {
       this.unmountWalley()
       this.unmountNexi()
       this.unmountAdyen()
+      this.unmountStripe()
       this.paymentError = null
     }
     // A checkout taken out of the page (a route change, the host re-rendering
@@ -1466,6 +1497,8 @@ export class VioCheckout extends LitElement {
     void this.mountNexiIfNeeded()
     this.dropStaleAdyen()
     void this.mountAdyenIfNeeded()
+    this.dropStaleStripe()
+    void this.mountStripeIfNeeded()
   }
 
   close(): void {
@@ -1576,11 +1609,15 @@ export class VioCheckout extends LitElement {
     if (this.loadingPaymentMethods) return
     this.loadingPaymentMethods = true
     try {
+      const spId = this.checkoutState.sponsorId
       const methods = (await Vio.checkout.getAvailablePaymentMethods(
-        this.checkoutState.sponsorId,
+        spId,
       )) as Array<{ name: string }> | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        // Which Stripe: the flow travels in the method's own config, and the
+        // list is memoised, so this costs nothing extra.
+        this.stripeMode = await Vio.checkout.getStripeMode(spId)
       } else {
         this.availableMethods = null
       }
@@ -1931,6 +1968,16 @@ export class VioCheckout extends LitElement {
     // Stripe / Vipps: hosted payment pages — mint the link and redirect. The
     // return trip lands in checkReturnPaymentStatus().
     if (method === 'stripe') {
+      // …unless this channel offers the native flow, where the shopper pays
+      // here (Angelo, 2026-09-24). Asking is what mints the PaymentIntent:
+      // mountStripeIfNeeded takes over, exactly as Adyen does.
+      if (this.stripeMode === null) {
+        this.stripeMode = await Vio.checkout.getStripeMode(this.checkoutState?.sponsorId)
+      }
+      if (this.stripeMode === 'native') {
+        this.stripeRequested = true
+        return
+      }
       // Persist the chosen shipping before the link is minted (total depends on it).
       const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
       if (selectedOpt?.supplierId) {
@@ -2800,20 +2847,21 @@ export class VioCheckout extends LitElement {
   /* ── Adyen: our form first, then Adyen's Drop-in on a session ─────────── */
 
   /**
-   * What an Adyen session is a photo OF. When any of it changes under a
-   * mounted Drop-in, that session no longer describes the purchase: it is
-   * dropped, and the shopper asks for the payment step again.
+   * What an embedded payment is a photo OF — an Adyen session, a Stripe
+   * PaymentIntent. When any of it changes underneath, that photo no longer
+   * describes the purchase: it is dropped, and the shopper asks for the
+   * payment step again.
    */
-  private adyenPurchaseKey(): string {
+  private embedPurchaseKey(): string {
     return JSON.stringify([
-      this.adyenFormKey(),
+      this.embedFormKey(),
       this.items.map((i) => [i.productId, i.variantId ?? '', i.quantity]),
       this.checkoutState?.subtotal ?? 0,
     ])
   }
 
   /** The part of the photo the shopper types and picks. */
-  private adyenFormKey(): string {
+  private embedFormKey(): string {
     const f = this.form
     return JSON.stringify([
       f.firstName, f.lastName, f.email, f.address, f.postalCode, f.city, f.country ?? '',
@@ -2824,7 +2872,7 @@ export class VioCheckout extends LitElement {
   /** A mounted session whose purchase changed is taken down — never patched. */
   private dropStaleAdyen(): void {
     if (!this.adyenMounted || this.adyenMounting) return
-    if (this.adyenMountedKey === this.adyenPurchaseKey()) return
+    if (this.adyenMountedKey === this.embedPurchaseKey()) return
     this.unmountAdyen()
     this.adyenStale = true
   }
@@ -2847,7 +2895,7 @@ export class VioCheckout extends LitElement {
     this.paymentError = null
     const spId = this.checkoutState.sponsorId
     const mountedFor = this.embedSession()
-    const formKey = this.adyenFormKey()
+    const formKey = this.embedFormKey()
     try {
       // The total depends on the shipping: persist the pick before the photo.
       const selectedOpt = this.shippingList.find((o) => o.id === this.selectedShipping)
@@ -2888,7 +2936,7 @@ export class VioCheckout extends LitElement {
         return
       }
       // …or kept typing: the session was created from the form as it was.
-      if (this.adyenFormKey() !== formKey) {
+      if (this.embedFormKey() !== formKey) {
         this.unmountAdyen()
         this.adyenStale = true
         return
@@ -2897,7 +2945,7 @@ export class VioCheckout extends LitElement {
       this.adyenMountedFor = mountedFor
       // Taken NOW, not before: saving the shipping makes the backend rewrite
       // the cart lines, and that refresh is not a change by the shopper.
-      this.adyenMountedKey = this.adyenPurchaseKey()
+      this.adyenMountedKey = this.embedPurchaseKey()
     } catch (err) {
       this.unmountAdyen()
       this.paymentError =
@@ -2987,6 +3035,213 @@ export class VioCheckout extends LitElement {
             `
           : ''}
         <slot name="vio-adyen"></slot>
+      </div>
+    `
+  }
+
+  /* ── Stripe, native: the Payment Element on our own page ──────────────── */
+
+  /** A mounted Element whose purchase changed is taken down — never patched. */
+  private dropStaleStripe(): void {
+    if (!this.stripeMounted || this.stripeMounting) return
+    if (this.stripeMountedKey === this.embedPurchaseKey()) return
+    this.unmountStripe()
+    this.stripeStale = true
+  }
+
+  private async mountStripeIfNeeded(): Promise<void> {
+    if (!this.open || !this.checkoutState) return
+    if (this.checkoutState.paymentMethod !== 'stripe' || this.stripeMode !== 'native') return
+    if (!this.mayStartEmbeddedPayment() || this.stripeSettled) return
+    if (this.stripeMounting) return
+    if (this.stripeMounted) {
+      if (this.stripeMountedFor === this.embedSession()) return
+      // A new checkout session: the PaymentIntent belongs to the previous one.
+      this.unmountStripe()
+    }
+    // Only on the shopper's request, and only with a finished form: creating
+    // the Element mints a PaymentIntent for the total as it stands.
+    if (!this.stripeRequested || !this.isAddressValid || !this.hasSelectedShipping) return
+    this.stripeRequested = false
+    this.stripeMounting = true
+    this.stripeStale = false
+    this.paymentError = null
+    const spId = this.checkoutState.sponsorId
+    const mountedFor = this.embedSession()
+    const formKey = this.embedFormKey()
+    try {
+      // The total depends on the shipping: persist the pick before the photo.
+      const selectedOpt = this.shippingList.find((o) => o.id === this.selectedShipping)
+      if (selectedOpt?.supplierId) {
+        await Vio.checkout.updateShippingsBySupplier(
+          [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+          spId,
+        )
+      }
+      await this.updateComplete
+      const container = this.lightContainer('vio-stripe-checkout-container', 'vio-stripe')
+      container.innerHTML = ''
+      const mounted = await Vio.checkout.mountStripeCheckout(container, spId, this.form)
+      // The shopper may have moved on while the intent was being created.
+      if (
+        this.embedSession() !== mountedFor ||
+        this.checkoutState?.paymentMethod !== 'stripe' ||
+        !this.open
+      ) {
+        this.unmountStripe()
+        return
+      }
+      // …or kept typing: the intent was minted from the form as it was.
+      if (this.embedFormKey() !== formKey) {
+        this.unmountStripe()
+        this.stripeStale = true
+        return
+      }
+      this.stripeElement = mounted.handle
+      this.stripeCheckoutId = mounted.checkoutId
+      this.stripeMounted = true
+      this.stripeMountedFor = mountedFor
+      // Taken NOW: saving the shipping makes the backend rewrite the cart
+      // lines, and that refresh is not a change by the shopper.
+      this.stripeMountedKey = this.embedPurchaseKey()
+    } catch (err) {
+      this.unmountStripe()
+      this.paymentError = `Kunne ikke laste betaling: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      if (typeof console !== 'undefined') console.warn('[VioCheckout] Stripe mount failed:', err)
+    } finally {
+      this.stripeMounting = false
+    }
+  }
+
+  /**
+   * Pay with the mounted Element. Stripe answers the BROWSER; the order is
+   * created server-side by the `payment_intent.succeeded` webhook, so a
+   * success is then waited for on the checkout itself.
+   */
+  private async onStripePay(): Promise<void> {
+    if (!this.stripeElement || this.stripePaying) return
+    const spId = this.checkoutState?.sponsorId ?? 0
+    const checkoutId = this.stripeCheckoutId
+    this.stripePaying = true
+    this.paymentError = null
+    try {
+      const outcome = await this.stripeElement.confirm()
+      if (outcome.status === 'failed') {
+        // Nothing was charged and the Element is still usable: a declined
+        // card or a wrong CVC is fixed in place, without a new intent.
+        this.paymentError =
+          outcome.message ||
+          'Betalingen ble ikke gjennomført. Prøv igjen, eller velg en annen betalingsmåte.'
+        return
+      }
+      // Authorised. Whatever happens next, this intent is spent.
+      this.stripeSettled = true
+      this.unmountStripe()
+      const settled = checkoutId
+        ? await this.waitForStripeOrder(checkoutId, spId)
+        : ('pending' as const)
+      if (settled === 'paid') {
+        this.confirmOrder('stripe', spId)
+      } else if (settled === 'failed') {
+        this.stripeSettled = false
+        this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
+      } else {
+        // The charge went through but the order has not landed yet (or Stripe
+        // is still processing). Same promise the redirect methods make.
+        this.paymentNotice =
+          'Betalingen behandles fortsatt. Du får ordrebekreftelse på e-post når den er gjennomført. Handlekurven er uendret.'
+      }
+    } catch (err) {
+      this.paymentError = `Betalingen kunne ikke fullføres: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      if (typeof console !== 'undefined') console.warn('[VioCheckout] Stripe confirm failed:', err)
+    } finally {
+      this.stripePaying = false
+    }
+  }
+
+  /**
+   * Wait for Stripe's webhook to make the checkout paid — the same window the
+   * redirect return uses, and ONLY the status: a Stripe checkout carries
+   * `origin_payment_id` from the moment the intent is created, so that
+   * pointer would read as paid before anyone paid.
+   */
+  private async waitForStripeOrder(
+    checkoutId: string,
+    sponsorId: number,
+  ): Promise<'paid' | 'failed' | 'pending'> {
+    for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+      try {
+        const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
+        const status = String(checkout?.status ?? '').toLowerCase()
+        if (VioCheckout.FAILED_STATUSES.has(status)) return 'failed'
+        if (VioCheckout.PAID_STATUSES.has(status)) return 'paid'
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[VioCheckout] Stripe order check failed:', err)
+        }
+      }
+    }
+    return 'pending'
+  }
+
+  private unmountStripe(): void {
+    Vio.checkout.destroyStripe()
+    this.stripeElement = null
+    this.stripeCheckoutId = null
+    this.stripeMounted = false
+    this.stripeMountedFor = null
+    this.stripeMountedKey = null
+    this.stripeRequested = false
+    this.stripeStale = false
+    this.querySelector('#vio-stripe-checkout-container')?.remove()
+  }
+
+  private renderStripePanel() {
+    const ready = this.isAddressValid && this.hasSelectedShipping
+    const showButton = !this.stripeMounted && !this.stripeMounting && !this.stripeSettled
+    return html`
+      <div class="stripe-panel">
+        ${this.stripeMounting
+          ? html`<div style="font-size:13px;opacity:0.7;padding:8px 0;">Laster betaling…</div>`
+          : ''}
+        ${this.stripeStale && showButton
+          ? html`<div class="payment-notice">Bestillingen ble endret. Oppdater betalingen for å fortsette.</div>`
+          : ''}
+        ${showButton
+          ? html`
+              <button
+                class="payment-btn primary complete-cta"
+                ?disabled=${!ready}
+                title=${!this.isAddressValid
+                  ? 'Vennligst fyll ut leveringsadresse'
+                  : !this.hasSelectedShipping
+                    ? 'Vennligst velg en fraktmetode'
+                    : ''}
+                @click=${() => {
+                  this.stripeRequested = true
+                }}
+              >
+                ${this.stripeStale ? 'Oppdater betaling' : `Gå til betaling · ${this.payTotalLabel()}`}
+              </button>
+            `
+          : ''}
+        <slot name="vio-stripe"></slot>
+        ${this.stripeMounted
+          ? html`
+              <button
+                class="payment-btn primary complete-cta"
+                ?disabled=${this.stripePaying}
+                @click=${() => void this.onStripePay()}
+              >
+                ${this.stripePaying ? 'Betaler…' : `Betal ${this.payTotalLabel()}`}
+              </button>
+            `
+          : ''}
       </div>
     `
   }
@@ -3315,7 +3570,10 @@ export class VioCheckout extends LitElement {
                   ${method === 'walley' ? this.renderWalleyPanel() : ''}
                   ${method === 'nexi' ? this.renderNexiPanel() : ''}
                   ${method === 'adyen' ? this.renderAdyenPanel() : ''}
-                  ${method === 'stripe'
+                  ${method === 'stripe' && this.stripeMode === 'native'
+                    ? this.renderStripePanel()
+                    : ''}
+                  ${method === 'stripe' && this.stripeMode !== 'native'
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"

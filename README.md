@@ -55,6 +55,15 @@ domain. Not all hosts let you serve that file (some page builders can't) —
 if the button never appears, check domain verification before assuming it's
 a code bug.
 
+**Stripe note**: the channel decides which Stripe the checkout shows. With
+*Payment Intent* enabled it is **native** — Stripe's Payment Element renders
+inside `<vio-checkout>` and the shopper pays without leaving the page (card
+data goes straight to Stripe, in its own iframes). With only *Payment Link*
+enabled the shopper is redirected to a page hosted by Stripe and comes back
+to your URL. Either way the order is created server-side from Stripe's
+webhook, so the receipt appears once the checkout is confirmed — never on
+the browser's word alone.
+
 ```html
 <vio-product-carousel
   label="Ukens funn"

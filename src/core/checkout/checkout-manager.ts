@@ -14,6 +14,12 @@ import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
 import { Configuration } from '../configuration.js'
 import {
+  createStripeIntent,
+  mountStripeElement,
+  type StripeElementHandle,
+  type StripeIntent,
+} from './payments/stripe-embedded.js'
+import {
   checkApplePayAvailability,
   prepareApplePay,
   preloadStripeJs,
@@ -527,6 +533,7 @@ export class CheckoutManager extends EventTarget {
   private nexiHandle: NexiCheckoutHandle | null = null
   /** Live Drop-in while an Adyen session is mounted. */
   private adyenHandle: AdyenDropinHandle | null = null
+  private stripeHandle: StripeElementHandle | null = null
   /**
    * The rate the shopper wants. Before an address it is only remembered (the
    * suggested one, or their pick); every re-pricing asks for it, and the
@@ -1674,6 +1681,72 @@ export class CheckoutManager extends EventTarget {
   }
 
   // MARK: - Apple Pay (Stripe Payment Request)
+
+  /**
+   * Which Stripe flow this channel offers: `native` pays on our own page,
+   * `link` sends the shopper to a page hosted by Stripe. The channel's two
+   * toggles decide it and the answer travels in the method's config
+   * (api-microservice, `stripe-offer.ts`). A channel that predates that
+   * field answers `link`, which is what every client did before.
+   */
+  async getStripeMode(sponsorId?: number): Promise<'native' | 'link'> {
+    try {
+      const methods = await this.getAvailablePaymentMethods(sponsorId)
+      const stripe = (
+        methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null
+      )?.find((m) => String(m?.name ?? '').toLowerCase() === 'stripe')
+      const mode = stripe?.config?.find((c) => c?.name === 'mode')?.value
+      return mode === 'native' ? 'native' : 'link'
+    } catch {
+      return 'link'
+    }
+  }
+
+  /**
+   * Stripe's Payment Element, mounted on our own page for a checkout that is
+   * ready to be paid. Creating it mints a PaymentIntent, so it happens when
+   * the shopper asks for the payment step, never while they type.
+   *
+   * The order is not born here: `confirm()` only says what Stripe told the
+   * browser. The `payment_intent.succeeded` webhook creates it server-side,
+   * and the caller then reads the checkout to see it land.
+   */
+  async mountStripeCheckout(
+    container: HTMLElement,
+    sponsorId: number | undefined,
+    formData: unknown,
+  ): Promise<{ handle: StripeElementHandle; intent: StripeIntent; checkoutId: string }> {
+    this.destroyStripe()
+    const { spId, checkoutId, opts } = await this.prepareRedirectPayment(sponsorId, formData, {
+      paymentMethod: 'Stripe',
+    })
+    const intent = await createStripeIntent(checkoutId, opts)
+    if (!intent?.client_secret) {
+      throw new Error('[CheckoutManager] Stripe payment was not created')
+    }
+    const theme = readVioTheme()
+    const handle = await mountStripeElement(container, intent, {
+      returnUrl: resolveHttpsReturnUrl(null, {
+        vio_payment: 'success',
+        vio_method: 'stripe',
+        vio_sponsor: spId,
+        checkout_id: checkoutId,
+      }),
+      theme: { accent: theme?.accent, radiusMd: theme?.radiusMd },
+    })
+    this.stripeHandle = handle
+    return { handle, intent, checkoutId }
+  }
+
+  /** Unmount the Payment Element. Safe when nothing is mounted. */
+  destroyStripe(): void {
+    try {
+      this.stripeHandle?.unmount()
+    } catch {
+      /* noop */
+    }
+    this.stripeHandle = null
+  }
 
   /**
    * The Stripe publishable key for a sponsor, taken from its own commerce

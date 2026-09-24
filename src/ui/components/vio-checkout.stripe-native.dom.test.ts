@@ -225,6 +225,44 @@ describe('Stripe native: the Payment Element on our page', () => {
   })
 })
 
+describe('the wallets belong to whoever shows them', () => {
+  /** Opens a channel with several methods, with the flow it offers. */
+  async function openChannel(mode: 'native' | 'link', methods: string[]) {
+    vi.spyOn(manager, 'getStripeMode').mockResolvedValue(mode)
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.open(SPONSOR)
+    el.show()
+    await renderCycles(el)
+    el.availableMethods = methods
+    el.paymentMethodsResolved = true
+    el.stripeMode = mode
+    el.applePayAvailable = true
+    el.autoSelectSoleMethod()
+    await renderCycles(el)
+    return el
+  }
+
+  it('native Stripe hides our Apple Pay tile — the Element shows that wallet itself', async () => {
+    const el = await openChannel('native', ['Stripe', 'Apple Pay', 'Qliro'])
+    expect(shadowText(el)).toContain('Velg betalingsmåte')
+    expect(button(el, 'apple pay')).toBeFalsy()
+    // The methods that are ours to run are untouched.
+    expect(button(el, 'qliro')).toBeTruthy()
+    expect(button(el, 'stripe')).toBeTruthy()
+  })
+
+  it('a hosted-page Stripe keeps our Apple Pay: nothing else offers that wallet', async () => {
+    const el = await openChannel('link', ['Stripe', 'Apple Pay'])
+    expect(button(el, 'apple pay')).toBeTruthy()
+  })
+
+  it('Stripe and Apple Pay alone: with the Element there is one method, so no choice to make', async () => {
+    const el = await openChannel('native', ['Stripe', 'Apple Pay'])
+    expect(el.checkoutState?.paymentMethod).toBe('stripe')
+    expect(shadowText(el)).not.toContain('Velg betalingsmåte')
+  })
+})
+
 describe('Stripe link: the hosted page it always was', () => {
   it('redirects instead of mounting anything', async () => {
     const start = vi.spyOn(manager, 'startStripePayment').mockResolvedValue(undefined)

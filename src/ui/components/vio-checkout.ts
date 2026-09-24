@@ -1667,7 +1667,7 @@ export class VioCheckout extends LitElement {
     if (this.autoSelectAttempted) return
     this.autoSelectAttempted = true
     if (this.checkoutState?.paymentMethod) return
-    const methods = this.availableMethods
+    const methods = this.offeredMethods()
     if (!Array.isArray(methods) || methods.length !== 1) return
     const id = String(methods[0] ?? '').toLowerCase().replace(/[^a-z]/g, '')
     const usable: Record<string, PaymentMethod | undefined> = {
@@ -1690,6 +1690,25 @@ export class VioCheckout extends LitElement {
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
     return isMethodEnabled(this.availableMethods, ...names)
+  }
+
+  /**
+   * Stripe's Payment Element shows the wallets of the account that charges —
+   * Apple Pay and Google Pay among them. Offering our own Apple Pay button
+   * next to it is the same wallet twice, on the same screen, paying through
+   * the same account: when Stripe pays on our page, Stripe owns the wallets
+   * (Angelo, 2026-09-24). The cart's express button is another surface and
+   * keeps its own Apple Pay — the Element does not exist there.
+   */
+  private stripeOwnsWallets(): boolean {
+    return this.stripeMode === 'native' && this.methodEnabled('stripe')
+  }
+
+  /** The methods the shopper actually sees (see stripeOwnsWallets). */
+  private offeredMethods(): string[] | null {
+    const methods = this.availableMethods
+    if (!Array.isArray(methods) || !this.stripeOwnsWallets()) return methods
+    return methods.filter((m) => !isMethodEnabled([m], 'apple-pay'))
   }
 
   private async refreshApplePay(): Promise<void> {
@@ -3681,7 +3700,9 @@ export class VioCheckout extends LitElement {
                 : html`
                   <h3 class="section-heading">Velg betalingsmåte</h3>
                   <div class="payment-grid">
-                    ${this.methodEnabled('apple-pay') && this.applePayAvailable
+                    ${this.methodEnabled('apple-pay') &&
+                    this.applePayAvailable &&
+                    !this.stripeOwnsWallets()
                       ? html`
                           <button
                             class="payment-btn primary"

@@ -119,6 +119,26 @@ describe('vio-checkout — the payment step', () => {
     })
     expect(shadowText(el)).toContain('Endre')
   })
+
+  it('says nothing about Apple Pay where this browser cannot use it', async () => {
+    // Angelo, 2026-09-22: the "requires Safari with Apple Pay" note was noise.
+    // A method the browser cannot use simply does not appear.
+    const el = await withState({
+      open: true,
+      checkoutState: { ...CART },
+      availableMethods: ['Stripe', 'Apple Pay', 'Qliro'],
+      paymentMethodsResolved: true,
+      applePayAvailable: false,
+    })
+    const text = shadowText(el)
+    expect(text).toContain('Velg betalingsmåte')
+    expect(text).not.toContain('Safari')
+    // No Apple Pay button either. (The shadow text also holds the component's
+    // CSS under jsdom, whose comments mention Apple Pay, so look at buttons.)
+    const buttons = [...(el.shadowRoot?.querySelectorAll('.payment-btn') ?? [])]
+      .map((b) => (b.textContent ?? '').trim())
+    expect(buttons.join(' ')).not.toContain('Apple Pay')
+  })
 })
 
 describe('vio-checkout — a confirmed order keeps the screen', () => {

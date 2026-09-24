@@ -58,6 +58,11 @@ describe('mounting', () => {
     expect(elementMount).toHaveBeenCalledWith(el)
   })
 
+  it('speaks Norwegian, like the rest of the checkout', async () => {
+    await mountStripeElement(container(), INTENT, { returnUrl: 'https://shop.example/back' })
+    expect(elementsArgs.locale).toBe('nb')
+  })
+
   it('refuses half an account: a secret without its publishable key', async () => {
     await expect(
       mountStripeElement(container(), { client_secret: 'pi_1_secret_x' } as StripeIntent, {

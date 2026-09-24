@@ -81,6 +81,8 @@ export interface MountStripeOptions {
   onReady?: () => void
   /** Stripe could not load the form at all. */
   onLoadError?: (message: string) => void
+  /** Stripe's own labels. Defaults to Norwegian, like the rest of the checkout. */
+  locale?: string
 }
 
 /** Stripe's own words for "the money is in". */
@@ -114,7 +116,13 @@ export async function mountStripeElement(
   if (options.theme?.radiusMd) variables.borderRadius = options.theme.radiusMd
   if (Object.keys(variables).length > 0) appearance.variables = variables
 
-  const elements = stripe.elements({ clientSecret: intent.client_secret, appearance })
+  // The rest of the checkout speaks Norwegian; Stripe's own labels ("Card
+  // number", "Expiration date") should too.
+  const elements = stripe.elements({
+    clientSecret: intent.client_secret,
+    appearance,
+    locale: options.locale ?? 'nb',
+  })
   const element = elements.create('payment', { layout: 'tabs' })
   if (options.onReady) element.on('ready', () => options.onReady?.())
   if (options.onLoadError) {

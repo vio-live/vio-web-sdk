@@ -1892,6 +1892,24 @@ export class VioCheckout extends LitElement {
     })
   }
 
+  /**
+   * Vipps from the checkout: Express when the channel allows it, so the
+   * shopper picks the delivery inside the app — our rate on the cart is the
+   * one preselected there — and never silently keeps the default our form
+   * chose for them. When the cart cannot have Express (several suppliers)
+   * the backend says so without creating a payment, and the plain payment
+   * follows: profile shared, the rate already on the cart.
+   */
+  private async startVippsFromCheckout(): Promise<void> {
+    const sponsorId = this.checkoutState?.sponsorId
+    const express = await Vio.checkout.getVippsExpressEnabled(sponsorId)
+    if (express) {
+      const res = await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: true })
+      if (res?.payment_url) return
+    }
+    await Vio.checkout.startVippsPayment(sponsorId, this.form)
+  }
+
   private async onApplePay(): Promise<void> {
     if (this.applePayInProgress) return
     this.applePayInProgress = true
@@ -2013,8 +2031,7 @@ export class VioCheckout extends LitElement {
     }
     if (method === 'vipps') {
       this.vippsLoading = true
-      void Vio.checkout
-        .startVippsPayment(this.checkoutState?.sponsorId, this.form)
+      void this.startVippsFromCheckout()
         .catch((err: unknown) => {
           this.paymentError = `Kunne ikke starte Vipps-betaling: ${
             err instanceof Error ? err.message : String(err)

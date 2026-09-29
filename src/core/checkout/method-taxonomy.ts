@@ -57,6 +57,11 @@ export const NO_EXPRESS_BUTTON_METHODS = [
 /**
  * Methods that collect the shipping address themselves. The embedded ones do,
  * and so does Vipps inside its own flow — it just isn't embedded in our page.
+ *
+ * Vipps Express is NOT a method of its own here (unlike Apple Pay, a distinct
+ * instrument with its own channel switch): it is a mode of Vipps, announced
+ * by Vio Commerce as `config.express` on the method — read with
+ * `Vio.checkout.getVippsExpressEnabled()` — the way Stripe announces `mode`.
  */
 export const COLLECTS_OWN_ADDRESS = [...EMBEDDED_METHODS, 'vipps'] as const
 

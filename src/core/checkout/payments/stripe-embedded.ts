@@ -31,6 +31,12 @@ export interface StripeIntent {
   /** The key of the SAME account that minted the secret. */
   publishable_key: string
   customer?: string
+  /**
+   * Stripe Connect (ADR-0022): the seller's connected account, where the
+   * intent lives. The browser must name it or Stripe answers "no such
+   * payment_intent". Absent for every seller not on Connect.
+   */
+  stripe_account?: string
 }
 
 export const CREATE_PAYMENT_INTENT_STRIPE_MUTATION = `
@@ -109,7 +115,10 @@ export async function mountStripeElement(
   if (typeof Stripe !== 'function') {
     throw new Error('[Stripe] stripe.js loaded but window.Stripe is missing')
   }
-  const stripe = Stripe(intent.publishable_key)
+  // Without Connect, exactly the call of old.
+  const stripe = intent.stripe_account
+    ? Stripe(intent.publishable_key, { stripeAccount: intent.stripe_account })
+    : Stripe(intent.publishable_key)
   const appearance: Record<string, unknown> = { theme: 'stripe' }
   const variables: Record<string, string> = {}
   if (options.theme?.accent) variables.colorPrimary = options.theme.accent

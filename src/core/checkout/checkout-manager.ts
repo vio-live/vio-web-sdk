@@ -526,6 +526,8 @@ export class CheckoutManager extends EventTarget {
    * Connect account (acct_…) — stored defensively by prefix. */
   private applePayPublishableKey: string | null = null
   private applePayConnectedAccount: string | null = null
+  /** Stripe Connect account of the channel, from its Stripe config. */
+  private stripeConnectAccount: string | null = null
   private klarnaAvailableCache: boolean | null = null
   /** Live q1 listeners while a Qliro widget is mounted. */
   private qliroController: QliroController | null = null
@@ -1721,10 +1723,15 @@ export class CheckoutManager extends EventTarget {
     const { spId, checkoutId, opts } = await this.prepareRedirectPayment(sponsorId, formData, {
       paymentMethod: 'Stripe',
     })
-    const intent = await createStripeIntent(checkoutId, opts)
-    if (!intent?.client_secret) {
+    const minted = await createStripeIntent(checkoutId, opts)
+    if (!minted?.client_secret) {
       throw new Error('[CheckoutManager] Stripe payment was not created')
     }
+    // Stripe Connect: the account comes with the channel's Stripe config, the
+    // same row shopcart charged on. Read from there (not from the mutation)
+    // so this SDK works against a gateway that predates the field.
+    const account = minted.stripe_account ?? (await this.resolveStripeConnectAccount(spId))
+    const intent: StripeIntent = account ? { ...minted, stripe_account: account } : minted
     const theme = readVioTheme()
     const handle = await mountStripeElement(container, intent, {
       returnUrl: resolveHttpsReturnUrl(null, {
@@ -1770,6 +1777,9 @@ export class CheckoutManager extends EventTarget {
       const stripe = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null)
         ?.find((m) => String(m?.name ?? '').toLowerCase() === 'stripe')
       const key = stripe?.config?.find((c) => c?.name === 'publishableKey')?.value
+      const account = stripe?.config?.find((c) => c?.name === 'stripeAccount')?.value
+      this.stripeConnectAccount =
+        typeof account === 'string' && account.startsWith('acct_') ? account : null
       if (typeof key === 'string' && key.startsWith('pk_')) {
         this.applePayPublishableKey = key
         return key
@@ -2653,9 +2663,22 @@ export class CheckoutManager extends EventTarget {
    * (Stripe will route to the platform account in that case).
    */
   private findStripeConnectAccount(): string | undefined {
-    // Placeholder hook — when bootstrap exposes per-sponsor stripeAccount
-    // we'll wire it here. For now returns undefined.
-    return undefined
+    // Stripe Connect (ADR-0022): recorded from the channel's Stripe config
+    // (`stripeAccount`) whenever the publishable key is resolved.
+    return this.stripeConnectAccount ?? undefined
+  }
+
+  /** The sponsor's connected account, read fresh from its channel config. */
+  private async resolveStripeConnectAccount(sponsorId?: number): Promise<string | undefined> {
+    try {
+      const methods = await this.getAvailablePaymentMethods(sponsorId)
+      const stripe = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null)
+        ?.find((m) => String(m?.name ?? '').toLowerCase() === 'stripe')
+      const account = stripe?.config?.find((c) => c?.name === 'stripeAccount')?.value
+      return typeof account === 'string' && account.startsWith('acct_') ? account : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private emit(): void {

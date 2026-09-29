@@ -21,13 +21,17 @@ let created: any
 let elementMount: ReturnType<typeof vi.fn>
 let elementUnmount: ReturnType<typeof vi.fn>
 let keyUsed: string | undefined
+let stripeArgs: any[]
 
 beforeEach(() => {
   confirmPayment = vi.fn().mockResolvedValue({ paymentIntent: { id: 'pi_1', status: 'succeeded' } })
   elementMount = vi.fn()
   elementUnmount = vi.fn()
   keyUsed = undefined
-  ;(globalThis as any).Stripe = (key: string) => {
+  stripeArgs = []
+  ;(globalThis as any).Stripe = (...args: any[]) => {
+    stripeArgs = args
+    const key = args[0] as string
     keyUsed = key
     return {
       elements: (args: any) => {
@@ -56,6 +60,20 @@ describe('mounting', () => {
     expect(created.type).toBe('payment')
     expect(el.innerHTML).toBe('')
     expect(elementMount).toHaveBeenCalledWith(el)
+  })
+
+  it('without Connect, Stripe.js is started exactly as before: the key alone', async () => {
+    await mountStripeElement(container(), INTENT, { returnUrl: 'https://shop.example/back' })
+    expect(stripeArgs).toEqual(['pk_test_seller'])
+  })
+
+  it('Stripe Connect: names the seller account the intent lives on', async () => {
+    await mountStripeElement(
+      container(),
+      { ...INTENT, publishable_key: 'pk_test_platform', stripe_account: 'acct_1Seller' },
+      { returnUrl: 'https://shop.example/back' },
+    )
+    expect(stripeArgs).toEqual(['pk_test_platform', { stripeAccount: 'acct_1Seller' }])
   })
 
   it('speaks Norwegian, like the rest of the checkout', async () => {

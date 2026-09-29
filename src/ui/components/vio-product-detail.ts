@@ -1094,10 +1094,31 @@ export class VioProductDetail extends LitElement {
     )
   }
 
+  /**
+   * Buy with Vipps — Express: the app opens with address and delivery
+   * already there, nothing to fill in here (Vipps' own recommendation,
+   * 2026-09-29). When this cart cannot have Express, or Vipps cannot be
+   * started, the checkout opens with Vipps preselected, as before.
+   */
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
     this.addCurrentToCart()
     this.close()
+    void this.startVippsExpressOrCheckout()
+  }
+
+  private async startVippsExpressOrCheckout(): Promise<void> {
+    let fallback = true
+    try {
+      const res = await Vio.checkout.startVippsExpress(this.sponsorId)
+      // A redirect is on its way; anything else opens the checkout.
+      fallback = !res?.payment_url
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioProductDetail] Vipps Express not started:', err)
+      }
+    }
+    if (!fallback) return
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,

@@ -623,15 +623,35 @@ export class VioCart extends LitElement {
     )
   }
 
+  /**
+   * Vipps — Express: the app collects address and delivery, so the cart
+   * goes straight to Vipps. When this cart cannot have Express (several
+   * suppliers, digital goods, no rate) or Vipps cannot be started, the
+   * checkout opens with Vipps preselected, as before.
+   */
   private onVipps(): void {
     if (this.itemCount === 0) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
+    void this.startVippsExpressOrCheckout(firstSponsorId)
+  }
+
+  private async startVippsExpressOrCheckout(sponsorId: number): Promise<void> {
+    let fallback = true
+    try {
+      const res = await Vio.checkout.startVippsExpress(sponsorId)
+      fallback = !res?.payment_url
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCart] Vipps Express not started:', err)
+      }
+    }
+    if (!fallback) return
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false },
+        detail: { sponsorId, paymentMethod: 'vipps', express: false },
       }),
     )
   }

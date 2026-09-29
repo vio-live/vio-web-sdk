@@ -843,15 +843,18 @@ export class CheckoutManager extends EventTarget {
         : (formData as { email?: string } | undefined)?.email) ||
       this.state?.address?.email ||
       ''
-    if (!emailVal || !emailVal.includes('@')) {
+    const hasEmail = !!emailVal && emailVal.includes('@')
+    if (!hasEmail && !isVipps) {
       // Never mint a payment link with a fabricated email — the order's
       // receipt/contact would be wrong forever.
       throw new Error('[CheckoutManager] email is required to start the payment')
     }
+    // Vipps hands the email back with the payment (Express, or the profile
+    // it shares), so none is needed up front — and none is invented.
 
     const updateVars: Record<string, unknown> = {
       checkoutId,
-      email: emailVal,
+      ...(hasEmail ? { email: emailVal } : {}),
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
       ...extraUpdateVars,
@@ -931,10 +934,25 @@ export class CheckoutManager extends EventTarget {
   }
 
   /**
-   * Vipps payment link: same flow as Stripe — CreatePaymentVipps → redirect to
-   * payment_url.
+   * Vipps: create the payment via Vio Commerce and redirect to Vipps'
+   * landing page (on a phone it opens the app; on a desktop it offers to
+   * send the payment to the phone).
+   *
+   * `express: true` asks for Vipps Express — address and delivery chosen
+   * inside the app, the email handed back with the payment — which is what
+   * the Vipps buttons on the product and the cart ask for. When the cart
+   * cannot have it (several suppliers, digital goods, no rate for the
+   * country) the backend creates NO payment and answers `express: false`
+   * with the reason; this resolves with that answer, without redirecting,
+   * so the caller can open the ordinary checkout instead. Without the flag
+   * the backend decides: Express while the cart has no delivery yet, a
+   * plain payment once the shopper chose one in our form.
    */
-  async startVippsPayment(sponsorId?: number, formData?: unknown): Promise<any> {
+  async startVippsPayment(
+    sponsorId?: number,
+    formData?: unknown,
+    options: { express?: boolean } = {},
+  ): Promise<any> {
     const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
       sponsorId,
       formData,
@@ -947,14 +965,31 @@ export class CheckoutManager extends EventTarget {
       checkout_id: checkoutId,
     })
     const vippsRes = await gqlCreatePaymentVipps(
-      { checkoutId, email: emailVal, returnUrl },
+      {
+        checkoutId,
+        ...(emailVal && emailVal.includes('@') ? { email: emailVal } : {}),
+        returnUrl,
+        ...(options.express !== undefined ? { express: options.express } : {}),
+      },
       opts,
     )
     if (vippsRes?.payment_url) {
       CheckoutManager.redirectTo(vippsRes.payment_url)
       return vippsRes
     }
+    if (options.express === true && vippsRes?.express === false) {
+      return vippsRes
+    }
     throw new Error('Vipps payment link generation failed: missing payment_url')
+  }
+
+  /**
+   * The Vipps Express button: the shopper taps it and the app opens with
+   * address and delivery already there. Resolves with `{ express: false,
+   * reason }` — and nothing redirected — when this cart cannot have it.
+   */
+  async startVippsExpress(sponsorId?: number): Promise<any> {
+    return this.startVippsPayment(sponsorId, undefined, { express: true })
   }
 
   /** Vipps' own payment state for the checkout — see getVippsStatus in

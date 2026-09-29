@@ -15,7 +15,7 @@ describe('Vipps Payment Module', () => {
   it('should define CREATE_PAYMENT_VIPPS_MUTATION correctly', () => {
     expect(CREATE_PAYMENT_VIPPS_MUTATION).toContain('mutation CreatePaymentVipps')
     expect(CREATE_PAYMENT_VIPPS_MUTATION).toContain(
-      'CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl)',
+      'CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl, express: $express)',
     )
     expect(CREATE_PAYMENT_VIPPS_MUTATION).toContain('payment_url')
   })

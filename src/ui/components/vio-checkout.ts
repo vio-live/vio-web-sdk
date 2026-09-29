@@ -1941,25 +1941,11 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('nexi')
       return
     }
-    // Vipps collects the address in its own flow but still needs an email
-    // for the order receipt; every other method needs the full form + a
-    // shipping choice before we mint sessions/links.
-    if (method === 'vipps') {
-      const email = String(this.form.email ?? '').trim()
-      if (!email || !email.includes('@')) {
-        // The email field Vipps needs is its own "Kontakt" section, which
-        // renders only once Vipps is the selected method. Refusing BEFORE
-        // selecting was a dead end on a channel whose methods all collect
-        // the address (no delivery form either): Alan, 2026-09-21, Nexi +
-        // Qliro + Vipps, web and mobile. Select first; the pay button asks.
-        if (this.checkoutState?.paymentMethod !== 'vipps') {
-          Vio.checkout.selectPaymentMethod('vipps')
-          return
-        }
-        this.paymentError = 'Vennligst fyll inn e-postadressen din.'
-        return
-      }
-    } else {
+    // Vipps collects address, delivery AND email in its own flow (Express,
+    // 2026-09-29) — nothing of ours has to be filled in first, so one click
+    // selects it and starts it. An email the shopper already typed (the
+    // "Kontakt" section, or another method's form) travels along.
+    if (method !== 'vipps') {
       const missing = !this.isAddressValid
         ? 'Vennligst fyll ut alle feltene i leveringsadresse.'
         : !this.hasSelectedShipping

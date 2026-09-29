@@ -5,15 +5,16 @@ import { Vio } from '../../core/client.js'
 import { VioCheckout } from './vio-checkout.js'
 
 /**
- * Vipps among other methods — the email it needs must always be askable.
+ * Vipps among other methods — nothing of ours stands in its way.
  *
- * Vipps collects the address in its own flow but not the email, so the
- * checkout asks for it in a "Kontakt" section that renders only once Vipps
- * is the selected method. On 2026-09-21 Alan (QA, web and mobile) found the
- * dead end: on a channel whose methods ALL collect the address themselves
- * (Nexi + Qliro + Vipps) there is no delivery form either, and the Vipps
- * button refused to select the method until an email was typed — into a
- * field that did not exist yet.
+ * Vipps collects the address, the delivery and the email in its own flow
+ * (Express, 2026-09-29), so the checkout asks for nothing first: the first
+ * click selects the method, the pay button starts it. The "Kontakt" section
+ * still offers an email field, used when the shopper types one. Before
+ * Express, on 2026-09-21, Alan (QA, web and mobile) found the dead end that
+ * shaped this: on a channel whose methods ALL collect the address themselves
+ * (Nexi + Qliro + Vipps) the Vipps button refused to select the method until
+ * an email was typed — into a field that did not exist yet.
  */
 const SPONSOR = 5
 const manager = Vio.checkout as any
@@ -65,7 +66,7 @@ const emailInput = (el: HTMLElement) =>
   el.shadowRoot?.querySelector<HTMLInputElement>('input[type="email"]') ?? null
 
 describe('Vipps among several methods', () => {
-  it('every method collects the address: no form, and the Vipps button still reaches an email field', async () => {
+  it('every method collects the address: no form, and one click on Vipps selects it AND starts it — no email required', async () => {
     const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue(undefined)
     const el = await openWith(['Nexi', 'Qliro', 'Vipps'])
     expect(shadowText(el)).not.toContain('Leveringsadresse')
@@ -73,25 +74,19 @@ describe('Vipps among several methods', () => {
 
     methodButton(el, 'vipps')!.click()
     await renderCycles(el)
-    // Vipps is selected and asks for the email — no error, no dead end.
+    // Selected and started at once: the app hands the email back.
     expect(el.checkoutState?.paymentMethod).toBe('vipps')
-    expect(shadowText(el)).toContain('Kontakt')
-    expect(emailInput(el)).not.toBeNull()
     expect(el.paymentError).toBeFalsy()
-    expect(start).not.toHaveBeenCalled()
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(start.mock.calls[0]![1]).not.toMatchObject({ email: expect.stringContaining('@') })
 
-    // Paying without the email says so; with it, Vipps starts.
-    methodButton(el, 'vipps')!.click()
-    await renderCycles(el)
-    expect(el.paymentError).toContain('e-postadressen')
-    expect(start).not.toHaveBeenCalled()
-
+    // An email the shopper did type travels with the payment.
     el.form = { ...el.form, email: 'kari@example.no' }
     await renderCycles(el)
     methodButton(el, 'vipps')!.click()
     await renderCycles(el)
-    expect(start).toHaveBeenCalledTimes(1)
-    expect(start.mock.calls[0]![1]).toMatchObject({ email: 'kari@example.no' })
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(start.mock.calls[1]![1]).toMatchObject({ email: 'kari@example.no' })
   })
 
   it('with the email already known (typed for another method), one click still starts Vipps', async () => {

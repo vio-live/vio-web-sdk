@@ -16,10 +16,13 @@ import { executeCartGraphQL, type CartQueryOptions } from '../../api/cart-querie
  * GraphQL mutation to create a Vipps payment session.
  */
 export const CREATE_PAYMENT_VIPPS_MUTATION = `
-mutation CreatePaymentVipps($checkoutId: String!, $email: String!, $returnUrl: String!) {
+mutation CreatePaymentVipps($checkoutId: String!, $email: String, $returnUrl: String!, $express: Boolean) {
   Payment {
-    CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl) {
+    CreatePaymentVipps(checkout_id: $checkoutId, email: $email, return_url: $returnUrl, express: $express) {
       payment_url
+      reference
+      express
+      reason
     }
   }
 }
@@ -40,12 +43,25 @@ query GetVippsStatus($checkoutId: String!) {
 
 export interface CreatePaymentVippsVariables extends Record<string, unknown> {
   checkoutId: string
-  email: string
+  /** Optional since Express: Vipps hands the email back with the payment. */
+  email?: string
   returnUrl: string
+  /**
+   * `true` asks for Express — address and delivery chosen inside the Vipps
+   * app. When the cart cannot have it, no payment is created and the answer
+   * says `express: false` with the reason; the caller then opens the
+   * ordinary checkout.
+   */
+  express?: boolean
 }
 
 export interface CreatePaymentVippsResponse {
-  payment_url: string
+  /** Absent when Express was asked for and refused. */
+  payment_url?: string
+  /** The reference the seller reads in its Vipps portal. */
+  reference?: string
+  express?: boolean
+  reason?: string
 }
 
 export interface GetVippsStatusVariables extends Record<string, unknown> {

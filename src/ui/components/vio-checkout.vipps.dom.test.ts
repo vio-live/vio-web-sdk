@@ -67,7 +67,9 @@ const emailInput = (el: HTMLElement) =>
 
 describe('Vipps among several methods', () => {
   it('every method collects the address: no form, and one click on Vipps selects it AND starts it — no email required', async () => {
-    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue(undefined)
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
+    // Express first: the app picks the delivery. A landing page = done.
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
     const el = await openWith(['Nexi', 'Qliro', 'Vipps'])
     expect(shadowText(el)).not.toContain('Leveringsadresse')
     expect(emailInput(el)).toBeNull()
@@ -79,6 +81,7 @@ describe('Vipps among several methods', () => {
     expect(el.paymentError).toBeFalsy()
     expect(start).toHaveBeenCalledTimes(1)
     expect(start.mock.calls[0]![1]).not.toMatchObject({ email: expect.stringContaining('@') })
+    expect(start.mock.calls[0]![2]).toEqual({ express: true })
 
     // An email the shopper did type travels with the payment.
     el.form = { ...el.form, email: 'kari@example.no' }
@@ -90,7 +93,8 @@ describe('Vipps among several methods', () => {
   })
 
   it('with the email already known (typed for another method), one click still starts Vipps', async () => {
-    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue(undefined)
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
     const el = await openWith(['Stripe', 'Vipps'], { email: 'kari@example.no' })
     // Method first: no delivery form before a method is chosen.
     expect(shadowText(el)).not.toContain('Leveringsadresse')
@@ -98,5 +102,29 @@ describe('Vipps among several methods', () => {
     methodButton(el, 'vipps')!.click()
     await renderCycles(el)
     expect(start).toHaveBeenCalledTimes(1)
+  })
+
+  it('a cart Express cannot serve (several suppliers) pays plain: the backend says no, the second call follows', async () => {
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
+    const start = vi
+      .spyOn(manager, 'startVippsPayment')
+      .mockResolvedValueOnce({ express: false, reason: 'several suppliers' })
+      .mockResolvedValueOnce({ payment_url: 'https://pay-mt.vipps.no/y' })
+    const el = await openWith(['Vipps'])
+    methodButton(el, 'vipps')!.click()
+    await renderCycles(el)
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(start.mock.calls[0]![2]).toEqual({ express: true })
+    expect(start.mock.calls[1]![2]).toBeUndefined()
+  })
+
+  it('with Express switched off for the channel, the checkout asks for the plain payment straight away', async () => {
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/z' })
+    const el = await openWith(['Vipps'])
+    methodButton(el, 'vipps')!.click()
+    await renderCycles(el)
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(start.mock.calls[0]![2]).toBeUndefined()
   })
 })

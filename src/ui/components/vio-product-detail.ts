@@ -1110,6 +1110,9 @@ export class VioProductDetail extends LitElement {
   private async startVippsExpressOrCheckout(): Promise<void> {
     let fallback = true
     try {
+      // The seller may have switched Express off on its Vipps row: then the
+      // button is an ordinary way into the checkout, with Vipps preselected.
+      if (!(await Vio.checkout.getVippsExpressEnabled(this.sponsorId))) throw new Error('express off')
       const res = await Vio.checkout.startVippsExpress(this.sponsorId)
       // A redirect is on its way; anything else opens the checkout.
       fallback = !res?.payment_url

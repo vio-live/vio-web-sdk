@@ -1726,6 +1726,26 @@ export class CheckoutManager extends EventTarget {
    * (api-microservice, `stripe-offer.ts`). A channel that predates that
    * field answers `link`, which is what every client did before.
    */
+  /**
+   * Does this channel's Vipps offer Express — the buy-now buttons that open
+   * the app with address and delivery? Vio Commerce announces it as
+   * `config.express` on the Vipps method, the way Stripe announces `mode`;
+   * the seller switches it on its Vipps row. Unknown means yes: Express is
+   * the default, and the backend refuses it with a reason if it cannot.
+   */
+  async getVippsExpressEnabled(sponsorId?: number): Promise<boolean> {
+    try {
+      const methods = await this.getAvailablePaymentMethods(sponsorId)
+      const vipps = (
+        methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }> | null
+      )?.find((m) => String(m?.name ?? '').toLowerCase() === 'vipps')
+      const express = vipps?.config?.find((c) => c?.name === 'express')?.value
+      return express !== 'false'
+    } catch {
+      return true
+    }
+  }
+
   async getStripeMode(sponsorId?: number): Promise<'native' | 'link'> {
     try {
       const methods = await this.getAvailablePaymentMethods(sponsorId)

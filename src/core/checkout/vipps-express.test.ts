@@ -59,3 +59,24 @@ describe('startVippsExpress', () => {
     await expect(manager.startVippsPayment(5, { email: 'kari@example.no' })).rejects.toThrow(/missing payment_url/)
   })
 })
+
+describe('getVippsExpressEnabled — what Vio Commerce announces', () => {
+  const withMethods = (methods: unknown) =>
+    vi.spyOn(manager, 'getAvailablePaymentMethods').mockResolvedValue(methods)
+
+  it('reads config.express on the Vipps method, the way Stripe\'s mode is read', async () => {
+    withMethods([{ name: 'Vipps', config: [{ name: 'express', value: 'false' }] }])
+    expect(await manager.getVippsExpressEnabled(5)).toBe(false)
+    withMethods([{ name: 'Vipps', config: [{ name: 'express', value: 'true' }] }])
+    expect(await manager.getVippsExpressEnabled(5)).toBe(true)
+  })
+
+  it('unknown means yes: no config, no Vipps, or a failed lookup', async () => {
+    withMethods([{ name: 'Vipps', config: [] }])
+    expect(await manager.getVippsExpressEnabled(5)).toBe(true)
+    withMethods([{ name: 'Stripe', config: [{ name: 'mode', value: 'native' }] }])
+    expect(await manager.getVippsExpressEnabled(5)).toBe(true)
+    vi.spyOn(manager, 'getAvailablePaymentMethods').mockRejectedValue(new Error('network'))
+    expect(await manager.getVippsExpressEnabled(5)).toBe(true)
+  })
+})

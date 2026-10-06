@@ -94,6 +94,12 @@ export type {
   VippsStatusResult,
   VippsPaymentState,
 } from './checkout/payments/vipps.js'
+export {
+  ensureVippsButton,
+  vippsButtonAttributes,
+  VIPPS_BUTTON_SCRIPT,
+  VIPPS_BUTTON_TAG,
+} from './checkout/payments/vipps-button.js'
 
 
 // Types + helpers

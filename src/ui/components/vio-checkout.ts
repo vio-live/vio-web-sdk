@@ -10,6 +10,7 @@
 
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
+import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice, getGlobalCurrency } from '../../core/types.js'
 import type { CartLineItem } from '../../core/cart/types.js'
@@ -112,6 +113,7 @@ export class VioCheckout extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  @state() private vippsOfficial = false
   @state() private kustomMounting = false
   /** The widget is being told about a cart change (suspend → sync → resume). */
   @state() private kustomSyncing = false
@@ -873,6 +875,7 @@ export class VioCheckout extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    void this.loadVippsButton()
     this.checkoutState = Vio.checkout.currentState
     this.items = Vio.checkout.items
     Vio.checkout.addEventListener('change', this.boundOnCheckoutChange)
@@ -941,6 +944,11 @@ export class VioCheckout extends LitElement {
    * anything else (including an unrecognized state) is treated as failed —
    * fail-closed by default rather than guessing.
    */
+  /** Vipps' own button when its script answers; our orange one otherwise. */
+  private async loadVippsButton(): Promise<void> {
+    this.vippsOfficial = await ensureVippsButton()
+  }
+
   private async pollVippsStatus(
     checkoutId: string,
     sponsorId: number,
@@ -3773,8 +3781,16 @@ export class VioCheckout extends LitElement {
                       : ''}
                     ${this.methodEnabled('vipps')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('vipps')}>
-                            <span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>
+                          <button class="payment-btn" @click=${() => this.onPay('vipps')} aria-label="Vipps">
+                            ${this.vippsOfficial
+                              ? html`<vipps-mobilepay-button
+                                  brand="vipps"
+                                  variant="primary"
+                                  rounded="true"
+                                  compact="true"
+                                  style="pointer-events:none"
+                                ></vipps-mobilepay-button>`
+                              : html`<span style="color:#ff5b24;font-weight:800;font-size:17px;letter-spacing:-0.02em">vipps</span>`}
                           </button>
                         `
                       : ''}

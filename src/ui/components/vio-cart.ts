@@ -12,6 +12,7 @@
 
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
+import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
@@ -39,6 +40,7 @@ export class VioCart extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  @state() private vippsOfficial = false
   /** Whether the method lookup has been attempted — see boundOnCartChange. */
   private paymentMethodsAttempted = false
   /** Set after an Apple Pay express purchase — switches the drawer to the
@@ -336,6 +338,7 @@ export class VioCart extends LitElement {
       transition: background 0.15s;
     }
     .vipps-btn:hover { background: #ec4f1c; }
+    .vipps-btn-official { display: block; width: 100%; margin-bottom: 10px; cursor: pointer; }
     .vipps-btn .vipps-logo {
       font-size: 20px;
       font-weight: 800;
@@ -434,6 +437,7 @@ export class VioCart extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    void this.loadVippsButton()
     // Seed initial state from manager.
     this.carts = Vio.cart.getAllCarts()
     this.itemCount = Vio.cart.itemCount
@@ -636,6 +640,11 @@ export class VioCart extends LitElement {
     void this.startVippsExpressOrCheckout(firstSponsorId)
   }
 
+  /** Vipps' own button when its script answers; our orange one otherwise. */
+  private async loadVippsButton(): Promise<void> {
+    this.vippsOfficial = await ensureVippsButton()
+  }
+
   private async startVippsExpressOrCheckout(sponsorId: number): Promise<void> {
     let fallback = true
     try {
@@ -829,15 +838,30 @@ export class VioCart extends LitElement {
                     `
                   : ''}
                 ${this.methodEnabled('vipps')
-                  ? html`
-                      <button
-                        class="vipps-btn"
-                        @click=${this.onVipps}
-                        aria-label="Betal med Vipps"
-                      >
-                        <span class="vipps-logo">vipps</span>
-                      </button>
-                    `
+                  ? this.vippsOfficial
+                    ? html`
+                        <vipps-mobilepay-button
+                          class="vipps-btn-official"
+                          brand="vipps"
+                          language="no"
+                          verb="pay"
+                          variant="primary"
+                          rounded="true"
+                          stretched="true"
+                          role="button"
+                          aria-label="Betal med Vipps"
+                          @click=${this.onVipps}
+                        ></vipps-mobilepay-button>
+                      `
+                    : html`
+                        <button
+                          class="vipps-btn"
+                          @click=${this.onVipps}
+                          aria-label="Betal med Vipps"
+                        >
+                          <span class="vipps-logo">vipps</span>
+                        </button>
+                      `
                   : ''}
               </div>
             `}

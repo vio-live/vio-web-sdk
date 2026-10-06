@@ -12,6 +12,7 @@
 
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
+import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
 import {
   formatPrice,
@@ -55,6 +56,7 @@ export class VioProductDetail extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buy buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  @state() private vippsOfficial = false
   /** Race guard: only the latest fetch may write state (two quick taps on
    * different cards would otherwise let the slow response win). */
   private fetchSeq = 0
@@ -437,6 +439,8 @@ export class VioProductDetail extends LitElement {
     }
     .buy-vipps:hover:not(:disabled) { background: #ec4f1c; }
     .buy-vipps:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Vipps' own button (web component) — same slot, their drawing. */
+    .buy-vipps-official { display: block; width: 100%; margin-top: 10px; cursor: pointer; }
     /* Apple Pay express button — black, per Apple's button guidelines. Only
        shown in Safari (canApplePay). The  glyph is the Apple logo (Safari). */
     .buy-applepay {
@@ -521,6 +525,7 @@ export class VioProductDetail extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    void this.loadVippsButton()
     document.addEventListener('vio:product-click', this.boundProductClick)
   }
 
@@ -1100,6 +1105,11 @@ export class VioProductDetail extends LitElement {
    * 2026-09-29). When this cart cannot have Express, or Vipps cannot be
    * started, the checkout opens with Vipps preselected, as before.
    */
+  /** Vipps' own button when its script answers; our orange one otherwise. */
+  private async loadVippsButton(): Promise<void> {
+    this.vippsOfficial = await ensureVippsButton()
+  }
+
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
     this.addCurrentToCart()
@@ -1353,17 +1363,32 @@ export class VioProductDetail extends LitElement {
             : ''}
 
           ${this.availableQuantity > 0 && this.methodEnabled('vipps')
-            ? html`
-                <button
-                  class="buy-vipps"
-                  @click=${this.buyWithVipps}
-                  ?disabled=${this.adding}
-                  aria-label="Kjøp nå med Vipps"
-                >
-                  <span>Kjøp nå med</span>
-                  <span class="vipps-badge">vipps</span>
-                </button>
-              `
+            ? this.vippsOfficial
+              ? html`
+                  <vipps-mobilepay-button
+                    class="buy-vipps-official"
+                    brand="vipps"
+                    language="no"
+                    verb="buy"
+                    variant="primary"
+                    rounded="true"
+                    stretched="true"
+                    role="button"
+                    aria-label="Kjøp nå med Vipps"
+                    @click=${this.buyWithVipps}
+                  ></vipps-mobilepay-button>
+                `
+              : html`
+                  <button
+                    class="buy-vipps"
+                    @click=${this.buyWithVipps}
+                    ?disabled=${this.adding}
+                    aria-label="Kjøp nå med Vipps"
+                  >
+                    <span>Kjøp nå med</span>
+                    <span class="vipps-badge">vipps</span>
+                  </button>
+                `
             : ''}
 
           ${p.description

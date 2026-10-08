@@ -113,6 +113,7 @@ import {
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,
   getCheckout as gqlGetCheckout,
+  getCheckoutOrderNumber as gqlGetCheckoutOrderNumber,
   getLineItemsBySupplier as gqlGetLineItemsBySupplier,
   updateCheckout as gqlUpdateCheckout,
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
@@ -663,6 +664,21 @@ export class CheckoutManager extends EventTarget {
   async getCheckout(checkoutId: string, sponsorId?: number): Promise<any> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetCheckout(checkoutId, opts)
+  }
+
+  /**
+   * The Vio order number (#4497) a checkout became, or null: not born yet,
+   * or an API that does not say it. Never throws — it is a line on a
+   * receipt, and a receipt does not fail for it.
+   */
+  async getOrderNumber(checkoutId: string, sponsorId?: number): Promise<number | null> {
+    if (!checkoutId) return null
+    try {
+      const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+      return await gqlGetCheckoutOrderNumber(checkoutId, opts)
+    } catch {
+      return null
+    }
   }
 
   /**

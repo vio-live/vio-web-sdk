@@ -80,12 +80,23 @@ export class VioCheckout extends LitElement {
   @state() private paymentError: string | null = null
   /** Neutral (non-error) status line: "verifying payment…" / "still processing". */
   @state() private paymentNotice: string | null = null
+  /**
+   * Back from a payment page and asking whether it was paid. While set, the
+   * drawer shows only this — never the checkout behind it: a form you can
+   * type into, and a "Betal" you can press, for a purchase that may already
+   * be paid (Angelo, 2026-10-08; Vipps can take two minutes to answer).
+   */
+  @state() private verifyingReturn: string | null = null
+  /** The checkout whose confirmation is on screen — see fillOrderNumber. */
+  private confirmedCheckoutId: string | null = null
   /** Snapshot of the placed order, for the confirmation screen. */
   @state() private confirmedOrder: {
     items: CartLineItem[]
     currency: string
     total: number
-    /** Commerce order number, when known at confirmation time. */
+    /** The Vio order number, digits only (#4497) — never the checkout's
+     *  uuid, which is no order number. Often arrives a moment after the
+     *  confirmation: see fillOrderNumber. */
     orderId?: string
     /** The shipping charged, when there was one. */
     shipping?: { name: string; price: number }
@@ -300,6 +311,8 @@ export class VioCheckout extends LitElement {
       this.confirmedOrder = null
       this.paymentError = null
       this.paymentNotice = null
+      this.verifyingReturn = null
+      this.confirmedCheckoutId = null
       this.express = false
       this.availableMethods = null
       this.paymentMethodsResolved = false
@@ -586,6 +599,37 @@ export class VioCheckout extends LitElement {
     }
     @media (prefers-reduced-motion: reduce) {
       .payment-spinner { animation: none; }
+    }
+    /* Back from a payment page: only this until we know. */
+    .verifying {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      gap: 10px;
+      padding: 56px 16px;
+    }
+    .verifying-spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--vio-color-border, #e5e5e5);
+      border-top-color: var(--vio-color-accent, #c14a3b);
+      border-radius: 50%;
+      animation: vio-payment-spin 0.8s linear infinite;
+    }
+    .verifying-text {
+      margin: 6px 0 0;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--vio-color-text, #1a1a1a);
+    }
+    .verifying-hint {
+      margin: 0;
+      font-size: 13px;
+      color: var(--vio-color-text-secondary, #666);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .verifying-spinner { animation: none; }
     }
     .payment-btn {
       padding: 20px;
@@ -992,11 +1036,11 @@ export class VioCheckout extends LitElement {
         items: [],
         currency: getGlobalCurrency(),
         total: 0,
-        orderId: checkoutId || undefined,
       }
       this.confirmedMethod = vioMethod as PaymentMethod
       this.orderConfirmed = true
       this.open = true
+      void this.fillOrderNumber(checkoutId, sponsorId)
       this.dispatchEvent(
         new CustomEvent('vio:payment-success', {
           bubbles: true,
@@ -1093,7 +1137,7 @@ export class VioCheckout extends LitElement {
           /* noop */
         }
         this.open = true
-        this.paymentNotice = 'Bekrefter betalingen…'
+        this.verifyingReturn = 'Bekrefter betalingen…'
         // A reload must not read a used return twice.
         this.cleanReturnQueryParams([...KUSTOM_RETURN_QUERY_KEYS])
         try {
@@ -1101,7 +1145,7 @@ export class VioCheckout extends LitElement {
             kustomOrderId,
             this.checkoutState?.sponsorId,
           )
-          this.paymentNotice = null
+          this.verifyingReturn = null
           if (order?.status === 'checkout_complete' && order.html_snippet) {
             // Kustom's own receipt, in the light DOM, projected into the
             // receipt view — which does not depend on the cart we clear.
@@ -1116,7 +1160,7 @@ export class VioCheckout extends LitElement {
             this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
           }
         } catch (err) {
-          this.paymentNotice = null
+          this.verifyingReturn = null
           // The order may well be paid — offering to pay again is the one
           // thing this must not do. Same wording as the redirect methods.
           this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
@@ -1156,13 +1200,13 @@ export class VioCheckout extends LitElement {
         // nothing here should offer to start paying again.
         this.autoSelectAttempted = true
         this.open = true
-        this.paymentNotice = 'Bekrefter betalingen…'
+        this.verifyingReturn = 'Bekrefter betalingen…'
         try {
           const order = await Vio.checkout.getQliroOrder(
             checkoutId,
             this.checkoutState?.sponsorId,
           )
-          this.paymentNotice = null
+          this.verifyingReturn = null
           if (order?.status === 'Completed') {
             // Qliro's own receipt is the one shown, not ours (Angelo,
             // 2026-09-15). It goes through showProviderReceipt, whose view does
@@ -1192,7 +1236,7 @@ export class VioCheckout extends LitElement {
             }
           }
         } catch (err) {
-          this.paymentNotice = null
+          this.verifyingReturn = null
           // The order may well be paid — offering to pay again is the one
           // thing this must not do. Same wording as the redirect methods.
           this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
@@ -1229,13 +1273,13 @@ export class VioCheckout extends LitElement {
           /* noop */
         }
         this.open = true
-        this.paymentNotice = 'Bekrefter betalingen…'
+        this.verifyingReturn = 'Bekrefter betalingen…'
         try {
           const order = await Vio.checkout.getWalleyOrder(
             checkoutId,
             this.checkoutState?.sponsorId,
           )
-          this.paymentNotice = null
+          this.verifyingReturn = null
           if (order?.html_snippet) {
             this.walleyMountedOrderId = order.order_id
             await this.updateComplete
@@ -1251,7 +1295,7 @@ export class VioCheckout extends LitElement {
             }
           }
         } catch (err) {
-          this.paymentNotice = null
+          this.verifyingReturn = null
           // The order may well be paid — offering to pay again is the one
           // thing this must not do. Same wording as the redirect methods.
           this.paymentError = VioCheckout.RETURN_UNVERIFIED_MESSAGE
@@ -1298,7 +1342,7 @@ export class VioCheckout extends LitElement {
           }
         }
         this.open = true
-        this.paymentNotice = 'Bekrefter betalingen…'
+        this.verifyingReturn = 'Bekrefter betalingen…'
         let payment: AdyenPayment | null = null
         let sawStatus = false
         try {
@@ -1313,7 +1357,7 @@ export class VioCheckout extends LitElement {
             console.warn('[VioCheckout] Adyen return could not be verified:', err)
           }
         }
-        this.paymentNotice = null
+        this.verifyingReturn = null
         const outcome = sawStatus ? adyenReturnOutcome(payment) : 'pending'
         this.applyReturnOutcome(outcome, sawStatus, 'adyen', sponsorId, checkoutId)
         if (outcome === 'paid' && this.confirmedOrder) {
@@ -1355,9 +1399,9 @@ export class VioCheckout extends LitElement {
           }
         }
         this.open = true
-        this.paymentNotice = 'Bekrefter betalingen med Vipps…'
+        this.verifyingReturn = 'Bekrefter betalingen med Vipps…'
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
-        this.paymentNotice = null
+        this.verifyingReturn = null
         this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
       } else if (vioPayment === 'success') {
@@ -1370,7 +1414,7 @@ export class VioCheckout extends LitElement {
         let sawStatus = false
         if (checkoutId) {
           this.open = true
-          this.paymentNotice = 'Bekrefter betalingen…'
+          this.verifyingReturn = 'Bekrefter betalingen…'
           for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
             if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
             try {
@@ -1398,7 +1442,7 @@ export class VioCheckout extends LitElement {
               }
             }
           }
-          this.paymentNotice = null
+          this.verifyingReturn = null
         }
 
         this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
@@ -2088,12 +2132,19 @@ export class VioCheckout extends LitElement {
     const r = (result ?? {}) as { order?: { orderId?: string }; chargedTotal?: number }
     const shippingPrice = this.shippingMajor()
     const email = String(this.form.email ?? '').trim()
+    // Before the cart is cleared: the checkout id goes with it.
+    const checkoutId = this.checkoutState?.checkoutId
+    // An id a provider hands back is ITS order (Qliro's, say), not Vio's: it
+    // is the provider's reference, under the provider's name.
+    const providerOrderId = r.order?.orderId != null ? String(r.order.orderId) : ''
     this.confirmedOrder = {
       items: [...this.items],
       currency: this.checkoutState?.currency ?? '',
       total:
         typeof r.chargedTotal === 'number' ? r.chargedTotal : (this.checkoutState?.subtotal ?? 0),
-      orderId: r.order?.orderId,
+      ...(providerOrderId
+        ? { providerRef: { label: `Ordre hos ${this.methodLabel(method)}`, value: providerOrderId } }
+        : {}),
       ...(shippingPrice > 0
         ? { shipping: { name: this.summaryShippingName() || 'Frakt', price: shippingPrice } }
         : {}),
@@ -2112,6 +2163,33 @@ export class VioCheckout extends LitElement {
       }),
     )
     Vio.cart.clearSponsorCart(sponsorId)
+    void this.fillOrderNumber(checkoutId, sponsorId)
+  }
+
+  /** Waits between asks for the Vio order number: the order is often born a
+   * moment after the payment (Vipps and Stripe through their webhook). */
+  private static readonly ORDER_NUMBER_DELAYS_MS = [0, 1500, 3000, 5000, 8000]
+
+  /**
+   * Puts the Vio order number (#4497) on the confirmation once the order
+   * exists. Until then the line is simply not there — never the checkout's
+   * uuid in its place, which is what it used to print. Stops if the shopper
+   * closes the drawer or another confirmation takes its place.
+   */
+  private async fillOrderNumber(checkoutId: string | undefined, sponsorId: number): Promise<void> {
+    this.confirmedCheckoutId = checkoutId || null
+    if (!checkoutId) return
+    const stillShowing = () => this.orderConfirmed && this.confirmedCheckoutId === checkoutId
+    for (const delayMs of VioCheckout.ORDER_NUMBER_DELAYS_MS) {
+      if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
+      if (!stillShowing()) return
+      const n = await Vio.checkout.getOrderNumber(checkoutId, sponsorId || undefined)
+      if (!stillShowing()) return
+      if (n && this.confirmedOrder) {
+        this.confirmedOrder = { ...this.confirmedOrder, orderId: String(n) }
+        return
+      }
+    }
   }
 
   private methodLabel(method: PaymentMethod | null): string {
@@ -2222,6 +2300,8 @@ export class VioCheckout extends LitElement {
             ? this.renderProviderReceipt()
             : this.orderConfirmed
             ? this.renderConfirmation()
+            : this.verifyingReturn
+            ? this.renderVerifying()
             : this.express
               ? this.renderKlarnaExpress()
               : this.renderCheckoutBody()}
@@ -2282,11 +2362,23 @@ export class VioCheckout extends LitElement {
     }
   }
 
+  /** Back from the payment page, asking whether it was paid — and nothing
+   * else on screen while we do. */
+  private renderVerifying() {
+    return html`
+      <section class="verifying" role="status" aria-live="polite">
+        <span class="verifying-spinner" aria-hidden="true"></span>
+        <p class="verifying-text">${this.verifyingReturn}</p>
+        <p class="verifying-hint">Dette kan ta litt tid. Ikke lukk siden.</p>
+      </section>
+    `
+  }
+
   private renderConfirmation() {
     const o = this.confirmedOrder
     const email = o?.email || String(this.form.email ?? '').trim()
     const details: Array<[string, string]> = []
-    if (o?.orderId) details.push(['Ordrenummer', o.orderId])
+    if (o?.orderId) details.push(['Ordrenummer', `#${o.orderId}`])
     details.push(['Betalingsmåte', o?.paidWith || this.methodLabel(this.confirmedMethod)])
     if (o?.providerRef) details.push([o.providerRef.label, o.providerRef.value])
     if (email) details.push(['Kvittering til', email])

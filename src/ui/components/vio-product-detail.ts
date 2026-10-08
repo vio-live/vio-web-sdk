@@ -45,6 +45,14 @@ export class VioProductDetail extends LitElement {
   @property({ type: String }) currency = 'NOK'
 
   @state() private product: Product | null = null
+  /**
+   * The header: the seller's Company name (Settings → Company), not the
+   * product's brand, which the body already shows (Angelo, 2026-10-08).
+   * Asked on its own after the product; until it answers the header waits,
+   * and if there is none it falls back to the brand.
+   */
+  @state() private sellerName: string | null = null
+  @state() private sellerSettled = false
   @state() private isLoading = false
   @state() private fetchError = ''
   @state() private selectedOptions: SelectedOptions = {}
@@ -541,6 +549,8 @@ export class VioProductDetail extends LitElement {
     setTimeout(() => {
       if (!this.open) {
         this.product = null
+        this.sellerName = null
+        this.sellerSettled = false
         this.selectedOptions = {}
         this.quantity = 1
         this.activeImageIndex = 0
@@ -561,6 +571,8 @@ export class VioProductDetail extends LitElement {
     const seq = ++this.fetchSeq
     this.isLoading = true
     this.fetchError = ''
+    this.sellerName = null
+    this.sellerSettled = false
 
     // Fetch with retry: the commerce backend intermittently returns
     // "Authentication failed" under concurrent requests (many cards + the
@@ -598,6 +610,7 @@ export class VioProductDetail extends LitElement {
 
     this.optMapCache = new WeakMap()
     this.product = products?.[0] ?? null
+    if (this.product) void this.loadSeller(productIdNum, seq)
     if (this.product) {
       // Analytics (auto): the detail opened with a concrete product.
       try {
@@ -1179,13 +1192,31 @@ export class VioProductDetail extends LitElement {
     this.close()
   }
 
+  /** The seller's Company name; the brand when there is none; nothing while asking. */
+  private headerName(): string {
+    if (this.sellerName) return this.sellerName
+    return this.sellerSettled ? (this.product?.brand ?? '') : ''
+  }
+
+  private async loadSeller(productId: number, seq: number): Promise<void> {
+    let name: string | null = null
+    try {
+      name = await Vio.commerceFor(this.sponsorId).channel.product.getSellerCompany(productId)
+    } catch {
+      name = null
+    }
+    if (seq !== this.fetchSeq) return // another product opened meanwhile
+    this.sellerName = name
+    this.sellerSettled = true
+  }
+
   override render() {
     return html`
       <div class="backdrop" @click=${this.close}></div>
       <div class="modal" role="dialog" aria-label="Produkt">
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">
-          <span class="topbar-brand">${this.product?.brand ?? ''}</span>
+          <span class="topbar-brand">${this.headerName()}</span>
           <button class="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 

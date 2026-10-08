@@ -105,6 +105,24 @@ const GET_PRODUCTS_BY_IDS = /* GraphQL */ `
   }
 `
 
+/**
+ * Only the seller's Company name of a product (Settings → Company), for the
+ * header of the product detail. Apart from GET_PRODUCTS_BY_IDS on purpose:
+ * `supplier_company` is new (2026-10-08), and an API without it fails the
+ * whole query — here that costs the header its name, there it would cost
+ * the product.
+ */
+const GET_PRODUCT_SELLER = /* GraphQL */ `
+  query GetProductSeller($productIds: [Int!], $useCache: Boolean!) {
+    Channel {
+      GetProductsByIds(product_ids: $productIds, useCache: $useCache) {
+        id
+        supplier_company
+      }
+    }
+  }
+`
+
 export interface GetProductsByIdsOptions {
   product_ids: number[]
   currency?: string | null
@@ -137,6 +155,27 @@ class ChannelProduct {
     }>(GET_PRODUCTS_BY_IDS, variables)
 
     return data.Channel?.GetProductsByIds ?? []
+  }
+
+  /**
+   * The seller's Company name for one product, or null (none set, or an API
+   * that does not have the field yet). Never throws.
+   *
+   * Never from the cache, on purpose: graphql caches product answers by
+   * path whatever fields the query asked, so this narrow query, written to
+   * the cache, would hand the next full product query a product with no
+   * price and no images. `useCache: false` neither reads nor writes it.
+   */
+  async getSellerCompany(productId: number): Promise<string | null> {
+    try {
+      const data = await this.client.request<{
+        Channel: { GetProductsByIds: Array<{ id: number; supplier_company?: string | null }> }
+      }>(GET_PRODUCT_SELLER, { productIds: [productId], useCache: false })
+      const name = String(data.Channel?.GetProductsByIds?.[0]?.supplier_company ?? '').trim()
+      return name || null
+    } catch {
+      return null
+    }
   }
 }
 

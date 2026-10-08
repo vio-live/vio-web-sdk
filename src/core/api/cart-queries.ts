@@ -1172,6 +1172,33 @@ export async function getCheckout(checkoutId: string, options?: CartQueryOptions
   return json?.data?.Checkout?.GetCheckout
 }
 
+/**
+ * Only the Vio order number of a checkout (#4497). Apart from
+ * GET_CHECKOUT_QUERY on purpose: `order_id` is new (2026-10-08), and an API
+ * that does not have it yet fails the WHOLE query — here that costs a line on
+ * the receipt, there it would cost the payment check.
+ */
+export const GET_CHECKOUT_ORDER_NUMBER_QUERY = `
+query GetCheckoutOrderNumber($checkoutId: String!) {
+  Checkout {
+    GetCheckout(checkout_id: $checkoutId) {
+      id
+      order_id
+    }
+  }
+}
+`
+
+/** The Vio order number, or null while the order does not exist yet. */
+export async function getCheckoutOrderNumber(
+  checkoutId: string,
+  options?: CartQueryOptions,
+): Promise<number | null> {
+  const json = await executeCartGraphQL(GET_CHECKOUT_ORDER_NUMBER_QUERY, { checkoutId }, options)
+  const n = Number((json?.data as any)?.Checkout?.GetCheckout?.order_id)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
 export async function getAvailablePaymentMethods(options?: CartQueryOptions): Promise<any> {
   const json = await executeCartGraphQL(GET_AVAILABLE_PAYMENT_METHODS_QUERY, {}, options)
   return json?.data?.Payment?.GetAvailablePaymentMethods

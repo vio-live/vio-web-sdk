@@ -23,6 +23,7 @@ import {
   type ProductVariant,
 } from '../../core/types.js'
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
+import { DialogFocus } from '../dialog-focus.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -72,6 +73,12 @@ export class VioProductDetail extends LitElement {
   private optMapCache = new WeakMap<object, { map: Record<string, string>; titleParts: string[] }>()
   /** Pre-prepared Apple Pay handle — show() fires synchronously on tap. */
   private applePayHandle: { show: () => Promise<void> } | null = null
+  /** Keyboard and focus while open: Escape closes, Tab stays inside, focus returns to the opener. */
+  private readonly dialogFocus = new DialogFocus({
+    host: this,
+    container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    close: () => this.close(),
+  })
 
   private boundProductClick = (e: Event): void => {
     if (!this.autoOpen) return
@@ -117,6 +124,8 @@ export class VioProductDetail extends LitElement {
       overflow-y: auto;
     }
     :host([open]) .modal { transform: translateY(0); }
+    /* Focus lands on the panel itself only as a fallback — no ring for it. */
+    .modal:focus { outline: none; }
 
     .handle { display: none; }
 
@@ -125,7 +134,7 @@ export class VioProductDetail extends LitElement {
       .modal {
         top: auto;
         height: 92vh;
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
       }
       .handle {
@@ -139,7 +148,7 @@ export class VioProductDetail extends LitElement {
         width: 40px;
         height: 4px;
         background: var(--vio-color-border, #e5e5e5);
-        border-radius: 2px;
+        border-radius: var(--vio-radius-sm, 2px);
       }
     }
 
@@ -504,9 +513,9 @@ export class VioProductDetail extends LitElement {
       );
       background-size: 200% 100%;
       animation: vio-skeleton-shimmer 1.4s ease-in-out infinite;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
     }
-    .sk-image { width: 100%; aspect-ratio: 1; border-radius: 12px; }
+    .sk-image { width: 100%; aspect-ratio: 1; border-radius: var(--vio-radius-lg, 12px); }
     .sk-line { height: 14px; }
     .sk-brand { width: 38%; height: 10px; margin-top: 6px; }
     .sk-title { width: 85%; height: 26px; }
@@ -540,6 +549,10 @@ export class VioProductDetail extends LitElement {
   override disconnectedCallback(): void {
     document.removeEventListener('vio:product-click', this.boundProductClick)
     super.disconnectedCallback()
+  }
+
+  override updated(changed: Map<string, unknown>): void {
+    if (changed.has('open')) this.dialogFocus.update(this.open)
   }
 
   show(): void { this.open = true }
@@ -1213,7 +1226,7 @@ export class VioProductDetail extends LitElement {
   override render() {
     return html`
       <div class="backdrop" @click=${this.close}></div>
-      <div class="modal" role="dialog" aria-label="Produkt">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Produkt" tabindex="-1">
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">
           <span class="topbar-brand">${this.headerName()}</span>

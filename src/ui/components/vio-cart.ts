@@ -18,6 +18,7 @@ import { formatPrice } from '../../core/types.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
+import { DialogFocus } from '../dialog-focus.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -63,6 +64,12 @@ export class VioCart extends LitElement {
   private preparedTotal = -1
   /** In-flight guard for loadAvailablePaymentMethods. */
   private loadingPaymentMethods = false
+  /** Keyboard and focus while open: Escape closes, Tab stays inside, focus returns to the opener. */
+  private readonly dialogFocus = new DialogFocus({
+    host: this,
+    container: () => this.renderRoot.querySelector<HTMLElement>('.drawer'),
+    close: () => this.close(),
+  })
 
   private boundOnCartChange = (e: Event): void => {
     const detail = (e as CustomEvent<CartChangeDetail>).detail
@@ -109,6 +116,8 @@ export class VioCart extends LitElement {
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.06);
     }
     :host([open]) .drawer { transform: translateX(0); }
+    /* Focus lands on the drawer itself only as a fallback — no ring for it. */
+    .drawer:focus { outline: none; }
 
     .handle { display: none; }
 
@@ -509,6 +518,7 @@ export class VioCart extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
+    if (changed.has('open')) this.dialogFocus.update(this.open)
     // Fresh open → drop any previous confirmation, force an Apple Pay re-prep.
     if (changed.has('open') && this.open) {
       this.confirmedOrder = null
@@ -713,7 +723,7 @@ export class VioCart extends LitElement {
 
     return html`
       <div class="backdrop" @click=${this.close}></div>
-      <aside class="drawer" role="dialog" aria-label=${this.heading}>
+      <aside class="drawer" role="dialog" aria-modal="true" aria-label=${this.heading} tabindex="-1">
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="header">
           <h2 class="heading">${this.confirmedOrder ? 'Takk!' : this.heading}</h2>

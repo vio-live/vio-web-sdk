@@ -46,6 +46,7 @@ import {
   type AdyenSession,
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
+import { DialogFocus } from '../dialog-focus.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -234,6 +235,26 @@ export class VioCheckout extends LitElement {
   /** In-flight guard for loadAvailablePaymentMethods. */
   private loadingPaymentMethods = false
   /**
+   * Keyboard and focus while open: Escape closes — not while a payment is
+   * in flight — Tab stays inside, focus returns to the opener.
+   */
+  private readonly dialogFocus = new DialogFocus({
+    host: this,
+    container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    close: () => this.close(),
+    canClose: () => !this.paymentInFlight,
+  })
+  /** A payment is being started or confirmed right now: the overlay must not close under it. */
+  private get paymentInFlight(): boolean {
+    return (
+      this.stripePaying ||
+      this.stripeLoading ||
+      this.vippsLoading ||
+      this.klarnaAuthorizing ||
+      this.applePayInProgress
+    )
+  }
+  /**
    * Whether a load has COMPLETED, either way. `availableMethods === null`
    * cannot tell "not asked yet" from "asked and failed", and rendering every
    * button while we still do not know shows methods the channel may not have
@@ -388,6 +409,8 @@ export class VioCheckout extends LitElement {
       overflow-y: auto;
     }
     :host([open]) .modal { transform: translateY(0); }
+    /* Focus lands on the panel itself only as a fallback — no ring for it. */
+    .modal:focus { outline: none; }
 
     /* Confirmation drawer — compact bottom sheet, not the full-screen overlay. */
     .modal.as-drawer {
@@ -1493,6 +1516,7 @@ export class VioCheckout extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
+    if (changed.has('open')) this.dialogFocus.update(this.open)
     // Opening the overlay: make sure the real shippings are loaded. Gated on
     // items.length — fetching shippings for an empty cart is wasted work and
     // can race the cart's own in-flight mutations.
@@ -2287,7 +2311,9 @@ export class VioCheckout extends LitElement {
       <div
         class="modal ${this.express ? 'as-side' : this.orderConfirmed ? 'as-confirm' : ''}"
         role="dialog"
+        aria-modal="true"
         aria-label=${this.heading}
+        tabindex="-1"
       >
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">

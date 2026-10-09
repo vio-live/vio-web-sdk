@@ -136,7 +136,7 @@ describe('a Klarna mount that fails straight away', () => {
     })
     const el = await klarnaReady()
     await renderCycles(el, 10)
-    expect(el.paymentError).toContain('Kunne ikke laste Klarna')
+    expect(el.paymentError).toContain('Betalingen kunne ikke startes')
     expect(calls).toBeLessThanOrEqual(2)
   })
 })

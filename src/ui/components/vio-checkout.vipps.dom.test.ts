@@ -127,4 +127,20 @@ describe('Vipps among several methods', () => {
     expect(start).toHaveBeenCalledTimes(1)
     expect(start.mock.calls[0]![2]).toBeUndefined()
   })
+
+  it('a start the gateway refuses shows the shopper a sentence, not the gateway text (2026-10-09)', async () => {
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
+    // A cart emptied from another tab: what QA saw, word for word.
+    vi.spyOn(manager, 'startVippsPayment').mockRejectedValue(
+      new Error('Payment Vipps not initialize: [vipps] amount must be a positive integer in minor units, got 0'),
+    )
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const el = await openWith(['Vipps'])
+    methodButton(el, 'vipps')!.click()
+    await renderCycles(el)
+    expect(el.paymentError).toBe('Handlekurven er tom. Legg til et produkt og prøv igjen.')
+    expect(shadowText(el)).not.toContain('not initialize')
+    // The raw text is still there for whoever debugs it.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Vipps'), expect.anything())
+  })
 })

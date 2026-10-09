@@ -47,6 +47,7 @@ import {
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { errorText, friendlyPaymentError } from '../checkout-errors.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -373,10 +374,16 @@ export class VioCheckout extends LitElement {
 
   private boundOnPaymentError = (e: Event): void => {
     const detail = (e as CustomEvent<{ method: string; error: string }>).detail
+    if (typeof console !== 'undefined') {
+      console.warn('[VioCheckout] payment-error:', detail.method, detail.error)
+    }
+    // Klarna's own reason stays on screen while that flow is being
+    // stabilised (see the manager). The others — Apple Pay's sheet failing
+    // to start — get the shopper's sentence; the raw text is above.
     this.paymentError =
       detail.method === 'klarna'
         ? `Klarna-betalingen kunne ikke fullføres: ${detail.error}`
-        : detail.error
+        : friendlyPaymentError(detail.error, detail.method)
     // A redirect failure lands with the overlay closed — open it so the error
     // is visible rather than silently dropping the user on the home page.
     this.open = true
@@ -1861,9 +1868,7 @@ export class VioCheckout extends LitElement {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Klarna Payments mount failed:', err)
       }
-      this.paymentError = `Kunne ikke laste Klarna: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'klarna')
     } finally {
       this.klarnaMounting = false
     }
@@ -2097,9 +2102,10 @@ export class VioCheckout extends LitElement {
       void Vio.checkout
         .startStripePayment(this.checkoutState?.sponsorId, this.form)
         .catch((err: unknown) => {
-          this.paymentError = `Kunne ikke starte Stripe-betaling: ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Stripe payment could not start:', err)
+          }
+          this.paymentError = friendlyPaymentError(errorText(err), 'stripe')
         })
         .finally(() => {
           this.stripeLoading = false
@@ -2109,9 +2115,10 @@ export class VioCheckout extends LitElement {
       this.vippsLoading = true
       void this.startVippsFromCheckout()
         .catch((err: unknown) => {
-          this.paymentError = `Kunne ikke starte Vipps-betaling: ${
-            err instanceof Error ? err.message : String(err)
-          }`
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Vipps payment could not start:', err)
+          }
+          this.paymentError = friendlyPaymentError(errorText(err), 'vipps')
         })
         .finally(() => {
           this.vippsLoading = false
@@ -2584,9 +2591,7 @@ export class VioCheckout extends LitElement {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Kustom mount failed:', err)
       }
-      this.paymentError = `Kunne ikke laste Kustom: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'kustom')
       Vio.checkout.selectPaymentMethod('' as PaymentMethod)
     } finally {
       this.kustomMounting = false
@@ -2723,9 +2728,7 @@ export class VioCheckout extends LitElement {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Qliro mount failed:', err)
       }
-      this.paymentError = `Kunne ikke laste Qliro: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'qliro')
       Vio.checkout.selectPaymentMethod('' as PaymentMethod)
     } finally {
       this.qliroMounting = false
@@ -2792,9 +2795,7 @@ export class VioCheckout extends LitElement {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Walley mount failed:', err)
       }
-      this.paymentError = `Kunne ikke laste Walley: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'walley')
       Vio.checkout.selectPaymentMethod('' as PaymentMethod)
     } finally {
       this.walleyMounting = false
@@ -2882,9 +2883,7 @@ export class VioCheckout extends LitElement {
       if (typeof console !== 'undefined') {
         console.warn('[VioCheckout] Nexi mount failed:', err)
       }
-      this.paymentError = `Kunne ikke laste Nexi: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'nexi')
       Vio.checkout.selectPaymentMethod('' as PaymentMethod)
     } finally {
       this.nexiMounting = false
@@ -3101,7 +3100,7 @@ export class VioCheckout extends LitElement {
       this.paymentError =
         err instanceof AdyenOriginError
           ? 'Betaling er ikke aktivert for denne siden ennå. Ta kontakt med butikken.'
-          : `Kunne ikke laste betaling: ${err instanceof Error ? err.message : String(err)}`
+          : friendlyPaymentError(errorText(err), 'adyen')
       if (typeof console !== 'undefined') console.warn('[VioCheckout] Adyen mount failed:', err)
     } finally {
       this.adyenMounting = false
@@ -3240,7 +3239,10 @@ export class VioCheckout extends LitElement {
         },
         onLoadError: (message) => {
           this.unmountStripe()
-          this.paymentError = `Kunne ikke laste betaling: ${message}`
+          if (typeof console !== 'undefined') {
+            console.warn('[VioCheckout] Stripe Payment Element failed to load:', message)
+          }
+          this.paymentError = friendlyPaymentError(message, 'stripe')
         },
       })
       // The shopper may have moved on while the intent was being created.
@@ -3267,9 +3269,7 @@ export class VioCheckout extends LitElement {
       this.stripeMountedKey = this.embedPurchaseKey()
     } catch (err) {
       this.unmountStripe()
-      this.paymentError = `Kunne ikke laste betaling: ${
-        err instanceof Error ? err.message : String(err)
-      }`
+      this.paymentError = friendlyPaymentError(errorText(err), 'stripe')
       if (typeof console !== 'undefined') console.warn('[VioCheckout] Stripe mount failed:', err)
     } finally {
       this.stripeMounting = false

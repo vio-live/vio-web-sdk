@@ -134,7 +134,7 @@ export class VioProductDetail extends LitElement {
       .modal {
         top: auto;
         height: 92vh;
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
       }
       .handle {
@@ -148,7 +148,7 @@ export class VioProductDetail extends LitElement {
         width: 40px;
         height: 4px;
         background: var(--vio-color-border, #e5e5e5);
-        border-radius: 2px;
+        border-radius: var(--vio-radius-sm, 2px);
       }
     }
 
@@ -513,9 +513,9 @@ export class VioProductDetail extends LitElement {
       );
       background-size: 200% 100%;
       animation: vio-skeleton-shimmer 1.4s ease-in-out infinite;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
     }
-    .sk-image { width: 100%; aspect-ratio: 1; border-radius: 12px; }
+    .sk-image { width: 100%; aspect-ratio: 1; border-radius: var(--vio-radius-lg, 12px); }
     .sk-line { height: 14px; }
     .sk-brand { width: 38%; height: 10px; margin-top: 6px; }
     .sk-title { width: 85%; height: 26px; }

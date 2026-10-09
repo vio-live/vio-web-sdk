@@ -130,7 +130,7 @@ export class VioCart extends LitElement {
         bottom: 0;
         width: 100%;
         height: 88vh;
-        border-radius: 16px 16px 0 0;
+        border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         transform: translateY(100%);
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
       }
@@ -145,7 +145,7 @@ export class VioCart extends LitElement {
         width: 40px;
         height: 4px;
         background: var(--vio-color-border, #e5e5e5);
-        border-radius: 2px;
+        border-radius: var(--vio-radius-sm, 2px);
       }
     }
 
@@ -238,7 +238,7 @@ export class VioCart extends LitElement {
       height: 24px;
       border: 1px solid var(--vio-color-border, #e5e5e5);
       background: #fff;
-      border-radius: 2px;
+      border-radius: var(--vio-radius-sm, 2px);
       cursor: pointer;
       font-size: 12px;
       color: var(--vio-color-text, #0a0a0a);
@@ -295,7 +295,7 @@ export class VioCart extends LitElement {
       background: #000;
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       font-size: 19px;
       font-weight: 500;
       line-height: 1;
@@ -317,7 +317,7 @@ export class VioCart extends LitElement {
       background: #ffb3c7;
       color: #0a0a0a;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       font-size: 16px;
       font-weight: 600;
       cursor: pointer;
@@ -338,7 +338,7 @@ export class VioCart extends LitElement {
       background: #ff5b24;
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       cursor: pointer;
       display: flex;
       align-items: center;
@@ -362,7 +362,7 @@ export class VioCart extends LitElement {
       background: #635bff;
       color: #fff;
       border: none;
-      border-radius: 8px;
+      border-radius: var(--vio-radius-lg, 8px);
       font-size: 16px;
       font-weight: 600;
       cursor: pointer;

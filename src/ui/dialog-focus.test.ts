@@ -228,12 +228,17 @@ describe('closing', () => {
     expect(deepActiveElement()).toBe(document.body)
   })
 
-  it('leaves focus alone when the shopper already moved on', () => {
+  it('leaves focus alone when the shopper already moved on to another open Vio dialog', () => {
     const d = dialog()
     d.opener.focus()
     d.focus.update(true)
+    // In Vev the cart opens on top of the checkout: focus there is theirs, on
+    // close as well as while open (a page element would be pulled back).
+    const cart = document.createElement('vio-cart')
+    cart.setAttribute('open', '')
     const elsewhere = document.createElement('input')
-    document.body.appendChild(elsewhere)
+    cart.appendChild(elsewhere)
+    document.body.appendChild(cart)
     elsewhere.focus()
     d.focus.update(false)
     expect(document.activeElement).toBe(elsewhere)
@@ -246,5 +251,64 @@ describe('closing', () => {
     expect(deepActiveElement()).toBe(d.el.close)
     d.focus.update(false)
     expect(deepActiveElement()).toBe(document.body)
+  })
+})
+
+describe('Focus that walks out of the dialog (Safari leaving a widget iframe)', () => {
+  it('coming back to the page after the iframe lands on the next element of the dialog', () => {
+    const d = dialog()
+    const pageInput = document.createElement('input')
+    document.body.appendChild(pageInput) // after the host in document order
+    d.focus.update(true)
+    d.el.frame.focus()
+    pageInput.focus()
+    expect(deepActiveElement()).toBe(d.el.inner)
+  })
+
+  it('leaving backwards lands on the previous element', () => {
+    const d = dialog()
+    const before = document.createElement('input')
+    document.body.insertBefore(before, document.body.firstChild)
+    d.focus.update(true)
+    d.el.frame.focus()
+    before.focus()
+    expect(deepActiveElement()).toBe(d.el.field)
+  })
+
+  it('is left alone inside another open Vio dialog', () => {
+    const d = dialog()
+    const other = document.createElement('vio-cart')
+    other.setAttribute('open', '')
+    const sh = other.attachShadow({ mode: 'open' })
+    sh.innerHTML = '<button class="x">x</button>'
+    document.body.appendChild(other)
+    d.focus.update(true)
+    const x = sh.querySelector<HTMLElement>('button')!
+    x.focus()
+    expect(deepActiveElement()).toBe(x)
+  })
+
+  it('Tab from the page body enters the dialog at its first element, Shift+Tab at its last', () => {
+    const d = dialog()
+    d.focus.update(true)
+    d.el.close.blur()
+    const e = key(document.body, 'Tab')
+    expect(e.defaultPrevented).toBe(true)
+    expect(deepActiveElement()).toBe(d.el.close)
+    d.el.close.blur()
+    key(document.body, 'Tab', { shiftKey: true })
+    expect(deepActiveElement()).toBe(d.el.last)
+  })
+
+  it('stops guarding once closed', () => {
+    const d = dialog()
+    const pageInput = document.createElement('input')
+    document.body.appendChild(pageInput)
+    d.focus.update(true)
+    d.focus.update(false)
+    pageInput.focus()
+    expect(deepActiveElement()).toBe(pageInput)
+    const e = key(document.body, 'Tab')
+    expect(e.defaultPrevented).toBe(false)
   })
 })

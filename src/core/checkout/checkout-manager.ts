@@ -1012,7 +1012,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Vipps' own payment state for the checkout — see getVippsStatus in
    * cart-queries.ts for why this exists instead of trusting GetCheckout. */
-  async getVippsStatus(checkoutId: string, sponsorId?: number): Promise<{ state?: string } | null> {
+  async getVippsStatus(checkoutId: string, sponsorId?: number): Promise<{ state?: string; duplicate_of?: string | null } | null> {
     const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetVippsStatus({ checkoutId }, opts)
   }

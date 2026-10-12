@@ -36,6 +36,7 @@ query GetVippsStatus($checkoutId: String!) {
   Payment {
     GetVippsStatus(checkout_id: $checkoutId) {
       state
+      duplicate_of
     }
   }
 }
@@ -70,6 +71,8 @@ export interface GetVippsStatusVariables extends Record<string, unknown> {
 
 export interface VippsStatusResult {
   state: string
+  /** Set when this checkout was closed as a duplicate: the checkout that paid the cart. */
+  duplicate_of?: string | null
 }
 
 export type VippsPaymentState =

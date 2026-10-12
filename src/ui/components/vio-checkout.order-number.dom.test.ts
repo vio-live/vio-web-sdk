@@ -103,6 +103,25 @@ describe('while the payment is being confirmed', () => {
     expect(q(el, '.verifying')).toBeNull()
     expect(shadowText(el)).toContain('avbrutt')
   })
+
+  it('a duplicate — the cart was paid in another tab — says "already paid", not "failed"', async () => {
+    landOn(vippsReturn)
+    vi.spyOn(manager, 'getVippsStatus').mockResolvedValue({ state: 'ERROR', duplicate_of: 'the-other-checkout' })
+    const el = await mount<HTMLElement>('vio-checkout')
+    await renderCycles(el)
+    expect(q(el, '.verifying')).toBeNull()
+    expect(shadowText(el)).toContain('allerede betalt')
+    expect(shadowText(el)).not.toContain('avbrutt')
+  })
+
+  it('the same on a generic return (Stripe): GetCheckout says duplicate_of', async () => {
+    landOn(`?vio_payment=success&vio_method=stripe&vio_sponsor=${SPONSOR}&checkout_id=${CHECKOUT}`)
+    vi.spyOn(manager, 'getCheckout').mockResolvedValue({ status: 'cancel', duplicate_of: 'the-other-checkout' })
+    const el = await mount<HTMLElement>('vio-checkout')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('allerede betalt')
+    expect(shadowText(el)).not.toContain('avbrutt')
+  })
 })
 
 describe('the order number on the receipt', () => {

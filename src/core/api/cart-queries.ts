@@ -791,6 +791,7 @@ query GetCheckout($checkoutId: String!) {
       status
       checkout_url
       origin_payment_id
+      duplicate_of
       billing_address {
         id
         first_name

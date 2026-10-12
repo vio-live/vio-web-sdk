@@ -47,7 +47,7 @@ import {
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 import { DialogFocus } from '../dialog-focus.js'
-import { errorText, friendlyPaymentError } from '../checkout-errors.js'
+import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -1026,7 +1026,7 @@ export class VioCheckout extends LitElement {
   private async pollVippsStatus(
     checkoutId: string,
     sponsorId: number,
-  ): Promise<{ outcome: 'paid' | 'failed' | 'pending'; sawStatus: boolean }> {
+  ): Promise<{ outcome: 'paid' | 'failed' | 'pending' | 'duplicate'; sawStatus: boolean }> {
     let sawStatus = false
     for (let attempt = 0; attempt < VioCheckout.VIPPS_STATUS_MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
@@ -1036,6 +1036,8 @@ export class VioCheckout extends LitElement {
         const vippsStatus = await Vio.checkout.getVippsStatus(checkoutId, sponsorId || undefined)
         const state = String(vippsStatus?.state ?? '').toUpperCase()
         sawStatus = true
+        // The cart was paid through another checkout (another tab): not a failure.
+        if (vippsStatus?.duplicate_of) return { outcome: 'duplicate', sawStatus }
         if (state === 'AUTHORIZED') return { outcome: 'paid', sawStatus }
         if (state === 'CREATED') continue
         return { outcome: 'failed', sawStatus }
@@ -1054,7 +1056,7 @@ export class VioCheckout extends LitElement {
   /** Shared outcome handler for both the generic (GetCheckout) and the
    * Vipps-specific (GetVippsStatus) return-verification paths. */
   private applyReturnOutcome(
-    outcome: 'paid' | 'failed' | 'pending',
+    outcome: 'paid' | 'failed' | 'pending' | 'duplicate',
     sawStatus: boolean,
     vioMethod: string,
     sponsorId: number,
@@ -1078,6 +1080,9 @@ export class VioCheckout extends LitElement {
           detail: { method: vioMethod, sponsorId, orderId: checkoutId },
         }),
       )
+    } else if (outcome === 'duplicate') {
+      this.paymentError = CART_PAID_MESSAGE
+      this.open = true
     } else if (outcome === 'failed') {
       this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
       this.open = true
@@ -1440,7 +1445,7 @@ export class VioCheckout extends LitElement {
         // Webhooks can lag the redirect, so poll a few times before deciding;
         // a genuinely-pending checkout gets a neutral "processing" notice, never
         // a fabricated success.
-        let outcome: 'paid' | 'failed' | 'pending' = 'pending'
+        let outcome: 'paid' | 'failed' | 'pending' | 'duplicate' = 'pending'
         let sawStatus = false
         if (checkoutId) {
           this.open = true
@@ -1451,6 +1456,10 @@ export class VioCheckout extends LitElement {
               const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
               const status = String(checkout?.status ?? '').toLowerCase()
               sawStatus = true
+              if (checkout?.duplicate_of) {
+                outcome = 'duplicate'
+                break
+              }
               if (VioCheckout.FAILED_STATUSES.has(status)) {
                 outcome = 'failed'
                 break
@@ -3309,6 +3318,10 @@ export class VioCheckout extends LitElement {
         // What Stripe charged is the total WITH shipping — the subtotal alone
         // would print a receipt for less than the shopper paid.
         this.confirmOrder('stripe', spId, { chargedTotal: charged })
+      } else if (settled === 'duplicate') {
+        // The cart was paid in another tab; the server gives Stripe's charge back.
+        this.stripeSettled = false
+        this.paymentError = CART_PAID_MESSAGE
       } else if (settled === 'failed') {
         this.stripeSettled = false
         this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
@@ -3337,12 +3350,13 @@ export class VioCheckout extends LitElement {
   private async waitForStripeOrder(
     checkoutId: string,
     sponsorId: number,
-  ): Promise<'paid' | 'failed' | 'pending'> {
+  ): Promise<'paid' | 'failed' | 'pending' | 'duplicate'> {
     for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
       if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs))
       try {
         const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
         const status = String(checkout?.status ?? '').toLowerCase()
+        if (checkout?.duplicate_of) return 'duplicate'
         if (VioCheckout.FAILED_STATUSES.has(status)) return 'failed'
         if (VioCheckout.PAID_STATUSES.has(status)) return 'paid'
       } catch (err) {

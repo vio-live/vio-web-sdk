@@ -26,10 +26,14 @@
  * is a web component of its own. Slots are followed into their assigned
  * elements, and open shadow roots are walked.
  *
- * Deliberately no document-level focus guard: in Vev the cart view opens on
- * top of the checkout, outside this component, and pulling focus back into
- * the checkout from there would fight that view. The trap acts only on keys
- * pressed inside the host.
+ * Two document-level guards complete the trap, both for Safari (QA
+ * 2026-10-12): its native Tab order skips buttons, so focus leaving a
+ * third-party iframe (Stripe's payment element) landed on the page's next
+ * text field instead of our pay button, and a re-render that dropped focus
+ * on the body left Tab wandering the page. `focusin` outside the host pulls
+ * focus back to the element next to the one that had it; Tab pressed outside
+ * the host enters the dialog. Another OPEN Vio dialog is left alone: in Vev
+ * the cart view opens on top of the checkout, outside this component.
  */
 
 export interface DialogFocusOptions {
@@ -46,6 +50,8 @@ export interface DialogFocusOptions {
 export class DialogFocus {
   private opener: Element | null = null
   private active = false
+  /** The element inside the dialog that had focus last — where a pull-back continues from. */
+  private lastInside: HTMLElement | null = null
 
   constructor(private readonly opts: DialogFocusOptions) {}
 
@@ -63,13 +69,18 @@ export class DialogFocus {
 
   private opened(): void {
     this.opener = deepActiveElement()
+    this.lastInside = null
     this.opts.host.addEventListener('keydown', this.onKeydown)
+    document.addEventListener('focusin', this.onFocusIn, true)
+    document.addEventListener('keydown', this.onDocumentKeydown, true)
     const container = this.opts.container()
     if (container) focusInto(container)
   }
 
   private closed(): void {
     this.opts.host.removeEventListener('keydown', this.onKeydown)
+    document.removeEventListener('focusin', this.onFocusIn, true)
+    document.removeEventListener('keydown', this.onDocumentKeydown, true)
     const opener = this.opener
     this.opener = null
     // The shopper may have moved on already (another dialog, the page): then
@@ -120,6 +131,78 @@ export class DialogFocus {
         : (index + (e.shiftKey ? -1 : 1) + count) % count
     focusElement(items[next]!)
   }
+
+  /**
+   * Focus moved somewhere. Inside the dialog: remember where. Into another
+   * open Vio dialog: theirs. Onto the page: the browser walked out of the
+   * dialog on its own (Safari leaving a widget iframe) — continue from the
+   * element that had focus, backwards when the page element sits before
+   * the host in document order.
+   */
+  private onFocusIn = (e: FocusEvent): void => {
+    // A host that left the document without closing (torn down) must not keep pulling.
+    if (!this.opts.host.isConnected) return
+    const path = e.composedPath()
+    if (path.includes(this.opts.host)) {
+      const active = deepActiveElement()
+      this.lastInside = active instanceof HTMLElement ? active : null
+      return
+    }
+    if (path.some((n) => isOpenVioDialog(n, this.opts.host))) return
+    const container = this.opts.container()
+    if (!container) return
+    const items = tabbableIn(container)
+    if (items.length === 0) {
+      focusElement(container)
+      return
+    }
+    const target = e.target instanceof Node ? e.target : null
+    const backwards = !!target && precedes(target, this.opts.host)
+    const index = this.lastInside ? items.indexOf(this.lastInside) : -1
+    const count = items.length
+    const next = backwards
+      ? index <= 0
+        ? count - 1
+        : index - 1
+      : index === -1 || index === count - 1
+        ? 0
+        : index + 1
+    focusElement(items[next]!)
+  }
+
+  /** Tab pressed while focus is on the page (or the body): enter the dialog. */
+  private onDocumentKeydown = (e: KeyboardEvent): void => {
+    if (!this.opts.host.isConnected) return
+    if (e.defaultPrevented || e.key !== 'Tab' || e.altKey || e.ctrlKey || e.metaKey) return
+    const active = deepActiveElement()
+    if (active && isWithin(active, this.opts.host)) return
+    if (active && hasOpenVioDialogAbove(active, this.opts.host)) return
+    const container = this.opts.container()
+    if (!container) return
+    e.preventDefault()
+    e.stopPropagation()
+    const items = tabbableIn(container)
+    focusElement(items.length === 0 ? container : e.shiftKey ? items[items.length - 1]! : items[0]!)
+  }
+}
+
+/** One of our dialogs, open, other than `host`. */
+function isOpenVioDialog(node: EventTarget, host: Element): boolean {
+  return node instanceof Element && node !== host && node.tagName.startsWith('VIO-') && node.hasAttribute('open')
+}
+
+function hasOpenVioDialogAbove(node: Node, host: Element): boolean {
+  let n: Node | null = node
+  while (n) {
+    if (isOpenVioDialog(n, host)) return true
+    n = n.parentNode ?? (n instanceof ShadowRoot ? n.host : null)
+  }
+  return false
+}
+
+/** Does `a` come before `b` in document order? (Disconnected trees count as after.) */
+function precedes(a: Node, b: Node): boolean {
+  return (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
 }
 
 /**

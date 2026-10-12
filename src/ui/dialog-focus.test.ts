@@ -181,12 +181,15 @@ describe('Tab', () => {
     expect(deepActiveElement()).toBe(d.el.last)
   })
 
-  it('in the middle is left to the browser', () => {
+  it('in the middle moves to the next element itself — Safari skips buttons when left to the browser', () => {
     const d = dialog()
     d.focus.update(true)
     d.el.field.focus()
     const e = key(d.el.field, 'Tab')
-    expect(e.defaultPrevented).toBe(false)
+    expect(e.defaultPrevented).toBe(true)
+    expect(deepActiveElement()).toBe(d.el.frame)
+    const back = key(d.el.frame, 'Tab', { shiftKey: true })
+    expect(back.defaultPrevented).toBe(true)
     expect(deepActiveElement()).toBe(d.el.field)
   })
 
@@ -195,12 +198,14 @@ describe('Tab', () => {
     d.focus.update(true)
     d.el.frame.focus()
     key(d.el.frame, 'Tab')
-    // The browser moves on by itself; what matters is that the step was not swallowed.
-    expect(deepActiveElement()).toBe(d.el.frame)
-    d.el.inner.focus()
+    expect(deepActiveElement()).toBe(d.el.inner)
+    key(d.el.inner, 'Tab')
+    expect(deepActiveElement()).toBe(d.el.last)
+    // Back the same way: the trap follows the element that HAS focus, not the key's target.
+    key(d.el.last, 'Tab', { shiftKey: true })
     expect(deepActiveElement()).toBe(d.el.inner)
     key(d.el.inner, 'Tab', { shiftKey: true })
-    expect(deepActiveElement()).toBe(d.el.inner)
+    expect(deepActiveElement()).toBe(d.el.frame)
   })
 })
 

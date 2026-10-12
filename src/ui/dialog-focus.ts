@@ -104,20 +104,21 @@ export class DialogFocus {
     }
     const active = deepActiveElement()
     const index = active ? items.indexOf(active as HTMLElement) : -1
-    const first = items[0]!
-    const last = items[items.length - 1]!
-    if (e.shiftKey) {
-      // From the first element — or the container itself — back round to the last.
-      if (index <= 0) {
-        e.preventDefault()
-        focusElement(last)
-      }
-    } else if (index === -1 || index === items.length - 1) {
-      // From the last element — or the container itself — round to the first.
-      e.preventDefault()
-      focusElement(first)
-    }
-    // Anywhere in between, the browser's own order already stays inside.
+    // Every Tab is ours, not only the wrap at the ends. Safari does not put
+    // buttons and links in its Tab order unless the shopper switched on
+    // "Press Tab to highlight each item" (off by default): left to the
+    // browser, Tab from the close button skipped the whole dialog and landed
+    // on the page's next text field (QA, 2026-10-12). Chrome and Edge visit
+    // buttons natively, so there it looked fine.
+    e.preventDefault()
+    const count = items.length
+    const next =
+      index === -1
+        ? e.shiftKey
+          ? count - 1
+          : 0
+        : (index + (e.shiftKey ? -1 : 1) + count) % count
+    focusElement(items[next]!)
   }
 }
 

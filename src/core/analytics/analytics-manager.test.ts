@@ -393,3 +393,50 @@ describe('consentimiento (ePrivacy) y diagnósticos', () => {
     m.stop()
   })
 })
+
+describe('privateContent — superficies donde el contenido es el dato sensible', () => {
+  const trackPurchase = async (opts: Record<string, unknown>) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom', ...opts })
+    m.track('purchase', {
+      context: { campaignId: 36, contentId: 'art-1' },
+      commerce: {
+        items: [{ productId: 'p-1', name: 'Blodsukkermåler', brand: 'Acme Helse', quantity: 1 }],
+        value: 499,
+        currency: 'NOK',
+      },
+    })
+    await m.flush()
+    const ev = flushedBatches[0]!.events.find((e) => e.name === 'purchase')!
+    m.stop()
+    return ev as Record<string, any>
+  }
+
+  it('por defecto captura url, título y nombre de producto', async () => {
+    const ev = await trackPurchase({})
+    expect(ev.context.content_url).toBeTruthy()
+    expect(ev.context.content_id).toBe('art-1')
+    expect(ev.commerce.items[0].name).toBe('Blodsukkermåler')
+  })
+
+  it('con privateContent no sale del dispositivo nada que diga QUÉ se vio', async () => {
+    const ev = await trackPurchase({ privateContent: true })
+    expect(ev.context.content_url).toBeUndefined()
+    expect(ev.context.content_title).toBeUndefined()
+    expect(ev.context.content_id).toBeUndefined()
+    expect(ev.commerce.items[0].name).toBeUndefined()
+    expect(ev.commerce.items[0].brand).toBeUndefined()
+  })
+
+  it('con privateContent el funnel se sigue midiendo', async () => {
+    const ev = await trackPurchase({ privateContent: true })
+    expect(ev.name).toBe('purchase')
+    expect(ev.context.campaign_id).toBe(36)
+    expect(ev.commerce.items[0].product_id).toBe('p-1')
+    expect(ev.commerce.items[0].quantity).toBe(1)
+    expect(ev.commerce.value).toBe(499)
+    expect(ev.commerce.currency).toBe('NOK')
+    expect(ev.anon_id).toMatch(/^a-/)
+  })
+})

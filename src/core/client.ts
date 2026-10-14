@@ -32,6 +32,10 @@ class VioFacade {
   /** Last bootstrap failure — short backoff so cart mutations don't hammer a
    * dead endpoint on every call. */
   private bootstrapFailedAt = 0
+  /** Bumped by every init(). A bootstrap started under an older configuration
+   * (another key or environment) is still in flight after a re-init; its answer
+   * belongs to that configuration and must not land in this one. */
+  private generation = 0
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
@@ -47,6 +51,7 @@ class VioFacade {
     this.bootstrapPromise = null
     this.cachedBootstrap = null
     this.bootstrapFailedAt = 0
+    this.generation++
     // A new key/environment invalidates the per-sponsor payment methods too.
     this.checkoutManager?.clearPaymentMethodsCache()
     // NOTE: cart / checkout managers are NOT reset — user cart state is
@@ -93,6 +98,11 @@ class VioFacade {
   /**
    * Bootstrap — fetches client config and caches it. Dedupes in-flight
    * concurrent requests.
+   *
+   * A request that was started before the last init() (Vev starts with the key
+   * the browser remembers, then the page's own key arrives) answers for a key
+   * that is gone: it neither fills the cache nor arms the failure backoff, and
+   * whoever awaited it gets the current configuration's bootstrap instead.
    */
   async bootstrap(): Promise<BootstrapResponse> {
     if (this.cachedBootstrap) return this.cachedBootstrap
@@ -103,21 +113,28 @@ class VioFacade {
     if (this.bootstrapFailedAt && Date.now() - this.bootstrapFailedAt < 5_000) {
       throw new Error('[Vio] bootstrap recently failed — backing off')
     }
-    this.bootstrapPromise = this.api
+    const generation = this.generation
+    const promise: Promise<BootstrapResponse> = this.api
       .bootstrap()
-      .then((res) => {
-        this.cachedBootstrap = res
-        this.bootstrapFailedAt = 0
-        return res
-      })
-      .catch((err) => {
-        this.bootstrapFailedAt = Date.now()
-        throw err
-      })
+      .then(
+        (res) => {
+          if (generation !== this.generation) return this.bootstrap()
+          this.cachedBootstrap = res
+          this.bootstrapFailedAt = 0
+          return res
+        },
+        (err) => {
+          if (generation !== this.generation) return this.bootstrap()
+          this.bootstrapFailedAt = Date.now()
+          throw err
+        },
+      )
       .finally(() => {
-        this.bootstrapPromise = null
+        // Only clear our own slot: after a re-init it may hold the new request.
+        if (this.bootstrapPromise === promise) this.bootstrapPromise = null
       })
-    return this.bootstrapPromise
+    this.bootstrapPromise = promise
+    return promise
   }
 
   get bootstrapCache(): BootstrapResponse | null {

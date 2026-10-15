@@ -1185,7 +1185,9 @@ export class VioCheckout extends LitElement {
             // Kustom's own receipt, in the light DOM, projected into the
             // receipt view — which does not depend on the cart we clear.
             const spId = this.checkoutState?.sponsorId ?? 0
-            this.showProviderReceipt('kustom', spId, order)
+            // Kustom's `order` is its own (order_id, checkout_id are Kustom's):
+            // Vio's checkout id comes from the return URL.
+            this.showProviderReceipt('kustom', spId, order, kustomReturn.checkoutId)
             await this.updateComplete
             const container = this.lightContainer('vio-kustom-checkout-container', 'vio-kustom')
             Vio.checkout.renderKustomSnippet(container, order.html_snippet)
@@ -1253,12 +1255,12 @@ export class VioCheckout extends LitElement {
             const result = { order: { orderId: order.order_id }, chargedTotal: order.total_price }
             this.qliroMountedOrderId = order.order_id
             if (order.html_snippet) {
-              this.showProviderReceipt('qliro', spId, result)
+              this.showProviderReceipt('qliro', spId, result, checkoutId)
               await this.updateComplete
               const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
             } else {
-              this.confirmOrder('qliro', spId, result)
+              this.confirmOrder('qliro', spId, result, checkoutId)
             }
           } else if (order?.html_snippet) {
             // Not completed (OnHold, still InProcess): Qliro's own screen explains
@@ -1324,9 +1326,12 @@ export class VioCheckout extends LitElement {
             }
             if (order.status === 'PurchaseCompleted') {
               // Walley's receipt stays on screen — see showProviderReceipt.
-              this.showProviderReceipt('walley', this.checkoutState?.sponsorId ?? 0, {
-                orderId: order.order_id,
-              })
+              this.showProviderReceipt(
+                'walley',
+                this.checkoutState?.sponsorId ?? 0,
+                { orderId: order.order_id },
+                checkoutId,
+              )
             }
           }
         } catch (err) {
@@ -2167,13 +2172,20 @@ export class VioCheckout extends LitElement {
    * the confirmation screen, emits `vio:payment-success`, and clears the
    * paid sponsor's cart so the badge + drawer reflect the purchase.
    */
-  private confirmOrder(method: PaymentMethod, sponsorId: number, result?: unknown): void {
+  private confirmOrder(
+    method: PaymentMethod,
+    sponsorId: number,
+    result?: unknown,
+    returnCheckoutId?: string,
+  ): void {
     // Snapshot the order BEFORE clearing the cart — the confirmation needs it.
     const r = (result ?? {}) as { order?: { orderId?: string }; chargedTotal?: number }
     const shippingPrice = this.shippingMajor()
     const email = String(this.form.email ?? '').trim()
-    // Before the cart is cleared: the checkout id goes with it.
-    const checkoutId = this.checkoutState?.checkoutId
+    // Before the cart is cleared: the checkout id goes with it. Back from a
+    // redirect the state was re-opened without one, so the return URL's id
+    // is passed in explicitly.
+    const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
     // An id a provider hands back is ITS order (Qliro's, say), not Vio's: it
     // is the provider's reference, under the provider's name.
     const providerOrderId = r.order?.orderId != null ? String(r.order.orderId) : ''
@@ -2199,7 +2211,10 @@ export class VioCheckout extends LitElement {
       new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: { method, sponsorId, result },
+        // `checkoutId` is Vio's own reference for the purchase — what the
+        // redirect path already sends as `orderId`; analytics falls back to it
+        // when the provider's result carries no order id.
+        detail: { method, sponsorId, result, checkoutId },
       }),
     )
     Vio.cart.clearSponsorCart(sponsorId)
@@ -2384,15 +2399,20 @@ export class VioCheckout extends LitElement {
     method: 'qliro' | 'walley' | 'kustom',
     sponsorId: number,
     result?: unknown,
+    returnCheckoutId?: string,
   ): void {
     this.providerReceipt = method
     this.confirmedMethod = method
     this.open = true
+    // Before the cart is cleared below: the checkout id goes with it. Back
+    // from a redirect the state was re-opened without one (`Vio.checkout.open`
+    // knows no checkout yet), so the return URL's id is passed in explicitly.
+    const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
     this.dispatchEvent(
       new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: { method, sponsorId, result },
+        detail: { method, sponsorId, result, checkoutId },
       }),
     )
     if (sponsorId) {

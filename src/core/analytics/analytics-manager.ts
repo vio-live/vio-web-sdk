@@ -33,6 +33,7 @@ import { Configuration } from '../configuration.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import type { CartLineItem } from '../cart/types.js'
+import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
 // ── Taxonomy (client-side subset of contract v1) ────────────────────────────
 
@@ -377,15 +378,19 @@ export class AnalyticsManager extends EventTarget {
     if (Date.now() < this.retryNotBefore) return
 
     const batch = this.queue.splice(0, MAX_QUEUE)
+    const apiKey = Configuration.get().apiKey
     const body = JSON.stringify({
-      apiKey: Configuration.get().apiKey,
+      apiKey,
       sent_at: new Date().toISOString(),
       events: batch,
     })
     try {
+      // The key travels in the body too (sendBeacon can't set headers), but
+      // the collector rate-limits by X-Api-Key and only falls back to the IP:
+      // without the header every publisher behind one NAT shares a bucket.
       const res = await fetch(`${eventsBase()}/v1/events`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
         body,
         keepalive: batch.length <= 20, // keepalive caps payload at ~64KB
       })
@@ -418,7 +423,7 @@ export class AnalyticsManager extends EventTarget {
     const boot = vioBootstrapCache()
     const ctx = opts.context ?? {}
     const context: Record<string, unknown> = compact({
-      campaign_id: ctx.campaignId ?? boot?.campaignId,
+      campaign_id: resolveCampaignId(ctx, boot),
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
@@ -708,14 +713,16 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:payment-success', (ev) => {
-      const d = (ev as CustomEvent<{ method?: string; sponsorId?: number | string; orderId?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
       this.track('purchase', {
         context: { sponsorId },
         commerce: {
+          // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
-          orderId: d.orderId,
+          // order_id: Vio's id for the purchase (never the provider's).
+          ...purchaseFromPaymentSuccess(d),
           paymentMethod: d.method,
         },
       })
@@ -825,14 +832,14 @@ function eventsBase(): string {
 // Late imports via the global facade to avoid a circular module edge
 // (client.ts imports this file for the getter type).
 interface FacadeLike {
-  bootstrapCache: { campaignId?: number } | null
+  bootstrapCache: BootstrapResponse | null
   cart: CartManager
 }
 function vioFacade(): FacadeLike | null {
   const g = globalThis as unknown as { __VIO_FACADE__?: FacadeLike }
   return g.__VIO_FACADE__ ?? null
 }
-function vioBootstrapCache(): { campaignId?: number } | null {
+function vioBootstrapCache(): BootstrapResponse | null {
   return vioFacade()?.bootstrapCache ?? null
 }
 function vioCart(): CartManager | null {
@@ -841,6 +848,120 @@ function vioCart(): CartManager | null {
   } catch {
     return null
   }
+}
+
+// ── Attribution helpers (pure; exported for tests and hosts) ────────────────
+
+/**
+ * The `campaign_id` of an event. In order: the context's explicit id; the
+ * active campaign of `campaigns[]` the event's sponsor takes part in, as its
+ * primary or one of its secondaries — when it is in several, the surface's
+ * default campaign if it is one of them, else the first one the backend
+ * lists; the default campaign (`campaign.id`). `/v2/mobile/config` has no
+ * top-level `campaignId` — reading one is why every event used to leave
+ * with `campaign_id: 0` and the campaigns screen stayed empty.
+ *
+ * A malformed `campaigns[]` (not an array, a null entry) never breaks
+ * `track()`: it falls back to `campaign.id`.
+ */
+export function resolveCampaignId(
+  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId'>,
+  boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
+): number | undefined {
+  if (ctx.campaignId !== undefined) return ctx.campaignId
+  const defaultId = boot?.campaign?.id
+  const sponsorId = toNumber(ctx.sponsorId)
+  if (sponsorId === undefined) return defaultId
+  try {
+    const campaigns = Array.isArray(boot?.campaigns) ? boot.campaigns : []
+    const matches = campaigns.filter(
+      (c): c is BootstrapCampaignEntry =>
+        !!c &&
+        typeof c === 'object' &&
+        c.status === 'active' &&
+        campaignSponsorIds(c).includes(sponsorId),
+    )
+    const chosen = matches.find((c) => c.id === defaultId) ?? matches[0]
+    const chosenId = toNumber(chosen?.id)
+    if (chosenId !== undefined) return chosenId
+  } catch {
+    /* a malformed campaigns[] must never break track() */
+  }
+  return defaultId
+}
+
+function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
+  const ids: number[] = []
+  const primary = toNumber(campaign.primarySponsor?.id)
+  if (primary !== undefined) ids.push(primary)
+  const secondaries = Array.isArray(campaign.secondarySponsors) ? campaign.secondarySponsors : []
+  for (const s of secondaries) {
+    const id = toNumber(s?.id)
+    if (id !== undefined) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * `detail` of `vio:payment-success` as the checkout emits it. Four paths,
+ * three shapes: a redirect return (`orderId` = Vio's checkout id), the
+ * confirmation drawer and a provider's own receipt (`result` from the
+ * provider or the backend, plus Vio's `checkoutId`), and Apple Pay express
+ * from the cart (`result` with the backend's `confirmation`, no sponsor).
+ */
+export interface PaymentSuccessDetail {
+  method?: string
+  sponsorId?: number | string
+  /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
+  orderId?: string | number
+  /** Vio's checkout id — from the checkout state or the return URL. */
+  checkoutId?: string | number
+  result?: PaymentSuccessResult | null
+}
+
+/**
+ * What the checkout attaches as `result`. Only `confirmation` carries a Vio
+ * id: the order `ConfirmPaymentApplePay` created. `order.orderId` / `orderId`
+ * are the PROVIDER's references (Qliro's, Walley's — the checkout itself
+ * shows them as `providerRef`), and `chargedTotal` includes shipping on some
+ * methods only. Analytics reads none of those.
+ */
+export interface PaymentSuccessResult {
+  confirmation?: { orderId?: string | number | null; status?: string } | null
+  [key: string]: unknown
+}
+
+/**
+ * The `order_id` of a `purchase`: ALWAYS a Vio id, never a provider's
+ * reference. Normalized across every emitter: `orderId` (redirect return) →
+ * `result.confirmation.orderId` (Apple Pay) → `checkoutId`. `value` and
+ * `currency` are deliberately NOT read from the result: on every path they
+ * come from the cart snapshot (sum of the items, no shipping), so revenue
+ * stays comparable across payment methods — the charged total will arrive
+ * through the server-side `order_paid` event. With nothing to say it
+ * returns `{}`, so the cart snapshot keeps its keys.
+ */
+export function purchaseFromPaymentSuccess(
+  d: PaymentSuccessDetail,
+): Pick<AnalyticsCommerce, 'orderId'> {
+  const r = d.result ?? {}
+  const orderId = firstId(d.orderId, r.confirmation?.orderId, d.checkoutId)
+  return orderId !== undefined ? { orderId } : {}
+}
+
+function firstId(...candidates: unknown[]): string | undefined {
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue
+    const s = String(c)
+    if (s !== '') return s
+  }
+  return undefined
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
 }
 
 // ── GA4 dataLayer sink (publisher feature; NOT the Vio pipeline) ────────────

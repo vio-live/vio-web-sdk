@@ -195,3 +195,57 @@ describe('the order number on the receipt', () => {
     expect(shadowText(el)).toContain('#4499')
   })
 })
+
+describe('the checkout id for analytics', () => {
+  const listen = () => {
+    const seen: any[] = []
+    const on = (e: Event) => seen.push((e as CustomEvent).detail)
+    document.addEventListener('vio:payment-success', on)
+    return { seen, off: () => document.removeEventListener('vio:payment-success', on) }
+  }
+
+  it('confirmOrder emits the checkout id of the state in the detail', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(4499)
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('qliro', SPONSOR, { order: { orderId: '3361254' }, chargedTotal: 5198 })
+    } finally {
+      off()
+    }
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ method: 'qliro', sponsorId: SPONSOR, checkoutId: CHECKOUT })
+    expect(seen[0].result).toEqual({ order: { orderId: '3361254' }, chargedTotal: 5198 })
+  })
+
+  it('back from a redirect the state has no checkout id: the one from the URL is passed in', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK' } // re-opened, no checkout
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('qliro', SPONSOR, { order: { orderId: '3361254' } }, CHECKOUT)
+      el.showProviderReceipt('walley', SPONSOR, { orderId: 'W-9' }, CHECKOUT)
+    } finally {
+      off()
+    }
+    expect(seen.map((d) => d.checkoutId)).toEqual([CHECKOUT, CHECKOUT])
+    expect(seen[1]).toMatchObject({ method: 'walley', sponsorId: SPONSOR, result: { orderId: 'W-9' } })
+  })
+
+  it("showProviderReceipt falls back to the state's checkout id when none is passed", async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    const { seen, off } = listen()
+    try {
+      el.showProviderReceipt('kustom', SPONSOR, { order_id: 'K-1', checkout_id: 'K-CHK' })
+    } finally {
+      off()
+    }
+    expect(seen[0]).toMatchObject({ method: 'kustom', sponsorId: SPONSOR, checkoutId: CHECKOUT })
+  })
+})

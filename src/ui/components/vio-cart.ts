@@ -705,12 +705,15 @@ export class VioCart extends LitElement {
     return 'NOK'
   }
 
-  private onIncrement(item: { id: string; sponsorId: number; quantity: number }): void {
-    Vio.cart.updateQuantity(item.id, item.sponsorId, item.quantity + 1)
+  // A delta on the manager's live quantity, not a target computed from this
+  // render's snapshot: two clicks before Lit re-renders used to ask for the
+  // same quantity twice (Alan, 2026-10-15).
+  private onIncrement(item: { id: string; sponsorId: number }): void {
+    Vio.cart.adjustQuantity(item.id, item.sponsorId, +1)
   }
 
-  private onDecrement(item: { id: string; sponsorId: number; quantity: number }): void {
-    Vio.cart.updateQuantity(item.id, item.sponsorId, item.quantity - 1)
+  private onDecrement(item: { id: string; sponsorId: number }): void {
+    Vio.cart.adjustQuantity(item.id, item.sponsorId, -1)
   }
 
   private onRemove(item: { id: string; sponsorId: number }): void {

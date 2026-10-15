@@ -60,7 +60,11 @@ export type {
 export type { CartLineItem, SponsorCartState } from './cart/types.js'
 
 // Analytics
-export { AnalyticsManager } from './analytics/analytics-manager.js'
+export {
+  AnalyticsManager,
+  resolveCampaignId,
+  purchaseFromPaymentSuccess,
+} from './analytics/analytics-manager.js'
 export type {
   AnalyticsEventName,
   AnalyticsContext,
@@ -68,6 +72,8 @@ export type {
   AnalyticsItemInput,
   AnalyticsStartOptions,
   TrackOptions,
+  PaymentSuccessDetail,
+  PaymentSuccessResult,
 } from './analytics/analytics-manager.js'
 export { SDK_VERSION } from './version.js'
 
@@ -113,6 +119,10 @@ export type {
   Sponsor,
   SponsorCommerceBlock,
   BootstrapResponse,
+  BootstrapCampaign,
+  BootstrapCampaignEntry,
+  BootstrapCampaignStatus,
+  BootstrapSlot,
   PlacementComponent,
   ImageSize,
 } from './types.js'

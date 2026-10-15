@@ -83,13 +83,63 @@ export interface Sponsor {
 }
 
 /**
+ * `campaign` of `GET /v2/mobile/config`: the head of the surface's default
+ * campaign (the one `primarySponsor` / `secondarySponsors` belong to).
+ */
+export interface BootstrapCampaign {
+  id: number
+  name: string
+  logo?: string | null
+  isActive?: boolean
+  isPaused?: boolean
+  startDate?: string | null
+  endDate?: string | null
+}
+
+/** Campaign status as the backend computes it (`[startsAt, endsAt)`). */
+export type BootstrapCampaignStatus = 'scheduled' | 'active' | 'paused' | 'ended'
+
+/** A slot assignment of a campaign on this surface (`campaigns[].slots[]`). */
+export interface BootstrapSlot {
+  name: string
+  platform?: string | null
+  startDate?: string | null
+  endDate?: string | null
+}
+
+/**
+ * One entry of `campaigns[]`: every active campaign of the surface, with its
+ * own sponsors — a sponsor may live only in a non-default campaign.
+ */
+export interface BootstrapCampaignEntry extends BootstrapCampaign {
+  isDefault?: boolean
+  status?: BootstrapCampaignStatus
+  primarySponsor?: Sponsor | null
+  secondarySponsors?: Sponsor[]
+  slots?: BootstrapSlot[]
+}
+
+/**
  * Response shape of `GET /v2/mobile/config` (and likely future `/v2/web/config`).
  * Matches the iOS SDK's `SdkBootstrapResponse` model.
+ *
+ * `campaign` + `primarySponsor` + `secondarySponsors` describe the surface's
+ * default campaign; `campaigns[]` lists every active one. There is no
+ * top-level `campaignId` — the id lives in `campaign.id`.
  */
 export interface BootstrapResponse {
-  campaignId?: number
+  endpoints?: {
+    webSocketBase?: string
+    commerceGraphQL?: string
+  }
+  campaign?: BootstrapCampaign
   primarySponsor?: Sponsor
   secondarySponsors?: Sponsor[]
+  features?: {
+    shoppable?: boolean
+    lineup?: boolean
+  }
+  campaigns?: BootstrapCampaignEntry[]
   market?: {
     countryCode: string
     currencyCode: string

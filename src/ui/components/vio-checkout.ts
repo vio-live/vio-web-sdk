@@ -2199,7 +2199,10 @@ export class VioCheckout extends LitElement {
       new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: { method, sponsorId, result },
+        // `checkoutId` is Vio's own reference for the purchase — what the
+        // redirect path already sends as `orderId`; analytics falls back to it
+        // when the provider's result carries no order id.
+        detail: { method, sponsorId, result, checkoutId },
       }),
     )
     Vio.cart.clearSponsorCart(sponsorId)
@@ -2388,11 +2391,13 @@ export class VioCheckout extends LitElement {
     this.providerReceipt = method
     this.confirmedMethod = method
     this.open = true
+    // Before the cart is cleared below: the checkout id goes with it.
+    const checkoutId = this.checkoutState?.checkoutId
     this.dispatchEvent(
       new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: { method, sponsorId, result },
+        detail: { method, sponsorId, result, checkoutId },
       }),
     )
     if (sponsorId) {

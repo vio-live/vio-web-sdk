@@ -9,7 +9,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Configuration } from '../configuration.js'
-import { AnalyticsManager } from './analytics-manager.js'
+import type { BootstrapResponse } from '../types.js'
+import {
+  AnalyticsManager,
+  purchaseFromPaymentSuccess,
+  resolveCampaignId,
+} from './analytics-manager.js'
 
 // ── Fake browser environment ────────────────────────────────────────────────
 
@@ -391,5 +396,273 @@ describe('consentimiento (ePrivacy) y diagnósticos', () => {
     expect(ev.context.error_code).toBe('cart_error')
     expect(ev.props.message).toBe('AddItem failed')
     m.stop()
+  })
+})
+
+// ── Atribución: campaign_id, order_id y cabecera X-Api-Key ──────────────────
+
+type FakeLine = {
+  productId: number
+  variantId?: number
+  name?: string
+  brand?: string
+  unitPrice: number
+  quantity: number
+  currency: string
+  sponsorId: number
+}
+
+/** Lo mínimo del CartManager que lee el manager: carritos por sponsor + change. */
+function fakeCart(linesBySponsor: Record<number, FakeLine[]> = {}) {
+  const carts = new Map<number, { items: FakeLine[] }>()
+  for (const [sid, items] of Object.entries(linesBySponsor)) carts.set(Number(sid), { items })
+  return {
+    getAllCarts: () => carts,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+}
+
+function installFacade(bootstrapCache: unknown, cart = fakeCart()) {
+  ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = { bootstrapCache, cart }
+}
+
+function removeFacade() {
+  delete (globalThis as Record<string, unknown>).__VIO_FACADE__
+}
+
+const sponsor = (id: number) => ({ id, name: `Sponsor ${id}`, commerce: { apiKey: `key-${id}` } })
+
+/** Respuesta de `/v2/mobile/config` del micro: `campaign` + `campaigns[]`. */
+const BOOT: BootstrapResponse = {
+  campaign: { id: 10, name: 'Default', isActive: true, isPaused: false },
+  primarySponsor: sponsor(4),
+  secondarySponsors: [sponsor(5)],
+  campaigns: [
+    {
+      id: 12,
+      name: 'Newer',
+      isDefault: false,
+      status: 'active',
+      primarySponsor: sponsor(7),
+      secondarySponsors: [sponsor(8), sponsor(5)],
+      slots: [],
+    },
+    {
+      id: 10,
+      name: 'Default',
+      isDefault: true,
+      status: 'active',
+      primarySponsor: sponsor(4),
+      secondarySponsors: [sponsor(5)],
+      slots: [],
+    },
+    {
+      id: 13,
+      name: 'Paused',
+      isDefault: false,
+      status: 'paused',
+      primarySponsor: sponsor(9),
+      secondarySponsors: [],
+      slots: [],
+    },
+  ],
+}
+
+describe('campaign_id desde la respuesta real de /v2/mobile/config', () => {
+  afterEach(removeFacade)
+
+  const contextOf = async (context: Record<string, unknown>) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('el campaignId explícito del contexto gana sobre todo', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ campaignId: 99, sponsorId: 8 })).campaign_id).toBe(99)
+  })
+
+  it('un secundario de una campaña activa no-default atribuye a ESA campaña', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(12)
+  })
+
+  it('el primario de una campaña activa no-default atribuye a ESA campaña', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 7 })).campaign_id).toBe(12)
+  })
+
+  it('un sponsor en varias campañas activas va a la campaña por defecto', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 5 })).campaign_id).toBe(10)
+  })
+
+  it('un sponsor que solo está en una campaña pausada cae a campaign.id', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 9 })).campaign_id).toBe(10)
+  })
+
+  it('sin sponsor en el evento, campaign.id', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({})).campaign_id).toBe(10)
+  })
+
+  it('acepta el sponsorId como string (los web components lo pasan por atributo)', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: '8' as unknown as number })).campaign_id).toBe(12)
+  })
+
+  it('sin bootstrap no inventa campaign_id, y el viejo `campaignId` plano ya no cuenta', async () => {
+    installFacade({ campaignId: 77, primarySponsor: sponsor(4) })
+    expect((await contextOf({ sponsorId: 4 })).campaign_id).toBeUndefined()
+    removeFacade()
+    expect((await contextOf({ sponsorId: 4 })).campaign_id).toBeUndefined()
+  })
+
+  it('resolveCampaignId es pura y sigue la misma cascada', () => {
+    expect(resolveCampaignId({ campaignId: 1, sponsorId: 8 }, BOOT)).toBe(1)
+    expect(resolveCampaignId({ sponsorId: 8 }, BOOT)).toBe(12)
+    expect(resolveCampaignId({ sponsorId: 5 }, BOOT)).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 9 }, BOOT)).toBe(10)
+    expect(resolveCampaignId({}, BOOT)).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 8 }, { campaign: { id: 3, name: 'x' } })).toBe(3)
+    expect(resolveCampaignId({ sponsorId: 8 }, null)).toBeUndefined()
+  })
+})
+
+describe('order_id coherente en purchase (cuatro emisores de vio:payment-success)', () => {
+  afterEach(removeFacade)
+
+  const fire = (detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent('vio:payment-success', { detail }) as unknown as Event,
+    )
+
+  const purchaseAfter = async (detail: unknown, cart = fakeCart()) => {
+    initVio()
+    installFacade(BOOT, cart)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire(detail)
+    await m.flush()
+    m.stop()
+    const ev = flushedBatches
+      .flatMap((b) => b.events)
+      .find((e) => e.name === 'purchase') as Record<string, any>
+    expect(ev).toBeDefined()
+    return ev
+  }
+
+  const line = (over: Partial<FakeLine> = {}): FakeLine => ({
+    productId: 408948,
+    name: 'Bonding Oil',
+    unitPrice: 300,
+    quantity: 1,
+    currency: 'NOK',
+    sponsorId: 4,
+    ...over,
+  })
+
+  it('retorno de redirect (Vipps/Klarna/Stripe): orderId = checkout id de Vio', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1' })
+    expect(ev.commerce.order_id).toBe('CHK-1')
+    expect(ev.commerce.payment_method).toBe('vipps')
+    expect(ev.context.sponsor_id).toBe(4)
+    expect(ev.context.campaign_id).toBe(10)
+  })
+
+  it('confirmOrder con result del proveedor (Qliro): order.orderId y chargedTotal', async () => {
+    const ev = await purchaseAfter({
+      method: 'qliro',
+      sponsorId: 4,
+      result: { order: { orderId: 3361254 }, chargedTotal: 5198 },
+      checkoutId: 'CHK-2',
+    })
+    expect(ev.commerce.order_id).toBe('3361254')
+    expect(ev.commerce.value).toBe(5198)
+  })
+
+  it('recibo del proveedor (Walley): result.orderId', async () => {
+    const ev = await purchaseAfter({
+      method: 'walley',
+      sponsorId: 4,
+      result: { orderId: 'W-9' },
+      checkoutId: 'CHK-3',
+    })
+    expect(ev.commerce.order_id).toBe('W-9')
+  })
+
+  it('sin id del proveedor cae al checkoutId y conserva moneda e items del carrito', async () => {
+    const ev = await purchaseAfter(
+      { method: 'stripe', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-4' },
+      fakeCart({ 4: [line()] }),
+    )
+    expect(ev.commerce.order_id).toBe('CHK-4')
+    expect(ev.commerce.value).toBe(350) // lo cobrado, no la suma del carrito
+    expect(ev.commerce.currency).toBe('NOK') // del carrito: el result no trae moneda
+    expect(ev.commerce.items[0].product_id).toBe('408948')
+  })
+
+  it('result.total y result.currency pisan al snapshot del carrito', async () => {
+    const ev = await purchaseAfter(
+      { method: 'klarna', sponsorId: 4, result: { total: 120, currency: 'SEK' }, checkoutId: 'CHK-5' },
+      fakeCart({ 4: [line({ unitPrice: 100 })] }),
+    )
+    expect(ev.commerce.value).toBe(120)
+    expect(ev.commerce.currency).toBe('SEK')
+    expect(ev.commerce.order_id).toBe('CHK-5')
+  })
+
+  it('Apple Pay express desde el carrito: sin sponsor ni ids, el carrito manda', async () => {
+    const ev = await purchaseAfter(
+      { method: 'apple-pay', result: { paymentMethodId: 'pm_1' } },
+      fakeCart({ 4: [line({ unitPrice: 200, quantity: 2 })] }),
+    )
+    expect(ev.commerce.order_id).toBeUndefined()
+    expect(ev.commerce.value).toBe(400)
+    expect(ev.commerce.payment_method).toBe('apple-pay')
+    expect(ev.context.sponsor_id).toBeUndefined()
+    expect(ev.context.campaign_id).toBe(10)
+  })
+
+  it('purchaseFromPaymentSuccess es pura: solo devuelve lo que sabe', () => {
+    expect(purchaseFromPaymentSuccess({})).toEqual({})
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', result: { orderId: 'B' } })).toEqual({ orderId: 'A' })
+    expect(purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } } })).toEqual({
+      orderId: 'B',
+    })
+    expect(purchaseFromPaymentSuccess({ result: { order: { orderId: 'C' } }, checkoutId: 'D' })).toEqual({
+      orderId: 'C',
+    })
+    expect(purchaseFromPaymentSuccess({ checkoutId: 'D', result: null })).toEqual({ orderId: 'D' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { total: '12.5', chargedTotal: 99, currency: 'NOK' } }),
+    ).toEqual({ value: 12.5, currency: 'NOK' })
+    expect(purchaseFromPaymentSuccess({ result: { chargedTotal: 'abc' } })).toEqual({})
+  })
+})
+
+describe('X-Api-Key en el fetch de eventos', () => {
+  it('manda la key en la cabecera además del body (el colector limita por key, no por IP)', async () => {
+    initVio()
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 202 }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    await m.flush()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string>; body: string },
+    ]
+    expect(url).toBe('https://events.test/v1/events')
+    expect(init.headers['X-Api-Key']).toBe('test-key')
+    expect(init.headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(init.body).apiKey).toBe('test-key')
   })
 })

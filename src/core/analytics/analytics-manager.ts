@@ -33,6 +33,7 @@ import { Configuration } from '../configuration.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import type { CartLineItem } from '../cart/types.js'
+import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
 // ── Taxonomy (client-side subset of contract v1) ────────────────────────────
 
@@ -377,15 +378,19 @@ export class AnalyticsManager extends EventTarget {
     if (Date.now() < this.retryNotBefore) return
 
     const batch = this.queue.splice(0, MAX_QUEUE)
+    const apiKey = Configuration.get().apiKey
     const body = JSON.stringify({
-      apiKey: Configuration.get().apiKey,
+      apiKey,
       sent_at: new Date().toISOString(),
       events: batch,
     })
     try {
+      // The key travels in the body too (sendBeacon can't set headers), but
+      // the collector rate-limits by X-Api-Key and only falls back to the IP:
+      // without the header every publisher behind one NAT shares a bucket.
       const res = await fetch(`${eventsBase()}/v1/events`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
         body,
         keepalive: batch.length <= 20, // keepalive caps payload at ~64KB
       })
@@ -418,7 +423,7 @@ export class AnalyticsManager extends EventTarget {
     const boot = vioBootstrapCache()
     const ctx = opts.context ?? {}
     const context: Record<string, unknown> = compact({
-      campaign_id: ctx.campaignId ?? boot?.campaignId,
+      campaign_id: resolveCampaignId(ctx, boot),
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
@@ -708,14 +713,15 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:payment-success', (ev) => {
-      const d = (ev as CustomEvent<{ method?: string; sponsorId?: number | string; orderId?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
       this.track('purchase', {
         context: { sponsorId },
         commerce: {
           ...(snap ?? {}),
-          orderId: d.orderId,
+          // What the checkout said about the order wins over the cart snapshot.
+          ...purchaseFromPaymentSuccess(d),
           paymentMethod: d.method,
         },
       })
@@ -825,14 +831,14 @@ function eventsBase(): string {
 // Late imports via the global facade to avoid a circular module edge
 // (client.ts imports this file for the getter type).
 interface FacadeLike {
-  bootstrapCache: { campaignId?: number } | null
+  bootstrapCache: BootstrapResponse | null
   cart: CartManager
 }
 function vioFacade(): FacadeLike | null {
   const g = globalThis as unknown as { __VIO_FACADE__?: FacadeLike }
   return g.__VIO_FACADE__ ?? null
 }
-function vioBootstrapCache(): { campaignId?: number } | null {
+function vioBootstrapCache(): BootstrapResponse | null {
   return vioFacade()?.bootstrapCache ?? null
 }
 function vioCart(): CartManager | null {
@@ -841,6 +847,92 @@ function vioCart(): CartManager | null {
   } catch {
     return null
   }
+}
+
+// ── Attribution helpers (pure; exported for tests and hosts) ────────────────
+
+/**
+ * The `campaign_id` of an event. In order: the context's explicit id; the
+ * active campaign of `campaigns[]` the event's sponsor takes part in, as its
+ * primary or one of its secondaries (when it is in several, the surface's
+ * default campaign); the default campaign (`campaign.id`). `/v2/mobile/config`
+ * has no top-level `campaignId` — reading one is why every event used to
+ * leave with `campaign_id: 0` and the campaigns screen stayed empty.
+ */
+export function resolveCampaignId(
+  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId'>,
+  boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
+): number | undefined {
+  if (ctx.campaignId !== undefined) return ctx.campaignId
+  const defaultId = boot?.campaign?.id
+  const sponsorId = toNumber(ctx.sponsorId)
+  if (sponsorId !== undefined) {
+    const matches = (boot?.campaigns ?? []).filter(
+      (c) => c.status === 'active' && campaignSponsorIds(c).includes(sponsorId),
+    )
+    const chosen = matches.find((c) => c.id === defaultId) ?? matches[0]
+    if (chosen) return chosen.id
+  }
+  return defaultId
+}
+
+function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
+  const ids: number[] = []
+  const primary = toNumber(campaign.primarySponsor?.id)
+  if (primary !== undefined) ids.push(primary)
+  for (const s of campaign.secondarySponsors ?? []) {
+    const id = toNumber(s?.id)
+    if (id !== undefined) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * `detail` of `vio:payment-success` as the checkout emits it. Four paths,
+ * three shapes: a redirect return (`orderId` = Vio's checkout id), the
+ * confirmation drawer and a provider's own receipt (`result` from the
+ * provider or the backend), and Apple Pay express from the cart (`result`,
+ * no sponsor).
+ */
+export interface PaymentSuccessDetail {
+  method?: string
+  sponsorId?: number | string
+  orderId?: string | number
+  checkoutId?: string | number
+  result?: PaymentSuccessResult | null
+}
+
+export interface PaymentSuccessResult {
+  orderId?: string | number
+  order?: { orderId?: string | number } | null
+  /** Charged total in major units — `chargedTotal` is the checkout's own name for it. */
+  total?: number | string
+  chargedTotal?: number | string
+  currency?: string
+}
+
+/**
+ * Order id, value and currency of a `purchase`, normalized across every
+ * emitter: `orderId` → `result.orderId` → `result.order.orderId` →
+ * `checkoutId`; `result.total` → `result.chargedTotal`; `result.currency`.
+ * Keys with nothing to say are absent, so the cart snapshot keeps them.
+ */
+export function purchaseFromPaymentSuccess(
+  d: PaymentSuccessDetail,
+): Pick<AnalyticsCommerce, 'orderId' | 'value' | 'currency'> {
+  const r = d.result ?? {}
+  const orderId = d.orderId ?? r.orderId ?? r.order?.orderId ?? d.checkoutId
+  return compact({
+    orderId: orderId !== undefined && orderId !== null ? String(orderId) : undefined,
+    value: toNumber(r.total) ?? toNumber(r.chargedTotal),
+    currency: typeof r.currency === 'string' && r.currency ? r.currency : undefined,
+  }) as Pick<AnalyticsCommerce, 'orderId' | 'value' | 'currency'>
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
 }
 
 // ── GA4 dataLayer sink (publisher feature; NOT the Vio pipeline) ────────────

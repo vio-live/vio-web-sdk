@@ -158,12 +158,49 @@ export class CartManager extends EventTarget {
     return sync ? (sync.pending ?? sync.sent) : undefined
   }
 
-  /** Apply a backend response only if no newer response was applied already. */
-  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): void {
-    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return
+  /** Apply a backend response only if no newer response was applied already.
+   * Returns false when it was discarded as stale. */
+  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): boolean {
+    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return false
     this.appliedSeq.set(sponsorId, seq)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.updateFromBackendCart(sponsorId, backendCart as any)
+    return true
+  }
+
+  /** The final answer of a line's sync lost the per-sponsor seq race (another
+   * line answered later): the cart as a whole is stale, but for THIS line it
+   * is the latest word. Copy its quantity (and price) so a server-side clamp
+   * — stock — doesn't leave the optimistic value behind for good, with the
+   * checkout / Apple Pay total built on it. */
+  private reconcileLineFromResponse(
+    sponsorId: number,
+    cartItemId: string,
+    resCart: {
+      line_items?: Array<{
+        id: string
+        quantity: number
+        price?: { amount?: number; amount_incl_taxes?: number | null } | null
+      }>
+    },
+  ): void {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const line = cart?.items.find((i) => i.cartItemId === cartItemId || i.id === cartItemId)
+    const server = resCart.line_items?.find((li) => li.id === cartItemId)
+    if (!cart || !line || !server) return
+    const price = server.price?.amount_incl_taxes ?? server.price?.amount
+    let changed = false
+    if (server.quantity !== line.quantity) {
+      line.quantity = server.quantity
+      changed = true
+    }
+    if (price != null && price !== line.unitPrice) {
+      line.unitPrice = price
+      changed = true
+    }
+    if (!changed) return
+    this.persist()
+    this.emit()
   }
 
   /** Surface a cart sync problem to hosts/UI (and the console). */
@@ -288,6 +325,9 @@ export class CartManager extends EventTarget {
       cart.availableShippingCountries = backendCart.available_shipping_countries
     }
 
+    // Lines the shopper removed while their AddItem was still in flight: they
+    // get their DeleteItem now that they have a backend id (see below).
+    const removedBeforeSync: string[] = []
     if (Array.isArray(backendCart.line_items)) {
       const existingItems = cart.items || []
       if (backendCart.line_items.length === 0 && existingItems.length > 0) {
@@ -303,6 +343,17 @@ export class CartManager extends EventTarget {
         // the shopper already removed it — don't resurrect it for a frame.
         const intended = this.intendedQuantity(sponsorId, li.id)
         if (intended !== undefined && intended <= 0) return []
+        // Removed locally before it had a backend id: the shopper saw it go
+        // and vio:removed-from-cart already went out. Don't bring it back —
+        // and don't replay the removal through updateQuantity (that emitted
+        // the event a second time); just send the DeleteItem.
+        const earlyKey = this.intentKey(li.product_id, li.variant_id)
+        const earlyIntent = this.pendingQtyIntents.get(earlyKey)
+        if (earlyIntent !== undefined && earlyIntent <= 0) {
+          this.pendingQtyIntents.delete(earlyKey)
+          removedBeforeSync.push(li.id)
+          return []
+        }
         const urlFromBackend =
           (typeof li.image === 'string' ? li.image : li.image?.url) ||
           li.imageUrl ||
@@ -349,6 +400,11 @@ export class CartManager extends EventTarget {
     }
     this.persist()
     this.emit()
+
+    const syncedCartId = cart.cartId
+    if (syncedCartId) {
+      for (const id of removedBeforeSync) this.syncQuantity(sponsorId, syncedCartId, id, 0)
+    }
 
     // Replay quantity intents recorded while the line had no backend id yet.
     if (this.pendingQtyIntents.size > 0) {
@@ -595,6 +651,7 @@ export class CartManager extends EventTarget {
 
     const run = (async () => {
       let next: number | undefined = target
+      let removalRetried = false
       while (next !== undefined) {
         sync.sent = next
         sync.pending = undefined
@@ -606,18 +663,37 @@ export class CartManager extends EventTarget {
               ? await gqlDeleteItem(backendCartId, cartItemId, gqlOpts)
               : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
           next = sync.pending
+          // Back where the server already is (+, +, − while in flight):
+          // nothing to send.
+          if (next === sync.sent) next = undefined
           // Nothing newer queued: the server's view of this line is the truth
           // now. With a newer target queued the entry stays, so this (already
           // stale) response cannot roll the line back.
           if (next === undefined) this.qtySyncs.delete(key)
           if (resCart && Array.isArray(resCart.line_items)) {
-            this.applyBackendCart(sponsorId, resCart, seq)
+            const applied = this.applyBackendCart(sponsorId, resCart, seq)
+            if (!applied && next === undefined) {
+              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart)
+            }
           }
         } catch (err) {
-          // Rejected: whatever was queued is moot — the server decides.
-          // The reconcile emits `change`.
-          this.qtySyncs.delete(key)
+          // Rejected: whatever was queued is moot — the server decides — with
+          // one exception. A queued REMOVAL already happened for the shopper
+          // (the line is gone, vio:removed-from-cart went out), so it is sent
+          // once more, once, instead of letting the reconcile bring the line
+          // back without a DeleteItem ever going out.
+          const retryRemoval = !removalRetried && sync.pending !== undefined && sync.pending <= 0
           next = undefined
+          if (retryRemoval) {
+            removalRetried = true
+            // Entry stays (heading to 0): the reconcile below leaves the line out.
+            sync.sent = 0
+            sync.pending = undefined
+            next = 0
+          } else {
+            this.qtySyncs.delete(key)
+          }
+          // The reconcile emits `change`.
           this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
           try {
             await this.fetchCartFromBackend(sponsorId)

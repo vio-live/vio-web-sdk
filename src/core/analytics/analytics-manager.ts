@@ -719,8 +719,9 @@ export class AnalyticsManager extends EventTarget {
       this.track('purchase', {
         context: { sponsorId },
         commerce: {
+          // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
-          // What the checkout said about the order wins over the cart snapshot.
+          // order_id: Vio's id for the purchase (never the provider's).
           ...purchaseFromPaymentSuccess(d),
           paymentMethod: d.method,
         },
@@ -854,10 +855,14 @@ function vioCart(): CartManager | null {
 /**
  * The `campaign_id` of an event. In order: the context's explicit id; the
  * active campaign of `campaigns[]` the event's sponsor takes part in, as its
- * primary or one of its secondaries (when it is in several, the surface's
- * default campaign); the default campaign (`campaign.id`). `/v2/mobile/config`
- * has no top-level `campaignId` — reading one is why every event used to
- * leave with `campaign_id: 0` and the campaigns screen stayed empty.
+ * primary or one of its secondaries — when it is in several, the surface's
+ * default campaign if it is one of them, else the first one the backend
+ * lists; the default campaign (`campaign.id`). `/v2/mobile/config` has no
+ * top-level `campaignId` — reading one is why every event used to leave
+ * with `campaign_id: 0` and the campaigns screen stayed empty.
+ *
+ * A malformed `campaigns[]` (not an array, a null entry) never breaks
+ * `track()`: it falls back to `campaign.id`.
  */
 export function resolveCampaignId(
   ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId'>,
@@ -866,12 +871,21 @@ export function resolveCampaignId(
   if (ctx.campaignId !== undefined) return ctx.campaignId
   const defaultId = boot?.campaign?.id
   const sponsorId = toNumber(ctx.sponsorId)
-  if (sponsorId !== undefined) {
-    const matches = (boot?.campaigns ?? []).filter(
-      (c) => c.status === 'active' && campaignSponsorIds(c).includes(sponsorId),
+  if (sponsorId === undefined) return defaultId
+  try {
+    const campaigns = Array.isArray(boot?.campaigns) ? boot.campaigns : []
+    const matches = campaigns.filter(
+      (c): c is BootstrapCampaignEntry =>
+        !!c &&
+        typeof c === 'object' &&
+        c.status === 'active' &&
+        campaignSponsorIds(c).includes(sponsorId),
     )
     const chosen = matches.find((c) => c.id === defaultId) ?? matches[0]
-    if (chosen) return chosen.id
+    const chosenId = toNumber(chosen?.id)
+    if (chosenId !== undefined) return chosenId
+  } catch {
+    /* a malformed campaigns[] must never break track() */
   }
   return defaultId
 }
@@ -880,7 +894,8 @@ function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
   const ids: number[] = []
   const primary = toNumber(campaign.primarySponsor?.id)
   if (primary !== undefined) ids.push(primary)
-  for (const s of campaign.secondarySponsors ?? []) {
+  const secondaries = Array.isArray(campaign.secondarySponsors) ? campaign.secondarySponsors : []
+  for (const s of secondaries) {
     const id = toNumber(s?.id)
     if (id !== undefined) ids.push(id)
   }
@@ -891,42 +906,56 @@ function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
  * `detail` of `vio:payment-success` as the checkout emits it. Four paths,
  * three shapes: a redirect return (`orderId` = Vio's checkout id), the
  * confirmation drawer and a provider's own receipt (`result` from the
- * provider or the backend), and Apple Pay express from the cart (`result`,
- * no sponsor).
+ * provider or the backend, plus Vio's `checkoutId`), and Apple Pay express
+ * from the cart (`result` with the backend's `confirmation`, no sponsor).
  */
 export interface PaymentSuccessDetail {
   method?: string
   sponsorId?: number | string
+  /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
   orderId?: string | number
+  /** Vio's checkout id — from the checkout state or the return URL. */
   checkoutId?: string | number
   result?: PaymentSuccessResult | null
 }
 
+/**
+ * What the checkout attaches as `result`. Only `confirmation` carries a Vio
+ * id: the order `ConfirmPaymentApplePay` created. `order.orderId` / `orderId`
+ * are the PROVIDER's references (Qliro's, Walley's — the checkout itself
+ * shows them as `providerRef`), and `chargedTotal` includes shipping on some
+ * methods only. Analytics reads none of those.
+ */
 export interface PaymentSuccessResult {
-  orderId?: string | number
-  order?: { orderId?: string | number } | null
-  /** Charged total in major units — `chargedTotal` is the checkout's own name for it. */
-  total?: number | string
-  chargedTotal?: number | string
-  currency?: string
+  confirmation?: { orderId?: string | number | null; status?: string } | null
+  [key: string]: unknown
 }
 
 /**
- * Order id, value and currency of a `purchase`, normalized across every
- * emitter: `orderId` → `result.orderId` → `result.order.orderId` →
- * `checkoutId`; `result.total` → `result.chargedTotal`; `result.currency`.
- * Keys with nothing to say are absent, so the cart snapshot keeps them.
+ * The `order_id` of a `purchase`: ALWAYS a Vio id, never a provider's
+ * reference. Normalized across every emitter: `orderId` (redirect return) →
+ * `result.confirmation.orderId` (Apple Pay) → `checkoutId`. `value` and
+ * `currency` are deliberately NOT read from the result: on every path they
+ * come from the cart snapshot (sum of the items, no shipping), so revenue
+ * stays comparable across payment methods — the charged total will arrive
+ * through the server-side `order_paid` event. With nothing to say it
+ * returns `{}`, so the cart snapshot keeps its keys.
  */
 export function purchaseFromPaymentSuccess(
   d: PaymentSuccessDetail,
-): Pick<AnalyticsCommerce, 'orderId' | 'value' | 'currency'> {
+): Pick<AnalyticsCommerce, 'orderId'> {
   const r = d.result ?? {}
-  const orderId = d.orderId ?? r.orderId ?? r.order?.orderId ?? d.checkoutId
-  return compact({
-    orderId: orderId !== undefined && orderId !== null ? String(orderId) : undefined,
-    value: toNumber(r.total) ?? toNumber(r.chargedTotal),
-    currency: typeof r.currency === 'string' && r.currency ? r.currency : undefined,
-  }) as Pick<AnalyticsCommerce, 'orderId' | 'value' | 'currency'>
+  const orderId = firstId(d.orderId, r.confirmation?.orderId, d.checkoutId)
+  return orderId !== undefined ? { orderId } : {}
+}
+
+function firstId(...candidates: unknown[]): string | undefined {
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue
+    const s = String(c)
+    if (s !== '') return s
+  }
+  return undefined
 }
 
 function toNumber(value: unknown): number | undefined {

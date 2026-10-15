@@ -522,6 +522,34 @@ describe('campaign_id desde la respuesta real de /v2/mobile/config', () => {
     expect((await contextOf({ sponsorId: 4 })).campaign_id).toBeUndefined()
   })
 
+  it('un sponsor en varias campañas activas no-default (y no en la default) va a la primera que lista el backend', async () => {
+    installFacade({
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4) },
+        { id: 21, name: 'A', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)] },
+        { id: 22, name: 'B', status: 'active', primarySponsor: sponsor(8) },
+      ],
+    })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(21)
+  })
+
+  it('un campaigns[] malformado no rompe track(): cae a campaign.id', async () => {
+    installFacade({ campaign: { id: 10, name: 'Default' }, campaigns: 'nope' })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(10)
+
+    installFacade({
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [null, { id: 12, status: 'active', primarySponsor: sponsor(8), secondarySponsors: 'x' }, 7],
+    })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(12)
+    expect((await contextOf({ sponsorId: 9 })).campaign_id).toBe(10)
+
+    expect(() =>
+      resolveCampaignId({ sponsorId: 8 }, { campaign: { id: 3, name: 'x' }, campaigns: [{}] as never }),
+    ).not.toThrow()
+  })
+
   it('resolveCampaignId es pura y sigue la misma cascada', () => {
     expect(resolveCampaignId({ campaignId: 1, sponsorId: 8 }, BOOT)).toBe(1)
     expect(resolveCampaignId({ sponsorId: 8 }, BOOT)).toBe(12)
@@ -574,74 +602,80 @@ describe('order_id coherente en purchase (cuatro emisores de vio:payment-success
     expect(ev.context.campaign_id).toBe(10)
   })
 
-  it('confirmOrder con result del proveedor (Qliro): order.orderId y chargedTotal', async () => {
-    const ev = await purchaseAfter({
-      method: 'qliro',
-      sponsorId: 4,
-      result: { order: { orderId: 3361254 }, chargedTotal: 5198 },
-      checkoutId: 'CHK-2',
-    })
-    expect(ev.commerce.order_id).toBe('3361254')
-    expect(ev.commerce.value).toBe(5198)
+  it('confirmOrder con result de Qliro: su order.orderId es del proveedor, order_id es el checkout de Vio', async () => {
+    const ev = await purchaseAfter(
+      {
+        method: 'qliro',
+        sponsorId: 4,
+        result: { order: { orderId: 3361254 }, chargedTotal: 5198 },
+        checkoutId: 'CHK-2',
+      },
+      fakeCart({ 4: [line({ unitPrice: 4999 })] }),
+    )
+    expect(ev.commerce.order_id).toBe('CHK-2')
+    expect(ev.commerce.value).toBe(4999) // el carrito, no lo cobrado (chargedTotal lleva envío)
   })
 
-  it('recibo del proveedor (Walley): result.orderId', async () => {
+  it('recibo del proveedor (Walley): su orderId no cuenta, order_id es el checkout de Vio', async () => {
     const ev = await purchaseAfter({
       method: 'walley',
       sponsorId: 4,
       result: { orderId: 'W-9' },
       checkoutId: 'CHK-3',
     })
-    expect(ev.commerce.order_id).toBe('W-9')
+    expect(ev.commerce.order_id).toBe('CHK-3')
   })
 
-  it('sin id del proveedor cae al checkoutId y conserva moneda e items del carrito', async () => {
+  it('value y currency salen SIEMPRE del carrito, no del result', async () => {
     const ev = await purchaseAfter(
-      { method: 'stripe', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-4' },
+      {
+        method: 'stripe',
+        sponsorId: 4,
+        result: { chargedTotal: 350, total: 999, currency: 'SEK' },
+        checkoutId: 'CHK-4',
+      },
       fakeCart({ 4: [line()] }),
     )
     expect(ev.commerce.order_id).toBe('CHK-4')
-    expect(ev.commerce.value).toBe(350) // lo cobrado, no la suma del carrito
-    expect(ev.commerce.currency).toBe('NOK') // del carrito: el result no trae moneda
+    expect(ev.commerce.value).toBe(300)
+    expect(ev.commerce.currency).toBe('NOK')
     expect(ev.commerce.items[0].product_id).toBe('408948')
   })
 
-  it('result.total y result.currency pisan al snapshot del carrito', async () => {
-    const ev = await purchaseAfter(
-      { method: 'klarna', sponsorId: 4, result: { total: 120, currency: 'SEK' }, checkoutId: 'CHK-5' },
-      fakeCart({ 4: [line({ unitPrice: 100 })] }),
-    )
-    expect(ev.commerce.value).toBe(120)
-    expect(ev.commerce.currency).toBe('SEK')
+  it('sin carrito ni snapshot, purchase sale sin value ni currency (nunca inventados)', async () => {
+    const ev = await purchaseAfter({ method: 'nexi', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-5' })
     expect(ev.commerce.order_id).toBe('CHK-5')
+    expect(ev.commerce.value).toBeUndefined()
+    expect(ev.commerce.currency).toBeUndefined()
   })
 
-  it('Apple Pay express desde el carrito: sin sponsor ni ids, el carrito manda', async () => {
+  it('Apple Pay express desde el carrito: order_id es el de la confirmación del backend', async () => {
     const ev = await purchaseAfter(
-      { method: 'apple-pay', result: { paymentMethodId: 'pm_1' } },
+      { method: 'apple-pay', result: { paymentMethodId: 'pm_1', confirmation: { orderId: 'ORD-77', status: 'paid' } } },
       fakeCart({ 4: [line({ unitPrice: 200, quantity: 2 })] }),
     )
-    expect(ev.commerce.order_id).toBeUndefined()
+    expect(ev.commerce.order_id).toBe('ORD-77')
     expect(ev.commerce.value).toBe(400)
     expect(ev.commerce.payment_method).toBe('apple-pay')
     expect(ev.context.sponsor_id).toBeUndefined()
     expect(ev.context.campaign_id).toBe(10)
   })
 
-  it('purchaseFromPaymentSuccess es pura: solo devuelve lo que sabe', () => {
+  it('purchaseFromPaymentSuccess es pura: solo ids de Vio, nunca del proveedor ni totales', () => {
     expect(purchaseFromPaymentSuccess({})).toEqual({})
-    expect(purchaseFromPaymentSuccess({ orderId: 'A', result: { orderId: 'B' } })).toEqual({ orderId: 'A' })
-    expect(purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } } })).toEqual({
-      orderId: 'B',
-    })
-    expect(purchaseFromPaymentSuccess({ result: { order: { orderId: 'C' } }, checkoutId: 'D' })).toEqual({
-      orderId: 'C',
-    })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', checkoutId: 'D' })).toEqual({ orderId: 'A' })
+    expect(purchaseFromPaymentSuccess({ orderId: '', checkoutId: 'D' })).toEqual({ orderId: 'D' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { confirmation: { orderId: 42 } }, checkoutId: 'D' }),
+    ).toEqual({ orderId: '42' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } }, checkoutId: 'D' }),
+    ).toEqual({ orderId: 'D' })
+    expect(purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } } })).toEqual({})
     expect(purchaseFromPaymentSuccess({ checkoutId: 'D', result: null })).toEqual({ orderId: 'D' })
     expect(
       purchaseFromPaymentSuccess({ result: { total: '12.5', chargedTotal: 99, currency: 'NOK' } }),
-    ).toEqual({ value: 12.5, currency: 'NOK' })
-    expect(purchaseFromPaymentSuccess({ result: { chargedTotal: 'abc' } })).toEqual({})
+    ).toEqual({})
   })
 })
 

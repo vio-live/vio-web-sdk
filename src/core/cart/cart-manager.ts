@@ -60,6 +60,14 @@ export interface AddManualOptions {
   variantId?: number
 }
 
+/** One backend quantity sync for one line. See `CartManager.qtySyncs`. */
+interface QtySync {
+  /** Target quantity of the request currently in flight. */
+  sent: number
+  /** Latest target that arrived while in flight — the only one sent next. */
+  pending?: number
+}
+
 function lineId(): string {
   return 'li_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
@@ -87,7 +95,15 @@ export class CartManager extends EventTarget {
    * — otherwise they can race the mutation and see the cart from before it
    * landed (Alan, 2026-08-18: shippings queried before AddItem settled,
    * came back empty). */
-  private inFlightMutations = new Map<number, Promise<unknown>>()
+  private inFlightMutations = new Map<number, Set<Promise<unknown>>>()
+  /** Per-line quantity sync with the backend: at most ONE UpdateItem /
+   * DeleteItem in flight per line. Targets that arrive while one is in flight
+   * are coalesced into `pending` (only the latest survives) and sent when the
+   * current request settles. Keyed by `${sponsorId}:${cartItemId}`.
+   * (Alan, 2026-10-15: a burst of +/− clicks fired one UpdateItem per click
+   * in parallel; each response re-applied the whole backend cart, so an
+   * older one landing after a newer optimistic change rolled the line back.) */
+  private qtySyncs = new Map<string, QtySync>()
 
   constructor() {
     super()
@@ -100,24 +116,91 @@ export class CartManager extends EventTarget {
     return n
   }
 
-  /** Resolves once any in-flight AddItem/UpdateItem/DeleteItem for this
-   * sponsor has settled (success or failure). No-op if nothing is pending. */
+  /** Resolves once every in-flight AddItem/UpdateItem/DeleteItem for this
+   * sponsor has settled (success or failure), including ones started while
+   * waiting (a quantity intent replayed by an AddItem reconcile). No-op if
+   * nothing is pending. */
   async waitForCartMutations(sponsorId: number): Promise<void> {
-    const p = this.inFlightMutations.get(sponsorId)
-    if (!p) return
-    try {
-      await p
-    } catch {
-      /* the mutation's own catch already handled/reported the failure */
+    for (;;) {
+      const set = this.inFlightMutations.get(sponsorId)
+      if (!set || set.size === 0) return
+      // The mutations catch their own failures; allSettled is belt and braces.
+      await Promise.allSettled([...set])
     }
   }
 
-  /** Apply a backend response only if no newer response was applied already. */
-  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): void {
-    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return
+  /** Register a backend mutation so `waitForCartMutations` can await it. */
+  private trackMutation(sponsorId: number, mutation: Promise<unknown>): void {
+    let set = this.inFlightMutations.get(sponsorId)
+    if (!set) {
+      set = new Set()
+      this.inFlightMutations.set(sponsorId, set)
+    }
+    const tracked = set
+    tracked.add(mutation)
+    const untrack = () => {
+      tracked.delete(mutation)
+      if (tracked.size === 0 && this.inFlightMutations.get(sponsorId) === tracked) {
+        this.inFlightMutations.delete(sponsorId)
+      }
+    }
+    mutation.then(untrack, untrack)
+  }
+
+  private qtySyncKey(sponsorId: number, cartItemId: string): string {
+    return `${sponsorId}:${cartItemId}`
+  }
+
+  /** The quantity a line is heading to (pending beats in flight), or
+   * undefined when no quantity sync is active for it. */
+  private intendedQuantity(sponsorId: number, cartItemId: string): number | undefined {
+    const sync = this.qtySyncs.get(this.qtySyncKey(sponsorId, cartItemId))
+    return sync ? (sync.pending ?? sync.sent) : undefined
+  }
+
+  /** Apply a backend response only if no newer response was applied already.
+   * Returns false when it was discarded as stale. */
+  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): boolean {
+    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return false
     this.appliedSeq.set(sponsorId, seq)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.updateFromBackendCart(sponsorId, backendCart as any)
+    return true
+  }
+
+  /** The final answer of a line's sync lost the per-sponsor seq race (another
+   * line answered later): the cart as a whole is stale, but for THIS line it
+   * is the latest word. Copy its quantity (and price) so a server-side clamp
+   * — stock — doesn't leave the optimistic value behind for good, with the
+   * checkout / Apple Pay total built on it. */
+  private reconcileLineFromResponse(
+    sponsorId: number,
+    cartItemId: string,
+    resCart: {
+      line_items?: Array<{
+        id: string
+        quantity: number
+        price?: { amount?: number; amount_incl_taxes?: number | null } | null
+      }>
+    },
+  ): void {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const line = cart?.items.find((i) => i.cartItemId === cartItemId || i.id === cartItemId)
+    const server = resCart.line_items?.find((li) => li.id === cartItemId)
+    if (!cart || !line || !server) return
+    const price = server.price?.amount_incl_taxes ?? server.price?.amount
+    let changed = false
+    if (server.quantity !== line.quantity) {
+      line.quantity = server.quantity
+      changed = true
+    }
+    if (price != null && price !== line.unitPrice) {
+      line.unitPrice = price
+      changed = true
+    }
+    if (!changed) return
+    this.persist()
+    this.emit()
   }
 
   /** Surface a cart sync problem to hosts/UI (and the console). */
@@ -242,6 +325,9 @@ export class CartManager extends EventTarget {
       cart.availableShippingCountries = backendCart.available_shipping_countries
     }
 
+    // Lines the shopper removed while their AddItem was still in flight: they
+    // get their DeleteItem now that they have a backend id (see below).
+    const removedBeforeSync: string[] = []
     if (Array.isArray(backendCart.line_items)) {
       const existingItems = cart.items || []
       if (backendCart.line_items.length === 0 && existingItems.length > 0) {
@@ -251,7 +337,23 @@ export class CartManager extends EventTarget {
         this.emit()
         return
       }
-      cart.items = backendCart.line_items.map((li): CartLineItem => {
+      cart.items = backendCart.line_items.flatMap((li): CartLineItem[] => {
+        // A line whose quantity sync is still active keeps its optimistic
+        // quantity: this response predates that intent. Heading to 0 means
+        // the shopper already removed it — don't resurrect it for a frame.
+        const intended = this.intendedQuantity(sponsorId, li.id)
+        if (intended !== undefined && intended <= 0) return []
+        // Removed locally before it had a backend id: the shopper saw it go
+        // and vio:removed-from-cart already went out. Don't bring it back —
+        // and don't replay the removal through updateQuantity (that emitted
+        // the event a second time); just send the DeleteItem.
+        const earlyKey = this.intentKey(li.product_id, li.variant_id)
+        const earlyIntent = this.pendingQtyIntents.get(earlyKey)
+        if (earlyIntent !== undefined && earlyIntent <= 0) {
+          this.pendingQtyIntents.delete(earlyKey)
+          removedBeforeSync.push(li.id)
+          return []
+        }
         const urlFromBackend =
           (typeof li.image === 'string' ? li.image : li.image?.url) ||
           li.imageUrl ||
@@ -274,7 +376,7 @@ export class CartManager extends EventTarget {
         })
         const imageUrl = urlFromBackend || matchedLocal?.imageUrl || ''
 
-        return {
+        const line: CartLineItem = {
           id: li.id,
           cartItemId: li.id,
           productId: li.product_id,
@@ -289,14 +391,20 @@ export class CartManager extends EventTarget {
           unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? matchedLocal?.unitPrice ?? 0,
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
-          quantity: li.quantity,
+          quantity: intended ?? li.quantity,
           shipping: li.shipping,
           availableShippings: li.available_shippings,
         }
+        return [line]
       })
     }
     this.persist()
     this.emit()
+
+    const syncedCartId = cart.cartId
+    if (syncedCartId) {
+      for (const id of removedBeforeSync) this.syncQuantity(sponsorId, syncedCartId, id, 0)
+    }
 
     // Replay quantity intents recorded while the line had no backend id yet.
     if (this.pendingQtyIntents.size > 0) {
@@ -437,12 +545,7 @@ export class CartManager extends EventTarget {
         this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
-    this.inFlightMutations.set(opts.sponsorId, mutation)
-    void mutation.finally(() => {
-      if (this.inFlightMutations.get(opts.sponsorId) === mutation) {
-        this.inFlightMutations.delete(opts.sponsorId)
-      }
-    })
+    this.trackMutation(opts.sponsorId, mutation)
 
     return addedItem
   }
@@ -455,13 +558,35 @@ export class CartManager extends EventTarget {
     return `${normId(productId)}::${normId(variantId)}`
   }
 
+  private findLine(sponsorId: number, lineItemId: string): CartLineItem | undefined {
+    return this.cartsBySponsor
+      .get(sponsorId)
+      ?.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
+  }
+
+  /** Change a line's quantity by `delta`, computed on the manager's CURRENT
+   * quantity — not on whatever a UI rendered a moment ago. A burst of +/−
+   * clicks before a re-render therefore asks for 2, 3, 4… and not for the
+   * same target several times. Reaching 0 removes the line. */
+  adjustQuantity(lineItemId: string, sponsorId: number, delta: number): void {
+    const item = this.findLine(sponsorId, lineItemId)
+    if (!item) return
+    this.updateQuantity(lineItemId, sponsorId, item.quantity + delta)
+  }
+
+  /** Set a line's quantity (0 or less removes it). Optimistic: the local
+   * state and `change` update at once; the backend is synced through
+   * `syncQuantity`, one request in flight per line, latest target wins. */
   updateQuantity(lineItemId: string, sponsorId: number, quantity: number): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
     const item = cart.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
     if (!item) return
+    const target = quantity > 0 ? quantity : 0
+    // Already there (or already heading there): nothing new to say or send.
+    if (target === item.quantity) return
     const targetItemId = item.cartItemId
-    if (quantity <= 0) {
+    if (target <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
       // Choke point de la baja: sale acá y no en la UI para que también
       // cuente cuando el host llama removeItem() por API.
@@ -483,7 +608,7 @@ export class CartManager extends EventTarget {
         )
       }
     } else {
-      item.quantity = quantity
+      item.quantity = target
     }
     if (cart.items.length === 0) this.cartsBySponsor.delete(sponsorId)
     this.persist()
@@ -495,33 +620,90 @@ export class CartManager extends EventTarget {
     // sending the local id would 404. Record the intent — it's replayed as
     // soon as the reconcile lands.
     if (!targetItemId) {
-      this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), quantity)
+      this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), target)
       return
     }
 
-    const backendCartId = cart.cartId
-    const seq = this.nextSeq(sponsorId)
-    const mutation = (async () => {
-      try {
-        const gqlOpts = await getCartGraphQLOptions(sponsorId)
-        const resCart =
-          quantity <= 0
-            ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
-            : await gqlUpdateItem(backendCartId, targetItemId, null, quantity, gqlOpts)
-        if (resCart && Array.isArray(resCart.line_items)) {
-          this.applyBackendCart(sponsorId, resCart, seq)
+    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target)
+  }
+
+  /** Send a line's target quantity to the backend — ONE request in flight per
+   * line. A target that arrives while one is in flight replaces any earlier
+   * waiting one and goes out when the current request settles, so the server
+   * ends on the last intent and never sees two updates racing each other.
+   * While the sync is active the line keeps its optimistic quantity through
+   * any backend response (see `updateFromBackendCart`); a rejection drops
+   * what was queued and reconciles the cart from the server. */
+  private syncQuantity(
+    sponsorId: number,
+    backendCartId: string,
+    cartItemId: string,
+    target: number,
+  ): void {
+    const key = this.qtySyncKey(sponsorId, cartItemId)
+    const active = this.qtySyncs.get(key)
+    if (active) {
+      active.pending = target
+      return
+    }
+    const sync: QtySync = { sent: target }
+    this.qtySyncs.set(key, sync)
+
+    const run = (async () => {
+      let next: number | undefined = target
+      let removalRetried = false
+      while (next !== undefined) {
+        sync.sent = next
+        sync.pending = undefined
+        const seq = this.nextSeq(sponsorId)
+        try {
+          const gqlOpts = await getCartGraphQLOptions(sponsorId)
+          const resCart =
+            next <= 0
+              ? await gqlDeleteItem(backendCartId, cartItemId, gqlOpts)
+              : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
+          next = sync.pending
+          // Back where the server already is (+, +, − while in flight):
+          // nothing to send.
+          if (next === sync.sent) next = undefined
+          // Nothing newer queued: the server's view of this line is the truth
+          // now. With a newer target queued the entry stays, so this (already
+          // stale) response cannot roll the line back.
+          if (next === undefined) this.qtySyncs.delete(key)
+          if (resCart && Array.isArray(resCart.line_items)) {
+            const applied = this.applyBackendCart(sponsorId, resCart, seq)
+            if (!applied && next === undefined) {
+              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart)
+            }
+          }
+        } catch (err) {
+          // Rejected: whatever was queued is moot — the server decides — with
+          // one exception. A queued REMOVAL already happened for the shopper
+          // (the line is gone, vio:removed-from-cart went out), so it is sent
+          // once more, once, instead of letting the reconcile bring the line
+          // back without a DeleteItem ever going out.
+          const retryRemoval = !removalRetried && sync.pending !== undefined && sync.pending <= 0
+          next = undefined
+          if (retryRemoval) {
+            removalRetried = true
+            // Entry stays (heading to 0): the reconcile below leaves the line out.
+            sync.sent = 0
+            sync.pending = undefined
+            next = 0
+          } else {
+            this.qtySyncs.delete(key)
+          }
+          // The reconcile emits `change`.
+          this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
+          try {
+            await this.fetchCartFromBackend(sponsorId)
+          } catch (fetchErr) {
+            this.emitError('cart re-sync after a rejected Update/DeleteItem failed', fetchErr)
+          }
         }
-      } catch (err) {
-        this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
-        void this.fetchCartFromBackend(sponsorId)
       }
     })()
-    this.inFlightMutations.set(sponsorId, mutation)
-    void mutation.finally(() => {
-      if (this.inFlightMutations.get(sponsorId) === mutation) {
-        this.inFlightMutations.delete(sponsorId)
-      }
-    })
+    this.trackMutation(sponsorId, run)
   }
 
   removeItem(lineItemId: string, sponsorId: number): void {

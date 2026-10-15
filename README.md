@@ -106,6 +106,12 @@ function Shop() {
 
 Wrappers: `VioProduct`, `VioProductCarousel`, `VioProductDetail`, `VioCart`, `VioCheckout`.
 
+Hosts with their own quantity stepper: change a line with
+`Vio.cart.adjustQuantity(lineItemId, sponsorId, ±1)`, not
+`updateQuantity(…, item.quantity ± 1)` — the delta is applied to the manager's
+live quantity, so quick taps before a re-render never ask for the same target
+twice, and the backend sees one request in flight per line.
+
 ## Theming
 
 Every component reads its colors and fonts from `--vio-*` CSS custom properties

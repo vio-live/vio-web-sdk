@@ -1042,9 +1042,16 @@ interface GraphQLEnvelope {
   errors?: Array<{ message?: string }>
 }
 
+/** Upper bound for one commerce GraphQL round trip. A request that never
+ * answers would otherwise pin a line's quantity sync — and anything awaiting
+ * `waitForCartMutations`, i.e. the checkout — forever; past this it rejects
+ * like any other failure and the caller reconciles from the server. */
+export const CART_GRAPHQL_TIMEOUT_MS = 15_000
+
 /** Execute a GraphQL query/mutation against the configured commerce endpoint.
  * Callers that skip `getCartGraphQLOptions()` (or pass a bare sponsorId) get
- * it resolved here instead of silently sending an unauthenticated request. */
+ * it resolved here instead of silently sending an unauthenticated request.
+ * Rejects after `CART_GRAPHQL_TIMEOUT_MS` (and aborts the fetch). */
 export async function executeCartGraphQL(
   query: string,
   variables: Record<string, unknown>,
@@ -1062,18 +1069,36 @@ export async function executeCartGraphQL(
   if (apiKey) headers['X-API-Key'] = apiKey
   if (commerceKey || apiKey) headers['Authorization'] = (commerceKey || apiKey) as string
 
-  const res = await fetch(endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ query, variables }),
+  // Own timer + AbortController rather than AbortSignal.timeout: the race also
+  // covers a fetch that ignores the signal (polyfills, mocks), and the timer
+  // is an ordinary setTimeout, so it can be tested with fake timers.
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort()
+      reject(new Error(`GraphQL request timed out after ${CART_GRAPHQL_TIMEOUT_MS}ms`))
+    }, CART_GRAPHQL_TIMEOUT_MS)
   })
-
-  const json = (await res.json().catch(() => ({}))) as GraphQLEnvelope
-  if (!res.ok || json.errors) {
-    const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
-    throw new Error(errMsg)
+  try {
+    const res = await Promise.race([
+      fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ query, variables }),
+        signal: controller?.signal,
+      }),
+      timedOut,
+    ])
+    const json = (await Promise.race([res.json().catch(() => ({})), timedOut])) as GraphQLEnvelope
+    if (!res.ok || json.errors) {
+      const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
+      throw new Error(errMsg)
+    }
+    return json
+  } finally {
+    clearTimeout(timer)
   }
-  return json
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */

@@ -604,6 +604,9 @@ export class CheckoutManager extends EventTarget {
 
   /** Create the backend checkout for the sponsor's cart (auto-accepts terms). */
   async createCheckout(sponsorId: number): Promise<any> {
+    // A line changed a moment ago may still be syncing — the checkout must be
+    // built on the cart that change produced, not on the one before it.
+    await this.cartManager.waitForCartMutations(sponsorId)
     const cart = this.cartManager.getCart(sponsorId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -830,6 +833,9 @@ export class CheckoutManager extends EventTarget {
   ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
+    // The payment link is minted for the cart as it is AFTER any in-flight
+    // quantity change — never for the one before it.
+    await this.cartManager.waitForCartMutations(spId)
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -971,6 +977,8 @@ export class CheckoutManager extends EventTarget {
     formData?: unknown,
     options: { express?: boolean } = {},
   ): Promise<any> {
+    const waitFor = sponsorId ?? this.state?.sponsorId
+    if (waitFor) await this.cartManager.waitForCartMutations(waitFor)
     const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
       sponsorId,
       formData,

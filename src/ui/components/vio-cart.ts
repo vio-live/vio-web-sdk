@@ -658,6 +658,8 @@ export class VioCart extends LitElement {
   private async startVippsExpressOrCheckout(sponsorId: number): Promise<void> {
     let fallback = true
     try {
+      // A +/− a moment ago may still be syncing: Vipps must get the cart it produced.
+      await Vio.cart.waitForCartMutations(sponsorId)
       // The seller may have switched Express off on its Vipps row: then the
       // button is an ordinary way into the checkout, with Vipps preselected.
       if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) throw new Error('express off')

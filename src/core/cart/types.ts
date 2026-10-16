@@ -5,6 +5,23 @@
  * mental model stays consistent across platforms.
  */
 
+/**
+ * Where a unit in the cart came from (ADR-0027 / ADR-0034): the campaign
+ * the place showed when it was added, the place (`slot`) and the content
+ * (article). What `Vio.attribution(slot)` answers, minus the sponsor and the
+ * title. The purchase is split per campaign from these.
+ */
+export interface CartOrigin {
+  campaignId?: number
+  slot?: string
+  contentId?: string
+}
+
+/** One origin of a line and how many of its units came from it. */
+export interface CartLineOrigin extends CartOrigin {
+  quantity: number
+}
+
 export interface CartLineItem {
   /** Unique local id for this line item (used for update/remove). */
   id: string
@@ -28,6 +45,12 @@ export interface CartLineItem {
   imageUrl: string
   /** Quantity. */
   quantity: number
+  /**
+   * Where the units came from, most recent last; their quantities add up to
+   * `quantity`. Absent on carts persisted before origins existed — read them
+   * through `lineOrigins()`, which fills the gap with an empty origin.
+   */
+  origins?: CartLineOrigin[]
   /** Selected shipping for this line (backend cart). */
   shipping?: unknown
   /** Shipping options offered by the backend for this line. */

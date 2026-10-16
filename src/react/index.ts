@@ -16,6 +16,14 @@
  *   import { VioProductCarousel } from '@vio-live/web-sdk/react'
  *   Vio.init({ apiKey, apiBase, graphqlBase, stripePublishableKey })
  *   <VioProductCarousel onProductAdd={(e) => console.log(e.detail)} />
+ *
+ * Slots (ADR-0027): the element property is `vioSlot` (attribute `vio-slot`),
+ * so in React it is `<VioProductCarousel vioSlot="hero" />`. `@lit/react`
+ * passes every reactive property of the element class through as a prop and
+ * sets it on the element after mount — the elements re-register the slot from
+ * `updated()`, so the late set is fine. `slot` itself is React's/HTML's own
+ * attribute (shadow DOM slotting) — do not use it for this.
+ * Typed in `index.props.test.ts` (compile-time, checked by `npm run typecheck`).
  */
 
 import * as React from 'react'

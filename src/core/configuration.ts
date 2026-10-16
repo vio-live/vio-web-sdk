@@ -11,11 +11,32 @@
 
 export type Environment = 'development' | 'testing' | 'production'
 
+/**
+ * Platform type of the surface this page belongs to (ADR-0027). It travels
+ * with every slot declaration and as `?platform=` on the bootstrap, so the
+ * campaigns service only answers with the slot assignments of this platform.
+ */
+export type VioPlatform = 'web' | 'custom-web' | 'vev'
+
 export interface VioConfig {
   /** Vio API key for this client app (from the Vio dashboard). */
   apiKey: string
   /** Target environment. Defaults to 'development'. */
   environment?: Environment
+  /**
+   * Platform type of this surface: `web` (the no-code snippet), `custom-web`
+   * (the SDK integrated by code) or `vev`. Defaults to `web`.
+   */
+  platform?: VioPlatform
+  /**
+   * The host's own id for the content (article, page) this SDK instance is
+   * rendered in — the first choice of `Vio.content()`, ahead of the URL query,
+   * the `vio:content-id` meta, the canonical URL and the pathname. Goes on
+   * every analytics event as `content_id`.
+   */
+  contentId?: string | number
+  /** Human-readable title of that content (`content_title`); see `contentId`. */
+  contentTitle?: string
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -49,6 +70,9 @@ export interface VioConfig {
 export interface ResolvedConfig {
   apiKey: string
   environment: Environment
+  platform: VioPlatform
+  contentId?: string | number
+  contentTitle?: string
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -94,6 +118,9 @@ class ConfigurationSingleton {
     this.resolved = {
       apiKey: input.apiKey,
       environment: env,
+      platform: input.platform ?? 'web',
+      contentId: input.contentId,
+      contentTitle: input.contentTitle,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,
@@ -109,6 +136,7 @@ class ConfigurationSingleton {
           : '****'
       console.info('[Vio] Initialized', {
         environment: env,
+        platform: this.resolved.platform,
         apiBase: this.resolved.apiBase,
         apiKey: masked,
         stripeConfigured: !!input.stripePublishableKey,

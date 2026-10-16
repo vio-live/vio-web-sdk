@@ -7,8 +7,23 @@ export {
   Configuration,
   type VioConfig,
   type Environment,
+  type VioPlatform,
   type ResolvedConfig,
 } from './configuration.js'
+
+// Slots (ADR-0027): which campaign a slot shows, from a bootstrap response;
+// the auto identity of an element (`carousel-1`, `article-123-card-2`).
+export {
+  resolveSlotCampaign,
+  autoSlotId,
+  autoSlotDisplayName,
+  normalizeScope,
+  type SlotInput,
+  type SlotKind,
+} from './slots.js'
+
+// Content (article) attribution: what `content_id` / `content_title` carry.
+export { resolveContent, type ContentRef } from './content.js'
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
@@ -57,7 +72,9 @@ export type {
   AddProductOptions,
   AddManualOptions,
 } from './cart/cart-manager.js'
-export type { CartLineItem, SponsorCartState } from './cart/types.js'
+export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
+// Origins: where each unit of a line came from (pure helpers, for hosts and tests).
+export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
 
 // Analytics
 export {
@@ -123,6 +140,10 @@ export type {
   BootstrapCampaignEntry,
   BootstrapCampaignStatus,
   BootstrapSlot,
+  Attribution,
+  ManifestLocation,
+  ManifestRequest,
+  ManifestResult,
   PlacementComponent,
   ImageSize,
 } from './types.js'

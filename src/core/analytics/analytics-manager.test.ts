@@ -700,3 +700,361 @@ describe('X-Api-Key en el fetch de eventos', () => {
     expect(JSON.parse(init.body).apiKey).toBe('test-key')
   })
 })
+
+describe('slot → campaign_id (ADR-0027): explícito → slot → sponsor → default', () => {
+  afterEach(removeFacade)
+
+  /** `campaigns[].slots[]` como lo manda el micro: solo ventanas abiertas. */
+  const SLOT_BOOT: BootstrapResponse = {
+    campaign: { id: 10, name: 'Default' },
+    primarySponsor: sponsor(4),
+    secondarySponsors: [sponsor(5)],
+    campaigns: [
+      {
+        id: 12,
+        name: 'Newer',
+        status: 'active',
+        primarySponsor: sponsor(7),
+        secondarySponsors: [sponsor(8)],
+        slots: [
+          { name: 'hero', platform: null },
+          { name: 'sidebar', platform: 'vev' },
+        ],
+      },
+      {
+        id: 10,
+        name: 'Default',
+        status: 'active',
+        isDefault: true,
+        primarySponsor: sponsor(4),
+        secondarySponsors: [sponsor(5)],
+        slots: [],
+      },
+      { id: 13, name: 'Paused', status: 'paused', primarySponsor: sponsor(9), slots: [{ name: 'footer' }] },
+    ],
+  }
+
+  const contextOf = async (context: Record<string, unknown>) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('la campaña asignada al slot gana sobre la regla del sponsor', () => {
+    // El sponsor 4 diría 10 (default); el slot `hero` está asignado a 12.
+    expect(resolveCampaignId({ slot: 'hero', sponsorId: 4 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'hero' }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('el campaignId explícito sigue ganando sobre el slot', () => {
+    expect(resolveCampaignId({ campaignId: 99, slot: 'hero', sponsorId: 4 }, SLOT_BOOT)).toBe(99)
+  })
+
+  it('un slot sin asignación vigente cae a la regla del sponsor, y sin sponsor al default', () => {
+    expect(resolveCampaignId({ slot: 'unknown', sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'unknown' }, SLOT_BOOT)).toBe(10)
+    // `footer` solo está en una campaña pausada: no cuenta.
+    expect(resolveCampaignId({ slot: 'footer', sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'footer' }, SLOT_BOOT)).toBe(10)
+    expect(resolveCampaignId({ slot: '' , sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('respeta la plataforma de Vio.init: una asignación solo-vev no aplica en web', () => {
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', platform: 'web' })
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(10)
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', platform: 'vev' })
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(12)
+    Configuration.reset()
+    // Sin init no hay plataforma: cualquier asignación cuenta.
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('unos slots[] malformados no rompen track()', () => {
+    const boot = {
+      campaign: { id: 3, name: 'D' },
+      campaigns: [
+        { id: 4, status: 'active', slots: 'x' },
+        { id: 5, status: 'active', slots: [null, 7, { name: 'hero', startDate: 'bad', endDate: {} }] },
+      ],
+    } as unknown as BootstrapResponse
+    expect(() => resolveCampaignId({ slot: 'hero' }, boot)).not.toThrow()
+    expect(resolveCampaignId({ slot: 'hero' }, boot)).toBe(5)
+    expect(resolveCampaignId({ slot: 'hero' }, { campaign: { id: 3, name: 'D' }, campaigns: 'nope' } as never)).toBe(3)
+    expect(resolveCampaignId({ slot: 'hero' }, null)).toBeUndefined()
+  })
+
+  it('en el cable: campaign_id del slot y location_id = slot salvo locationId explícito', async () => {
+    installFacade(SLOT_BOOT)
+    const ctx = await contextOf({ slot: 'hero', sponsorId: 4 })
+    expect(ctx.campaign_id).toBe(12)
+    expect(ctx.location_id).toBe('hero')
+    expect(ctx.sponsor_id).toBe(4)
+    const explicit = await contextOf({ slot: 'hero', locationId: 'carousel-top' })
+    expect(explicit.location_id).toBe('carousel-top')
+    expect(explicit.campaign_id).toBe(12)
+    const none = await contextOf({ sponsorId: 4 })
+    expect(none.location_id).toBeUndefined()
+  })
+
+  it('los eventos vio:* de los componentes llevan el slot al contexto', async () => {
+    installFacade(SLOT_BOOT)
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 408948, sponsorId: 4, name: 'Bonding Oil', price: 300, slot: 'hero' },
+      }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 408948, sponsorId: 4, slot: 'hero' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, slot: ' hero ' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, slot: 7 } }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches.flatMap((b) => b.events)
+    const byName = (name: string) =>
+      events.filter((e) => e.name === name).map((e) => e.context as Record<string, unknown>)
+    expect(byName('select_item')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero', sponsor_id: 4 })
+    expect(byName('add_to_cart')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero' })
+    expect(byName('begin_checkout')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero' })
+    // Un slot que no es string se ignora: cae a la regla del sponsor (4 → default).
+    expect(byName('begin_checkout')[1]).toMatchObject({ campaign_id: 10 })
+    expect(byName('begin_checkout')[1]!.location_id).toBeUndefined()
+    m.stop()
+  })
+})
+
+describe('content_id / content_title automáticos (el artículo va a analytics, no al slot)', () => {
+  afterEach(removeFacade)
+
+  const facadeWithContent = (content: { id?: string; title?: string }) => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => content,
+    }
+  }
+
+  const contextOf = async (context: Record<string, unknown> = {}) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('toma el contenido del facade (Vio.content()) cuando el evento no trae uno', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBe('article-123')
+    expect(ctx.content_title).toBe('Título del artículo')
+  })
+
+  it('el contentId / contentTitle explícitos del evento ganan', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({ contentId: 999, contentTitle: 'Mío' })
+    expect(ctx.content_id).toBe(999)
+    expect(ctx.content_title).toBe('Mío')
+  })
+
+  it('sin facade con content() sigue como antes: document.title y sin content_id', async () => {
+    installFacade({ campaign: { id: 1, name: 'x' } })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBeUndefined()
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('un content() que lanza no rompe track()', async () => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => {
+        throw new Error('boom')
+      },
+    }
+    const ctx = await contextOf({})
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('los eventos vio:* llevan el override por elemento (vio-content-id / vio-content-title)', async () => {
+    facadeWithContent({ id: 'page', title: 'Page' })
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 1, sponsorId: 4, slot: 'card-1', contentId: 'art-9', contentTitle: ' Nine ' },
+      }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 1, sponsorId: 4, slot: 'card-1' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, contentId: 7 } }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches.flatMap((b) => b.events)
+    const ctxOf = (name: string) => events.find((e) => e.name === name)!.context as Record<string, unknown>
+    expect(ctxOf('select_item')).toMatchObject({ location_id: 'card-1', content_id: 'art-9', content_title: 'Nine' })
+    // Without an override the page's content applies.
+    expect(ctxOf('add_to_cart')).toMatchObject({ location_id: 'card-1', content_id: 'page', content_title: 'Page' })
+    expect(ctxOf('begin_checkout')).toMatchObject({ content_id: 7, content_title: 'Page' })
+    m.stop()
+  })
+})
+
+describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', () => {
+  afterEach(removeFacade)
+
+  /** Dos campañas activas con el MISMO sponsor (4): solo el origen las distingue. */
+  const TWO: BootstrapResponse = {
+    campaign: { id: 10, name: 'Default' },
+    primarySponsor: sponsor(4),
+    secondarySponsors: [],
+    campaigns: [
+      { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+      { id: 12, name: 'Hero', status: 'active', primarySponsor: sponsor(4), slots: [{ name: 'hero' }] },
+    ],
+  }
+
+  const line = (over: Partial<FakeLine> & { id?: string; origins?: unknown }) =>
+    ({
+      id: 'l',
+      productId: 1,
+      variantId: undefined,
+      name: 'Lamp',
+      brand: 'B',
+      unitPrice: 100,
+      currency: 'NOK',
+      quantity: 1,
+      sponsorId: 4,
+      ...over,
+    }) as FakeLine
+
+  const paid = async (lines: FakeLine[], detail: Record<string, unknown> = {}) => {
+    installFacade(TWO, fakeCart({ 4: lines }))
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4 } }) as unknown as Event)
+    win.dispatchEvent(
+      new CustomEvent('vio:payment-success', {
+        detail: { sponsorId: 4, method: 'klarna', orderId: 'chk-77', ...detail },
+      }) as unknown as Event,
+    )
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    return {
+      checkouts: events.filter((e) => e.name === 'begin_checkout'),
+      purchases: events.filter((e) => e.name === 'purchase'),
+    }
+  }
+
+  it('dos campañas en el carrito → dos purchase (y dos begin_checkout) con sus items, su value y el mismo order_id', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 3, origins: [
+        { campaignId: 12, slot: 'hero', contentId: 'art-1', quantity: 2 },
+        { campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 },
+      ] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 }] }),
+    ])
+    expect(purchases).toHaveLength(2)
+    expect(checkouts).toHaveLength(2)
+    const byCampaign = (list: Array<Record<string, unknown>>, id: number) =>
+      list.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!
+    const hero = byCampaign(purchases, 12)
+    const def = byCampaign(purchases, 10)
+    expect(hero.commerce).toMatchObject({ value: 200, currency: 'NOK', order_id: 'chk-77', payment_method: 'klarna' })
+    expect((hero.commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', quantity: 2, price: 100 }),
+    ])
+    expect(hero.context).toMatchObject({ campaign_id: 12, location_id: 'hero', content_id: 'art-1', sponsor_id: 4 })
+    expect(def.commerce).toMatchObject({ value: 150, order_id: 'chk-77' })
+    expect((def.commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', quantity: 1 }),
+      expect.objectContaining({ product_id: '2', quantity: 1 }),
+    ])
+    expect(def.context).toMatchObject({ campaign_id: 10, location_id: 'carousel-1', content_id: 'art-1' })
+    // El pedido sigue sumando: 200 + 150 = 350 = 3×100 + 1×50.
+    expect(byCampaign(checkouts, 12).commerce).toMatchObject({ value: 200 })
+    expect(byCampaign(checkouts, 10).commerce).toMatchObject({ value: 150 })
+  })
+
+  it('un carrito de una sola campaña se comporta como hoy: un purchase con todo', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [{ campaignId: 10, slot: 'carousel-1', quantity: 2 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }),
+    ])
+    expect(purchases).toHaveLength(1)
+    expect(checkouts).toHaveLength(1)
+    expect(purchases[0]!.commerce).toMatchObject({ value: 250, order_id: 'chk-77' })
+    expect((purchases[0]!.commerce as { items: unknown[] }).items).toHaveLength(2)
+    // Sin slot en el detail ni campaignId explícito: la regla de siempre (sponsor 4 → default 10).
+    expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4 })
+    expect((purchases[0]!.context as Record<string, unknown>).location_id).toBeUndefined()
+  })
+
+  it('las unidades sin origen caen en la campaña que resuelve la regla actual para el sponsor', async () => {
+    const { purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }), // carrito viejo, sin origins
+    ])
+    expect(purchases).toHaveLength(2)
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!
+    expect(def.commerce).toMatchObject({ value: 150 })
+    expect((def.commerce as { items: Array<Record<string, unknown>> }).items.map((i) => [i.product_id, i.quantity])).toEqual([
+      ['1', 1],
+      ['2', 1],
+    ])
+  })
+
+  it('un origen con slot pero sin campaignId se resuelve por el slot; slots distintos en un slice no ponen location_id', async () => {
+    const { purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 2, origins: [
+        { campaignId: 10, slot: 'carousel-1', quantity: 1 },
+        { campaignId: 10, slot: 'carousel-2', quantity: 1 },
+      ] }),
+    ])
+    expect(purchases).toHaveLength(2)
+    const hero = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 12)!
+    expect(hero.context).toMatchObject({ location_id: 'hero' })
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!
+    expect((def.context as Record<string, unknown>).location_id).toBeUndefined()
+    expect(def.commerce).toMatchObject({ value: 100 })
+  })
+
+  it('purchase también se parte desde el snapshot cuando el carrito ya se vació', async () => {
+    const cart = fakeCart({ 4: [
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, quantity: 1 }] }),
+    ] })
+    const listeners: Array<(ev: Event) => void> = []
+    cart.addEventListener = ((_: string, h: (ev: Event) => void) => void listeners.push(h)) as never
+    installFacade(TWO, cart)
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    // El change con items llena el snapshot; luego el carrito se vacía (Apple Pay / vio-cart).
+    listeners.forEach((h) => h(new CustomEvent('change', { detail: { cartsBySponsor: cart.getAllCarts() } }) as unknown as Event))
+    cart.getAllCarts().clear()
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:payment-success', { detail: { sponsorId: 4, orderId: 'chk-1' } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const purchases = flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase')
+    expect(purchases).toHaveLength(2)
+    expect(purchases.map((p) => (p.commerce as { value: number }).value).sort()).toEqual([100, 50])
+  })
+})

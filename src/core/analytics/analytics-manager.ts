@@ -30,8 +30,11 @@
  */
 
 import { Configuration } from '../configuration.js'
+import { resolveContent, type ContentRef } from '../content.js'
+import { findSlotAssignment } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
+import { lineOrigins } from '../cart/cart-manager.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
@@ -87,6 +90,14 @@ export interface AnalyticsContext {
   /** Código corto del fallo (`sdk_error` / `checkout_error`). */
   errorCode?: string
   variant?: string
+  /**
+   * The slot (ADR-0027) the component sits in — its `vio-slot`. Attribution
+   * follows it: the event's `campaign_id` is the campaign assigned to the slot
+   * right now, before the sponsor rule. On the wire it fills `location_id`
+   * when no explicit `locationId` is given (a slot IS a location id to the
+   * campaigns service).
+   */
+  slot?: string
 }
 
 export interface AnalyticsItemInput {
@@ -162,6 +173,14 @@ const IMPRESSION_THRESHOLD = 0.5
 const IMPRESSION_DWELL_MS = 1_000
 
 // ── Wire shape (snake_case, contract v1) ────────────────────────────────────
+
+/** One campaign's share of the cart (see `cartSlices`). */
+interface CartSlice {
+  campaignId?: number
+  slot?: string
+  contentId?: string
+  commerce: AnalyticsCommerce
+}
 
 interface WireEvent {
   event_id: string
@@ -422,23 +441,29 @@ export class AnalyticsManager extends EventTarget {
 
     const boot = vioBootstrapCache()
     const ctx = opts.context ?? {}
+    // The article/page this instance renders in — resolved by the SDK when the
+    // event brings no explicit content (see core/content.ts).
+    const content = ctx.contentId === undefined || ctx.contentTitle === undefined ? vioContent() : {}
     const context: Record<string, unknown> = compact({
       campaign_id: resolveCampaignId(ctx, boot),
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
-      location_id: ctx.locationId,
+      // A slot is a location id to the campaigns service (ADR-0027).
+      location_id: ctx.locationId ?? ctx.slot,
       component_template_id: ctx.componentTemplateId,
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
       content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
       // The host's own content id — its join key back onto its reporting.
-      content_id: ctx.contentId,
+      // Explicit on the event, else what the SDK resolved for the page.
+      content_id: ctx.contentId ?? content.id,
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
       error_code: ctx.errorCode,
       content_title:
         ctx.contentTitle ??
+        content.title ??
         (typeof document !== 'undefined' && document.title
           ? document.title.slice(0, 255)
           : undefined),
@@ -611,10 +636,10 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -642,10 +667,13 @@ export class AnalyticsManager extends EventTarget {
         quantity?: number
         currency?: string
         sponsorId?: number
+        slot?: string
+        contentId?: string | number
+        contentTitle?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       this.track('remove_from_cart', {
-        context: { sponsorId: d.sponsorId },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -680,11 +708,14 @@ export class AnalyticsManager extends EventTarget {
         name?: string
         brand?: string
         price?: number | string
+        slot?: string
+        contentId?: string | number
+        contentTitle?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -704,10 +735,22 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:checkout-open', (ev) => {
-      const d = (ev as CustomEvent<{ sponsorId?: number }>).detail ?? {}
+      const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
+      const slices = this.cartSlices(d.sponsorId)
+      if (slices.length > 1) {
+        // Several campaigns in the cart: one begin_checkout per campaign, each
+        // with its own items and value (see cartSlices).
+        for (const slice of slices) {
+          this.track('begin_checkout', {
+            context: this.sliceContext(slice, { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) }),
+            commerce: slice.commerce,
+          })
+        }
+        return
+      }
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
-        context: { sponsorId: d.sponsorId },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
         ...(snap ? { commerce: snap } : {}),
       })
     })
@@ -715,9 +758,22 @@ export class AnalyticsManager extends EventTarget {
     on('vio:payment-success', (ev) => {
       const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
-      const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
+      const slices = this.cartSlices(sponsorId) // falls back to the pre-clear snapshot
+      if (slices.length > 1) {
+        // Several campaigns paid in one go: one purchase per campaign — its
+        // items and value, the SAME order_id — so each campaign's revenue is
+        // its own and the order still adds up.
+        for (const slice of slices) {
+          this.track('purchase', {
+            context: this.sliceContext(slice, { sponsorId, slot: slotOf(d), ...contentOf(d) }),
+            commerce: { ...slice.commerce, ...purchaseFromPaymentSuccess(d), paymentMethod: d.method },
+          })
+        }
+        return
+      }
+      const snap = this.cartCommerce(sponsorId)
       this.track('purchase', {
-        context: { sponsorId },
+        context: { sponsorId, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
@@ -727,6 +783,90 @@ export class AnalyticsManager extends EventTarget {
         },
       })
     })
+  }
+
+  /** The lines of the cart (current, else the pre-clear snapshot), optionally one sponsor's. */
+  private cartLines(sponsorId?: number): CartLineItem[] {
+    let items: CartLineItem[] = []
+    const cart = vioCart()
+    if (cart) {
+      cart.getAllCarts().forEach((state, id) => {
+        if (sponsorId === undefined || id === sponsorId) items.push(...state.items)
+      })
+    }
+    if (items.length === 0 && this.lastCartSnapshot) {
+      items = this.lastCartSnapshot.items.filter(
+        (i) => sponsorId === undefined || i.sponsorId === sponsorId,
+      )
+    }
+    return items
+  }
+
+  /**
+   * The cart split per campaign (ADR-0034): every unit of every line goes to
+   * the campaign of its origin — the one the place showed when it was added
+   * — and units without one to the campaign the current rule resolves for
+   * the line's sponsor. One slice per campaign: its items (quantities from
+   * the origins), its value, and the slot / content when they are the same
+   * for the whole slice. A cart with one campaign is one slice.
+   */
+  private cartSlices(sponsorId?: number): CartSlice[] {
+    const lines = this.cartLines(sponsorId)
+    if (lines.length === 0) return []
+    const boot = vioBootstrapCache()
+    const slices = new Map<string, CartSlice & { slots: Set<string>; contents: Set<string>; lines: Map<string, AnalyticsItemInput> }>()
+    for (const line of lines) {
+      for (const origin of lineOrigins(line)) {
+        const campaignId =
+          origin.campaignId ?? resolveCampaignId({ slot: origin.slot, sponsorId: line.sponsorId }, boot)
+        const key = campaignId === undefined ? 'default' : String(campaignId)
+        let slice = slices.get(key)
+        if (!slice) {
+          slice = {
+            campaignId,
+            commerce: { items: [], value: 0, currency: line.currency ?? this.lastCartSnapshot?.currency },
+            slots: new Set(),
+            contents: new Set(),
+            lines: new Map(),
+          }
+          slices.set(key, slice)
+        }
+        if (origin.slot) slice.slots.add(origin.slot)
+        if (origin.contentId) slice.contents.add(origin.contentId)
+        const itemKey = `${line.productId}::${line.variantId ?? ''}`
+        const item = slice.lines.get(itemKey)
+        if (item) item.quantity = (item.quantity ?? 0) + origin.quantity
+        else {
+          const fresh: AnalyticsItemInput = {
+            productId: line.productId,
+            name: line.name,
+            brand: line.brand,
+            variantId: line.variantId,
+            price: line.unitPrice,
+            quantity: origin.quantity,
+          }
+          slice.lines.set(itemKey, fresh)
+          slice.commerce.items!.push(fresh)
+        }
+        slice.commerce.value = (slice.commerce.value ?? 0) + line.unitPrice * origin.quantity
+      }
+    }
+    return [...slices.values()].map((s) => ({
+      campaignId: s.campaignId,
+      slot: s.slots.size === 1 ? [...s.slots][0] : undefined,
+      contentId: s.contents.size === 1 ? [...s.contents][0] : undefined,
+      commerce: s.commerce,
+    }))
+  }
+
+  /** The context of a per-campaign event: the slice's campaign, slot and content, over the event's own. */
+  private sliceContext(slice: CartSlice, base: AnalyticsContext): AnalyticsContext {
+    return compact({
+      ...base,
+      campaignId: slice.campaignId ?? base.campaignId,
+      slot: slice.slot ?? base.slot,
+      contentId: slice.contentId ?? base.contentId,
+    }) as AnalyticsContext
   }
 
   /** Current cart → commerce payload; falls back to the pre-clear snapshot. */
@@ -834,6 +974,7 @@ function eventsBase(): string {
 interface FacadeLike {
   bootstrapCache: BootstrapResponse | null
   cart: CartManager
+  content?: () => ContentRef
 }
 function vioFacade(): FacadeLike | null {
   const g = globalThis as unknown as { __VIO_FACADE__?: FacadeLike }
@@ -841,6 +982,15 @@ function vioFacade(): FacadeLike | null {
 }
 function vioBootstrapCache(): BootstrapResponse | null {
   return vioFacade()?.bootstrapCache ?? null
+}
+/** The page's content (article) — the facade's per-page cache, else resolved here. */
+function vioContent(): ContentRef {
+  try {
+    const facade = vioFacade()
+    return typeof facade?.content === 'function' ? facade.content() : resolveContent()
+  } catch {
+    return {}
+  }
 }
 function vioCart(): CartManager | null {
   try {
@@ -854,22 +1004,29 @@ function vioCart(): CartManager | null {
 
 /**
  * The `campaign_id` of an event. In order: the context's explicit id; the
- * active campaign of `campaigns[]` the event's sponsor takes part in, as its
- * primary or one of its secondaries — when it is in several, the surface's
- * default campaign if it is one of them, else the first one the backend
- * lists; the default campaign (`campaign.id`). `/v2/mobile/config` has no
- * top-level `campaignId` — reading one is why every event used to leave
- * with `campaign_id: 0` and the campaigns screen stayed empty.
+ * campaign assigned to the context's `slot` right now (ADR-0027 — only an
+ * open assignment for the init platform counts, see `findSlotAssignment`);
+ * the active campaign of `campaigns[]` the event's sponsor takes part in, as
+ * its primary or one of its secondaries — when it is in several, the
+ * surface's default campaign if it is one of them, else the first one the
+ * backend lists; the default campaign (`campaign.id`). `/v2/mobile/config`
+ * has no top-level `campaignId` — reading one is why every event used to
+ * leave with `campaign_id: 0` and the campaigns screen stayed empty.
  *
  * A malformed `campaigns[]` (not an array, a null entry) never breaks
  * `track()`: it falls back to `campaign.id`.
  */
 export function resolveCampaignId(
-  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId'>,
+  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId' | 'slot'>,
   boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
 ): number | undefined {
   if (ctx.campaignId !== undefined) return ctx.campaignId
   const defaultId = boot?.campaign?.id
+  if (ctx.slot) {
+    const platform = Configuration.isInitialized ? Configuration.get().platform : undefined
+    const assigned = toNumber(findSlotAssignment(boot, ctx.slot, Date.now(), platform)?.id)
+    if (assigned !== undefined) return assigned
+  }
   const sponsorId = toNumber(ctx.sponsorId)
   if (sponsorId === undefined) return defaultId
   try {
@@ -888,6 +1045,20 @@ export function resolveCampaignId(
     /* a malformed campaigns[] must never break track() */
   }
   return defaultId
+}
+
+/** The `slot` a `vio:*` event detail carries, when it is a non-empty string. */
+function slotOf(detail: { slot?: unknown }): string | undefined {
+  return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
+}
+
+/** The per-element content override a `vio:*` event detail carries (`vio-content-id` / `vio-content-title`). */
+function contentOf(detail: { contentId?: unknown; contentTitle?: unknown }): Pick<AnalyticsContext, 'contentId' | 'contentTitle'> {
+  const out: Pick<AnalyticsContext, 'contentId' | 'contentTitle'> = {}
+  if (typeof detail.contentId === 'number' && Number.isFinite(detail.contentId)) out.contentId = detail.contentId
+  else if (typeof detail.contentId === 'string' && detail.contentId.trim()) out.contentId = detail.contentId.trim()
+  if (typeof detail.contentTitle === 'string' && detail.contentTitle.trim()) out.contentTitle = detail.contentTitle.trim()
+  return out
 }
 
 function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
@@ -912,6 +1083,11 @@ function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
 export interface PaymentSuccessDetail {
   method?: string
   sponsorId?: number | string
+  /** The slot the purchase started from, when the emitter knows it. */
+  slot?: string
+  /** Per-element content override (`vio-content-id` / `vio-content-title`), when the emitter carries one. */
+  contentId?: string | number
+  contentTitle?: string
   /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */

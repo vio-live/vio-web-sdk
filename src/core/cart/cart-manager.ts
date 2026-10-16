@@ -18,7 +18,7 @@ import {
   primaryImageUrl,
   type Product,
 } from '../types.js'
-import type { CartLineItem, SponsorCartState } from './types.js'
+import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
 import {
   addItem as gqlAddItem,
   createCart as gqlCreateCart,
@@ -44,6 +44,8 @@ export interface AddProductOptions {
   sponsorName?: string
   quantity?: number
   variantId?: number
+  /** Where these units come from (`Vio.attribution(slot)`); see `CartOrigin`. */
+  origin?: CartOrigin
 }
 
 /** Minimal product shape — for callers who only have e.g. mock data, not a full Product. */
@@ -58,6 +60,8 @@ export interface AddManualOptions {
   imageUrl: string
   quantity?: number
   variantId?: number
+  /** Where these units come from (`Vio.attribution(slot)`); see `CartOrigin`. */
+  origin?: CartOrigin
 }
 
 /** One backend quantity sync for one line. See `CartManager.qtySyncs`. */
@@ -192,6 +196,7 @@ export class CartManager extends EventTarget {
     let changed = false
     if (server.quantity !== line.quantity) {
       line.quantity = server.quantity
+      line.origins = reconciledOrigins(line.origins, server.quantity)
       changed = true
     }
     if (price != null && price !== line.unitPrice) {
@@ -392,6 +397,11 @@ export class CartManager extends EventTarget {
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
+          // The server knows nothing about origins: keep the local ones,
+          // squared with the quantity it answered.
+          origins: matchedLocal
+            ? reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
+            : undefined,
           shipping: li.shipping,
           availableShippings: li.available_shippings,
         }
@@ -451,6 +461,7 @@ export class CartManager extends EventTarget {
       imageUrl,
       quantity: opts.quantity,
       variantId: opts.variantId,
+      origin: opts.origin,
     })
   }
 
@@ -487,6 +498,7 @@ export class CartManager extends EventTarget {
     })
     if (existing) {
       existing.quantity += qty
+      addOriginQuantity(existing, opts.origin, qty)
     } else {
       const item: CartLineItem = {
         id: lineId(),
@@ -499,6 +511,7 @@ export class CartManager extends EventTarget {
         currency: opts.currency,
         imageUrl: opts.imageUrl,
         quantity: qty,
+        origins: [{ ...normalizeOrigin(opts.origin), quantity: qty }],
       }
       cart.items.push(item)
     }
@@ -537,6 +550,7 @@ export class CartManager extends EventTarget {
         const line = c?.items.find((i) => i.id === addedLineId)
         if (c && line) {
           line.quantity -= qty
+          removeOriginQuantity(line, qty)
           if (line.quantity <= 0) c.items = c.items.filter((i) => i !== line)
           if (c.items.length === 0) this.cartsBySponsor.delete(opts.sponsorId)
           this.persist()
@@ -568,16 +582,26 @@ export class CartManager extends EventTarget {
    * quantity — not on whatever a UI rendered a moment ago. A burst of +/−
    * clicks before a re-render therefore asks for 2, 3, 4… and not for the
    * same target several times. Reaching 0 removes the line. */
-  adjustQuantity(lineItemId: string, sponsorId: number, delta: number): void {
+  adjustQuantity(
+    lineItemId: string,
+    sponsorId: number,
+    delta: number,
+    opts: { origin?: CartOrigin } = {},
+  ): void {
     const item = this.findLine(sponsorId, lineItemId)
     if (!item) return
-    this.updateQuantity(lineItemId, sponsorId, item.quantity + delta)
+    this.updateQuantity(lineItemId, sponsorId, item.quantity + delta, opts)
   }
 
   /** Set a line's quantity (0 or less removes it). Optimistic: the local
    * state and `change` update at once; the backend is synced through
    * `syncQuantity`, one request in flight per line, latest target wins. */
-  updateQuantity(lineItemId: string, sponsorId: number, quantity: number): void {
+  updateQuantity(
+    lineItemId: string,
+    sponsorId: number,
+    quantity: number,
+    opts: { origin?: CartOrigin } = {},
+  ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
     const item = cart.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
@@ -586,6 +610,11 @@ export class CartManager extends EventTarget {
     // Already there (or already heading there): nothing new to say or send.
     if (target === item.quantity) return
     const targetItemId = item.cartItemId
+    // The origins follow the quantity: more units go to the given origin (or
+    // the most recent one), fewer come off the most recent first.
+    const removedOrigin = latestOrigin(item)
+    if (target > item.quantity) addOriginQuantity(item, opts.origin, target - item.quantity)
+    else removeOriginQuantity(item, item.quantity - target)
     if (target <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
       // Choke point de la baja: sale acá y no en la UI para que también
@@ -603,6 +632,10 @@ export class CartManager extends EventTarget {
               quantity: item.quantity,
               currency: item.currency,
               sponsorId,
+              // Attribution of the removed units: their most recent origin.
+              slot: removedOrigin?.slot,
+              campaignId: removedOrigin?.campaignId,
+              contentId: removedOrigin?.contentId,
             },
           }),
         )
@@ -835,4 +868,97 @@ export class CartManager extends EventTarget {
     }
     this.dispatchEvent(new CustomEvent<CartChangeDetail>('change', { detail }))
   }
+}
+
+// ── Origins (where each unit of a line came from) ───────────────────────────
+
+/** Only the three attribution fields, trimmed; `{}` when nothing is known. */
+export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrigin {
+  const out: CartOrigin = {}
+  if (!origin || typeof origin !== 'object') return out
+  const campaignId = Number(origin.campaignId)
+  if (origin.campaignId !== undefined && origin.campaignId !== null && Number.isFinite(campaignId)) {
+    out.campaignId = campaignId
+  }
+  if (typeof origin.slot === 'string' && origin.slot.trim()) out.slot = origin.slot.trim()
+  if (origin.contentId !== undefined && origin.contentId !== null && String(origin.contentId).trim()) {
+    out.contentId = String(origin.contentId).trim()
+  }
+  return out
+}
+
+/** Two origins are the same place when campaign, slot and content all match. */
+export function sameOrigin(a: CartOrigin, b: CartOrigin): boolean {
+  return a.campaignId === b.campaignId && a.slot === b.slot && a.contentId === b.contentId
+}
+
+/** The most recent origin of a line, or undefined. */
+export function latestOrigin(line: Pick<CartLineItem, 'origins'>): CartLineOrigin | undefined {
+  const origins = Array.isArray(line.origins) ? line.origins : []
+  return origins[origins.length - 1]
+}
+
+/**
+ * `qty` more units from `origin`: added to the matching origin when there is
+ * one (moved to the end, as the most recent), else to a new one. Without an
+ * origin they go to the most recent origin — or to an empty `{}` one.
+ */
+export function addOriginQuantity(
+  line: Pick<CartLineItem, 'origins'>,
+  origin: CartOrigin | null | undefined,
+  qty: number,
+): void {
+  if (!(qty > 0)) return
+  const origins = Array.isArray(line.origins) ? line.origins : []
+  const target: CartOrigin | undefined = origin ? normalizeOrigin(origin) : latestOrigin({ origins })
+  const index = target ? origins.findIndex((o) => sameOrigin(o, target)) : -1
+  if (index >= 0) {
+    const [found] = origins.splice(index, 1)
+    found!.quantity += qty
+    origins.push(found!)
+  } else {
+    origins.push({ ...(target ?? {}), quantity: qty })
+  }
+  line.origins = origins
+}
+
+/** `qty` fewer units: off the most recent origins first. */
+export function removeOriginQuantity(line: Pick<CartLineItem, 'origins'>, qty: number): void {
+  if (!(qty > 0) || !Array.isArray(line.origins)) return
+  let left = qty
+  const origins = line.origins
+  while (left > 0 && origins.length > 0) {
+    const last = origins[origins.length - 1]!
+    const take = Math.min(last.quantity, left)
+    last.quantity -= take
+    left -= take
+    if (last.quantity <= 0) origins.pop()
+  }
+}
+
+/** Origins squared with a quantity the server answered (stock clamps, re-syncs). */
+export function reconciledOrigins(
+  origins: CartLineOrigin[] | undefined,
+  quantity: number,
+): CartLineOrigin[] | undefined {
+  if (!Array.isArray(origins)) return undefined
+  const copy = origins.map((o) => ({ ...o }))
+  const total = copy.reduce((sum, o) => sum + (o.quantity > 0 ? o.quantity : 0), 0)
+  const line = { origins: copy }
+  if (quantity > total) addOriginQuantity(line, undefined, quantity - total)
+  else if (quantity < total) removeOriginQuantity(line, total - quantity)
+  return line.origins
+}
+
+/**
+ * The origins of a line for reporting: what it carries, plus an empty origin
+ * for any units it does not account for (a cart persisted before origins
+ * existed, a server-side bump). Their quantities add up to the line's.
+ */
+export function lineOrigins(line: Pick<CartLineItem, 'origins' | 'quantity'>): CartLineOrigin[] {
+  const known = (Array.isArray(line.origins) ? line.origins : []).filter((o) => o && o.quantity > 0)
+  const total = known.reduce((sum, o) => sum + o.quantity, 0)
+  const quantity = line.quantity > 0 ? line.quantity : 0
+  if (total >= quantity) return known.map((o) => ({ ...o }))
+  return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
 }

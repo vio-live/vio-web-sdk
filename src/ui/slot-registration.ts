@@ -41,10 +41,10 @@
 
 import { Vio } from '../core/client.js'
 import {
-  SLOT_ID_MAX_LENGTH,
   autoSlotDisplayName,
   autoSlotId,
   normalizeScope,
+  normalizeSlotId,
   type SlotKind,
 } from '../core/slots.js'
 
@@ -67,10 +67,15 @@ export const SCOPE_DATA_ATTR = 'data-vio-scope'
 export const SCOPE_NAME_DATA_ATTR = 'data-vio-scope-name'
 
 /**
- * Live elements per auto id, document-wide (one map per page, like the Vio
- * facade). Only auto ids: a host id may be shared on purpose.
+ * Live elements per auto id, document-wide. Anchored on `globalThis` like the
+ * Vio facade: a page with several bundle copies (Vev chunks) must share ONE
+ * map, or two copies would both hand out `carousel-1`. Only auto ids: a host
+ * id may be shared on purpose.
  */
-const liveAutoIds = new Map<string, Set<Element>>()
+const liveAutoIds: Map<string, Set<Element>> = (() => {
+  const g = globalThis as unknown as { __VIO_LIVE_SLOT_IDS__?: Map<string, Set<Element>> }
+  return g.__VIO_LIVE_SLOT_IDS__ ?? (g.__VIO_LIVE_SLOT_IDS__ = new Map())
+})()
 
 export class SlotRegistration {
   private identity: SlotIdentity | null = null
@@ -128,7 +133,7 @@ export class SlotRegistration {
 
   /** What the identity is for these attributes (null before connect without a host id). */
   resolve(attrs: SlotAttributes): SlotIdentity | null {
-    const explicit = typeof attrs.vioSlot === 'string' ? attrs.vioSlot.trim().slice(0, SLOT_ID_MAX_LENGTH) : ''
+    const explicit = normalizeSlotId(attrs.vioSlot)
     const name =
       typeof attrs.vioSlotName === 'string' && attrs.vioSlotName.trim() ? attrs.vioSlotName.trim() : undefined
     if (explicit) {

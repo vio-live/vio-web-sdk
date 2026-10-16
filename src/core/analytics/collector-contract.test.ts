@@ -122,4 +122,17 @@ describe('buildEvent never sends what the collector rejects', () => {
     doc.title = 'd'.repeat(400)
     expect((await tracked()).content_title).toHaveLength(255)
   })
+
+  it('an over-long explicit locationId gives way to the slot when that fits', async () => {
+    expect((await tracked({ locationId: 'l'.repeat(200), slot: 'carousel-1' })).location_id).toBe('carousel-1')
+    expect((await tracked({ locationId: 'l'.repeat(200), slot: 's'.repeat(200) })).location_id).toBeUndefined()
+  })
+
+  it('content_url is cut to 2 048 — the query string first, else the URL itself', async () => {
+    loc.href = 'https://host.example/a?' + 'q'.repeat(3_000)
+    expect((await tracked()).content_url).toBe('https://host.example/a')
+    loc.href = 'https://host.example/' + 'p'.repeat(3_000) + '#x'
+    expect((await tracked()).content_url).toHaveLength(2_048)
+    expect((await tracked({ contentUrl: 'https://host.example/short?x=1' })).content_url).toBe('https://host.example/short?x=1')
+  })
 })

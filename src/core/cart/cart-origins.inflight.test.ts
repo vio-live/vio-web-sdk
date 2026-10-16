@@ -52,6 +52,7 @@ beforeEach(() => {
   vi.stubGlobal('localStorage', undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   gql.addItem.mockReset()
+  gql.updateItem.mockReset()
 })
 
 afterEach(() => {
@@ -117,5 +118,49 @@ describe('origins while mutations are in flight', () => {
     // Stock clamp answered later, with nothing pending.
     cart.updateFromBackendCart(SPONSOR, serverCart(1))
     expect(cart.getCart(SPONSOR)!.items[0]!.origins).toEqual([{ ...HERO, quantity: 1 }])
+  })
+})
+
+describe('a stock clamp in a mutation\'s OWN answer squares the origins (regression vs 0.23.0)', () => {
+  it('add 5 from hero, server answers 3, then add 1 from carousel-1 → [hero:3, carousel-1:1]', async () => {
+    gql.addItem.mockResolvedValueOnce(serverCart(3)).mockResolvedValueOnce(serverCart(4))
+    const cart = new CartManager()
+    cart.addManual({ productId: 9, sponsorId: SPONSOR, brand: 'S', name: 'Morris', unitPrice: 100, currency: 'NOK', imageUrl: '', quantity: 5, origin: HERO })
+    await cart.waitForCartMutations(SPONSOR)
+    const line = () => cart.getCart(SPONSOR)!.items[0]!
+    expect(line().quantity).toBe(3)
+    expect(line().origins).toEqual([{ ...HERO, quantity: 3 }])
+
+    lamp(cart, CAROUSEL)
+    expect(line().origins).toEqual([
+      { ...HERO, quantity: 3 },
+      { ...CAROUSEL, quantity: 1 },
+    ])
+    await cart.waitForCartMutations(SPONSOR)
+    expect(line().quantity).toBe(4)
+    expect(line().origins).toEqual([
+      { ...HERO, quantity: 3 },
+      { ...CAROUSEL, quantity: 1 },
+    ])
+  })
+
+  it('a clamp answered by UpdateItem squares them too', async () => {
+    gql.addItem.mockResolvedValueOnce(serverCart(1))
+    gql.updateItem.mockResolvedValueOnce(serverCart(3))
+    const cart = new CartManager()
+    lamp(cart, HERO)
+    await cart.waitForCartMutations(SPONSOR)
+    cart.adjustQuantity(cart.getCart(SPONSOR)!.items[0]!.id, SPONSOR, +4, { origin: CAROUSEL })
+    expect(cart.getCart(SPONSOR)!.items[0]!.origins).toEqual([
+      { ...HERO, quantity: 1 },
+      { ...CAROUSEL, quantity: 4 },
+    ])
+    await cart.waitForCartMutations(SPONSOR)
+    const line = cart.getCart(SPONSOR)!.items[0]!
+    expect(line.quantity).toBe(3)
+    expect(line.origins).toEqual([
+      { ...HERO, quantity: 1 },
+      { ...CAROUSEL, quantity: 2 },
+    ])
   })
 })

@@ -154,10 +154,15 @@ export function toNumber(value: unknown): number | undefined {
 
 // ── Declaration helpers ─────────────────────────────────────────────────────
 
-/** A single slot name as the server stores it: trimmed and cut at 100 chars. */
+/**
+ * THE normalization of a slot id — trimmed, cut at the server's 100 chars,
+ * trimmed again (a space at position 100 must not survive the cut). Used by
+ * the elements' identity, `registerSlot`, `declareSlots` and `attribution`,
+ * so every copy of an id is the same string.
+ */
 export function normalizeSlotId(value: unknown): string {
   if (typeof value !== 'string') return ''
-  return value.trim().slice(0, SLOT_ID_MAX_LENGTH)
+  return value.trim().slice(0, SLOT_ID_MAX_LENGTH).trim()
 }
 
 /**

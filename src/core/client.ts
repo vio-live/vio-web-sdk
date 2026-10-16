@@ -390,7 +390,7 @@ class VioFacade {
   attribution(slot?: string | null, hint?: { sponsorId?: number | string }): Attribution {
     const out: Attribution = {}
     try {
-      const name = typeof slot === 'string' ? slot.trim() : ''
+      const name = normalizeSlotId(slot)
       if (name) out.slot = name
       const boot = this.cachedBootstrap
       const hinted = toNumber(hint?.sponsorId)

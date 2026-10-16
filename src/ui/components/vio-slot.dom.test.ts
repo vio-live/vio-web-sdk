@@ -202,11 +202,16 @@ describe('scope, inherited from the DOM', () => {
     expect(registerSlot).toHaveBeenCalledWith(el.effectiveSlot, 'Card 1')
     el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
     expect(click.detail!.slot).toBe(el.effectiveSlot)
-    // A host id is cut the same way.
+    // A host id is cut the same way — and a space at position 100 does not survive the cut,
+    // so what the element exposes is exactly what `registerSlot` normalizes.
     unmountAll()
     const long = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'h'.repeat(130) })
     expect(long.effectiveSlot).toBe('h'.repeat(100))
     expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(100), undefined)
+    unmountAll()
+    const spaced = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'h'.repeat(99) + ' tail' })
+    expect(spaced.effectiveSlot).toBe('h'.repeat(99))
+    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(99), undefined)
   })
 })
 
@@ -451,5 +456,29 @@ describe('<vio-product-detail> and the card that opened it', () => {
     const ctx = (track.mock.calls.find((c) => c[0] === 'view_item')![1] as { context: Record<string, unknown> }).context
     expect(ctx.slot).toBe('detail-1')
     expect(ctx.contentId).toBe('article-123')
+  })
+
+  it("W-2: a product the host opens by hand after a card-driven open gets the detail's own slot and the page's content", async () => {
+    const el = await mount<VioProductDetail>('vio-product-detail')
+    await click({ productId: '9', sponsorId: '3', slot: 'hero', contentId: 'art-9', contentTitle: 'Nine' }, el)
+    expect(track).toHaveBeenCalledWith('view_item', expect.objectContaining({ context: expect.objectContaining({ slot: 'hero', contentId: 'art-9' }) }))
+    track.mockClear()
+    // No close(): the host swaps the product programmatically while the detail is open.
+    el.productId = '10'
+    el.sponsorId = 3
+    el.show()
+    await (el as unknown as { fetchProduct: () => Promise<void> }).fetchProduct()
+    for (let i = 0; i < 3; i++) await settle(el)
+    const ctx = (track.mock.calls.find((c) => c[0] === 'view_item')![1] as { context: Record<string, unknown> }).context
+    expect(ctx.slot).toBe('detail-1')
+    expect(ctx.contentId).toBe('article-123')
+    expect(ctx.contentTitle).toBe('Título')
+    // Back to the product the card opened (same id): the card's context applies again until close().
+    track.mockClear()
+    el.productId = '9'
+    await (el as unknown as { fetchProduct: () => Promise<void> }).fetchProduct()
+    for (let i = 0; i < 3; i++) await settle(el)
+    const again = (track.mock.calls.find((c) => c[0] === 'view_item')![1] as { context: Record<string, unknown> }).context
+    expect(again.slot).toBe('hero')
   })
 })

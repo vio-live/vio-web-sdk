@@ -445,12 +445,17 @@ export class AnalyticsManager extends EventTarget {
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
-      // A slot is a location id to the campaigns service (ADR-0027).
-      location_id: fitsId(ctx.locationId ?? ctx.slot),
+      // A slot is a location id to the campaigns service (ADR-0027). An
+      // explicit location id that does not fit gives way to the slot.
+      location_id: fitsId(ctx.locationId) ?? fitsId(ctx.slot),
       component_template_id: ctx.componentTemplateId,
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
-      content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
+      // Cut to the collector's 2 048 — the query string first, since a long
+      // one is usually the tracking tail, not the page. The other host-given
+      // fields (broadcastId, componentTemplateId, errorCode, variant, …) are
+      // the host's responsibility: the SDK does not touch them.
+      content_url: capUrl(ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined)),
       // The host's own content id — its join key back onto its reporting.
       // Explicit on the event when it fits, else what the SDK resolved for
       // the page (already capped per source), else nothing.
@@ -834,6 +839,10 @@ export class AnalyticsManager extends EventTarget {
       campaignId: slice.campaignId,
       slot: slice.slot,
       contentId: slice.contentId,
+      // The click's title only describes the click's content: when the slice
+      // is another article (or several), the page's own title applies instead.
+      contentTitle:
+        slice.contentId !== undefined && slice.contentId === base.contentId ? base.contentTitle : undefined,
     }) as AnalyticsContext
   }
 
@@ -970,7 +979,7 @@ function vioFacade(): FacadeLike | null {
 function vioBootstrapCache(): BootstrapResponse | null {
   return vioFacade()?.bootstrapCache ?? null
 }
-/** The page's content (article) — the facade's per-page cache, else resolved here. */
+/** The page's content (article) — through the facade (live, init options included), else resolved here. */
 function vioContent(): ContentRef {
   try {
     const facade = vioFacade()
@@ -1050,6 +1059,18 @@ function fitsId<T extends string | number>(value: T | null | undefined): T | und
 function capTitle(value: string | undefined): string | undefined {
   if (!value) return undefined
   return value.length > CONTENT_TITLE_MAX_LENGTH ? value.slice(0, CONTENT_TITLE_MAX_LENGTH) : value
+}
+
+/** The collector caps `content_url` at 2 048 chars. */
+const CONTENT_URL_MAX_LENGTH = 2_048
+
+/** A URL within the cap: as is, else without its query string, else cut. */
+function capUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  if (value.length <= CONTENT_URL_MAX_LENGTH) return value
+  const cut = value.search(/[?#]/)
+  const withoutQuery = cut >= 0 ? value.slice(0, cut) : value
+  return withoutQuery.length <= CONTENT_URL_MAX_LENGTH ? withoutQuery : withoutQuery.slice(0, CONTENT_URL_MAX_LENGTH)
 }
 
 /** A slice as the commerce block of its event. */

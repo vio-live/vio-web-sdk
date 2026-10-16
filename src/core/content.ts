@@ -9,8 +9,8 @@
  *
  * Pure: `resolveContent()` takes the document and location (defaults to the
  * globals) so it can be tested, never throws, and answers `{}` where there is
- * no DOM (SSR, node tests). `Vio.content()` caches it per page and forgets the
- * cache on every `Vio.init()`.
+ * no DOM (SSR, node tests). `Vio.content()` resolves it live on every call —
+ * an SPA route change or a new title is seen on the next event.
  */
 
 export interface ContentRef {

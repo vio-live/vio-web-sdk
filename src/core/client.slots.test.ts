@@ -491,6 +491,12 @@ describe('Vio.attribution()', () => {
     expect(Vio.attribution(null, { sponsorId: '3' })).toEqual({ sponsorId: 3 })
   })
 
+  it('caps the slot like registerSlot does (same 100-char id everywhere)', () => {
+    init()
+    expect(Vio.attribution(' ' + 'h'.repeat(130)).slot).toBe('h'.repeat(100))
+    expect(Vio.attribution('h'.repeat(99) + ' tail').slot).toBe('h'.repeat(99))
+  })
+
   it("after the bootstrap: the slot's campaign and its primary sponsor; the default without a slot or assignment", async () => {
     init('web')
     await Vio.bootstrap()

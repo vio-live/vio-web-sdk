@@ -68,10 +68,16 @@ export class VioProductDetail extends LitElement {
   /** Per-element override of the content title. */
   @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
   private readonly slotRegistration = new SlotRegistration(this, 'detail')
-  /** What the click that opened the detail carried ('' when nothing). */
+  /** What the click that opened the detail carried ('' when nothing), and for which product. */
   private eventSlot = ''
   private eventContentId = ''
   private eventContentTitle = ''
+  private eventProductId = ''
+
+  /** The card's context applies to the product it opened — not to one the host opened by hand later. */
+  private get fromCard(): boolean {
+    return this.eventProductId !== '' && this.eventProductId === String(this.productId)
+  }
 
   /** The slot id in effect for this element: `vio-slot`, else the auto id (`detail-N`). Read-only. */
   get effectiveSlot(): string {
@@ -80,7 +86,7 @@ export class VioProductDetail extends LitElement {
 
   /** The slot the open product is attributed to: the opening card's, else this element's. */
   private get activeSlot(): string {
-    return this.eventSlot || this.effectiveSlot
+    return (this.fromCard && this.eventSlot) || this.effectiveSlot
   }
 
   private slotAttributes() {
@@ -98,8 +104,8 @@ export class VioProductDetail extends LitElement {
       typeof Vio.attribution === 'function'
         ? Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
         : { slot: this.activeSlot || undefined }
-    const contentId = this.eventContentId || this.vioContentId
-    const contentTitle = this.eventContentTitle || this.vioContentTitle
+    const contentId = (this.fromCard && this.eventContentId) || this.vioContentId
+    const contentTitle = (this.fromCard && this.eventContentTitle) || this.vioContentTitle
     return {
       ...base,
       ...(contentId ? { contentId } : {}),
@@ -167,6 +173,7 @@ export class VioProductDetail extends LitElement {
       sponsorIdNum = fromSlot
     }
     this.eventSlot = slot
+    this.eventProductId = String(ev.detail.productId)
     this.eventContentId =
       ev.detail.contentId !== undefined && ev.detail.contentId !== null ? String(ev.detail.contentId).trim() : ''
     this.eventContentTitle = typeof ev.detail.contentTitle === 'string' ? ev.detail.contentTitle.trim() : ''
@@ -653,6 +660,7 @@ export class VioProductDetail extends LitElement {
         this.eventSlot = ''
         this.eventContentId = ''
         this.eventContentTitle = ''
+        this.eventProductId = ''
         this.product = null
         this.sellerName = null
         this.sellerSettled = false

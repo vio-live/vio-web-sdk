@@ -12,18 +12,12 @@
  * one campaign is one slice. Pure; never throws on odd lines.
  */
 
+import type { AnalyticsItemInput } from '../analytics/analytics-manager.js'
 import { lineOrigins } from './cart-manager.js'
 import type { CartLineItem } from './types.js'
 
 /** An item of a slice — the analytics item shape (ids as given, normalized on the wire). */
-export interface VioItem {
-  productId: number | string
-  name?: string
-  brand?: string
-  variantId?: number | string
-  price?: number
-  quantity?: number
-}
+export type VioItem = AnalyticsItemInput
 
 /** One campaign's share of the cart. */
 export interface CartSlice {

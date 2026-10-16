@@ -133,9 +133,17 @@ export class CartManager extends EventTarget {
     }
   }
 
-  /** True while an AddItem/UpdateItem/DeleteItem of this sponsor has not settled. */
-  private hasMutationsInFlight(sponsorId: number): boolean {
-    return (this.inFlightMutations.get(sponsorId)?.size ?? 0) > 0
+  /**
+   * True while an AddItem/UpdateItem/DeleteItem of this sponsor OTHER than
+   * `except` has not settled. A mutation applying its own answer passes
+   * itself: its response is current for what IT sent — only the others make
+   * it stale.
+   */
+  private hasMutationsInFlight(sponsorId: number, except?: Promise<unknown>): boolean {
+    const set = this.inFlightMutations.get(sponsorId)
+    if (!set || set.size === 0) return false
+    for (const m of set) if (m !== except) return true
+    return false
   }
 
   /** Register a backend mutation so `waitForCartMutations` can await it. */
@@ -169,11 +177,16 @@ export class CartManager extends EventTarget {
 
   /** Apply a backend response only if no newer response was applied already.
    * Returns false when it was discarded as stale. */
-  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): boolean {
+  private applyBackendCart(
+    sponsorId: number,
+    backendCart: unknown,
+    seq: number,
+    settling?: Promise<unknown>,
+  ): boolean {
     if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return false
     this.appliedSeq.set(sponsorId, seq)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.updateFromBackendCart(sponsorId, backendCart as any)
+    this.updateFromBackendCart(sponsorId, backendCart as any, { settling })
     return true
   }
 
@@ -192,6 +205,7 @@ export class CartManager extends EventTarget {
         price?: { amount?: number; amount_incl_taxes?: number | null } | null
       }>
     },
+    settling?: Promise<unknown>,
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     const line = cart?.items.find((i) => i.cartItemId === cartItemId || i.id === cartItemId)
@@ -201,7 +215,7 @@ export class CartManager extends EventTarget {
     let changed = false
     if (server.quantity !== line.quantity) {
       line.quantity = server.quantity
-      if (!this.hasMutationsInFlight(sponsorId)) {
+      if (!this.hasMutationsInFlight(sponsorId, settling)) {
         line.origins = reconciledOrigins(line.origins, server.quantity)
       }
       changed = true
@@ -295,7 +309,11 @@ export class CartManager extends EventTarget {
     return creation
   }
 
-  /** Overwrite local cart state with the backend cart response (source of truth). */
+  /**
+   * Overwrite local cart state with the backend cart response (source of
+   * truth). `opts.settling` is the mutation whose answer this is: it does not
+   * count as "in flight" for the origins (see `hasMutationsInFlight`).
+   */
   updateFromBackendCart(
     sponsorId: number,
     backendCart: {
@@ -325,6 +343,7 @@ export class CartManager extends EventTarget {
         available_shippings?: unknown[]
       }>
     },
+    opts: { settling?: Promise<unknown> } = {},
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
@@ -405,11 +424,12 @@ export class CartManager extends EventTarget {
           imageUrl,
           quantity: intended ?? li.quantity,
           // The server knows nothing about origins: keep the local ones. They
-          // are squared with its quantity only when nothing is in flight for
-          // this sponsor — an AddItem answering while another is pending
-          // reports a quantity that is already old (see `lineOrigins`).
+          // are squared with its quantity (a stock clamp) only when no OTHER
+          // mutation is in flight for this sponsor — an AddItem answering
+          // while another is pending reports a quantity that is already old
+          // (see `lineOrigins`).
           origins: matchedLocal
-            ? this.hasMutationsInFlight(sponsorId)
+            ? this.hasMutationsInFlight(sponsorId, opts.settling)
               ? matchedLocal.origins
               : reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
             : undefined,
@@ -536,6 +556,8 @@ export class CartManager extends EventTarget {
     // reverts the local line (a ghost line means the UI total and the charged
     // total diverge silently).
     const seq = this.nextSeq(opts.sponsorId)
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
     const mutation = (async () => {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
@@ -550,7 +572,7 @@ export class CartManager extends EventTarget {
           ]
           const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
           if (resCart && Array.isArray(resCart.line_items)) {
-            this.applyBackendCart(opts.sponsorId, resCart, seq)
+            this.applyBackendCart(opts.sponsorId, resCart, seq, settling)
           }
         }
         // No cartId (no commerce key): the cart stays local-only; checkout is
@@ -571,6 +593,7 @@ export class CartManager extends EventTarget {
         this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
+    settling = mutation
     this.trackMutation(opts.sponsorId, mutation)
 
     return addedItem
@@ -694,6 +717,8 @@ export class CartManager extends EventTarget {
     const sync: QtySync = { sent: target }
     this.qtySyncs.set(key, sync)
 
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
     const run = (async () => {
       let next: number | undefined = target
       let removalRetried = false
@@ -716,9 +741,9 @@ export class CartManager extends EventTarget {
           // stale) response cannot roll the line back.
           if (next === undefined) this.qtySyncs.delete(key)
           if (resCart && Array.isArray(resCart.line_items)) {
-            const applied = this.applyBackendCart(sponsorId, resCart, seq)
+            const applied = this.applyBackendCart(sponsorId, resCart, seq, settling)
             if (!applied && next === undefined) {
-              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart)
+              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart, settling)
             }
           }
         } catch (err) {
@@ -748,6 +773,7 @@ export class CartManager extends EventTarget {
         }
       }
     })()
+    settling = run
     this.trackMutation(sponsorId, run)
   }
 

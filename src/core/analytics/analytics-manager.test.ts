@@ -1087,6 +1087,26 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
     expect(hero).toMatchObject({ location_id: 'hero', content_id: 'art-1' })
   })
 
+  it("W-3: the click's content_title travels only with the click's content_id", async () => {
+    const { purchases } = await paid(
+      [
+        line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-9', quantity: 1 }] }),
+        line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 }] }),
+        line({ id: 'c', productId: 3, unitPrice: 10, quantity: 2, origins: [
+          { campaignId: 13, contentId: 'art-1', quantity: 1 },
+          { campaignId: 13, contentId: 'art-2', quantity: 1 },
+        ] }),
+      ],
+      { contentId: 'art-9', contentTitle: 'Nine' },
+    )
+    const ctxOf = (id: number) => purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!.context as Record<string, unknown>
+    expect(ctxOf(12)).toMatchObject({ content_id: 'art-9', content_title: 'Nine' })
+    expect(ctxOf(10).content_id).toBe('art-1')
+    expect(ctxOf(10).content_title).not.toBe('Nine')
+    expect(ctxOf(13).content_id).toBeUndefined()
+    expect(ctxOf(13).content_title).not.toBe('Nine')
+  })
+
   it('W7: el campaignId explícito del detail de un elemento es la campaña del evento', async () => {
     installFacade(TWO, fakeCart({ 4: [line({ id: 'a' })] }))
     initVio()

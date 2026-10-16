@@ -28,6 +28,8 @@ import {
   MAX_LOCATIONS_PER_DECLARATION,
   SLOT_DECLARATION_FAILURE_TTL_MS,
   SLOT_DECLARATION_TTL_MS,
+  activeCampaignEntry,
+  campaignCandidates,
   normalizeSlotId,
   normalizeSlotLocations,
   pendingSlotKeys,
@@ -36,8 +38,10 @@ import {
   resolveSlotCampaign,
   slotDeclarationKey,
   slotDeclarationStorageKey,
+  toCampaignId,
   toNumber,
   writeSlotDeclaration,
+  type CampaignHint,
   type SlotInput,
 } from './slots.js'
 import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
@@ -46,6 +50,7 @@ import type {
   Attribution,
   BootstrapCampaignEntry,
   BootstrapResponse,
+  ManifestLocation,
   ManifestResult,
   Sponsor,
 } from './types.js'
@@ -66,8 +71,11 @@ class VioFacade {
    * belongs to that configuration and must not land in this one. */
   private generation = 0
 
-  /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each + its display name. */
-  private slotRegistry = new Map<string, { count: number; displayName?: string }>()
+  /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each, its display name and its own campaign. */
+  private slotRegistry = new Map<string, { count: number; displayName?: string; campaignId?: number }>()
+  /** Slots already warned about (`dashboard`: the dashboard's assignment stands; `replaced`: this page moved it). */
+  private warnedDashboardSlots = new Set<string>()
+  private warnedReplacedSlots = new Set<string>()
   /** Pending debounced declaration of the registry. */
   private slotDeclareTimer: ReturnType<typeof setTimeout> | null = null
   /** A name appeared (or the key changed) since the registry was last declared. */
@@ -106,6 +114,8 @@ class VioFacade {
     this.declarationsThisLoad = 0
     this.warnedLocationCap = false
     this.warnedDeclarationCap = false
+    this.warnedDashboardSlots.clear()
+    this.warnedReplacedSlots.clear()
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
   }
@@ -268,12 +278,20 @@ class VioFacade {
       const cfg = Configuration.get()
       storageKey = slotDeclarationStorageKey(cfg.platform, cfg.apiKey)
       now = Date.now()
+      // The page's campaign goes top-level; a location names its own only when
+      // it differs from the page's (ADR-0034, amendment 3).
+      const pageCampaignId = cfg.campaignId
+      for (const l of all) {
+        if (l.campaignId !== undefined && l.campaignId === pageCampaignId) delete l.campaignId
+      }
       // Per id, not per set: only what this browser has not declared (under
-      // this name) in the last 24 h goes out — a multi-page site declares each
-      // page's new ids once, a renamed block again, a failed attempt after 1 h.
+      // this name and campaign) in the last 24 h goes out — a multi-page site
+      // declares each page's new ids once, a renamed block or a page that
+      // changed campaign again, a failed attempt after 1 h.
       const memory = readSlotDeclaration(storageKey)
-      const pending = new Set(pendingSlotKeys(memory, all.map(slotDeclarationKey), now))
-      let locations = opts.force ? all : all.filter((l) => pending.has(slotDeclarationKey(l)))
+      const keyOf = (l: ManifestLocation) => slotDeclarationKey(l, pageCampaignId)
+      const pending = new Set(pendingSlotKeys(memory, all.map(keyOf), now))
+      let locations = opts.force ? all : all.filter((l) => pending.has(keyOf(l)))
       if (locations.length === 0) return null
       if (locations.length > MAX_LOCATIONS_PER_DECLARATION) {
         if (!this.warnedLocationCap) {
@@ -284,7 +302,7 @@ class VioFacade {
         }
         locations = locations.slice(0, MAX_LOCATIONS_PER_DECLARATION)
       }
-      keys = locations.map(slotDeclarationKey)
+      keys = locations.map(keyOf)
       if (!opts.force && this.declarationsThisLoad >= MAX_DECLARATIONS_PER_LOAD) {
         if (!this.warnedDeclarationCap) {
           this.warnedDeclarationCap = true
@@ -299,14 +317,23 @@ class VioFacade {
         platform: cfg.platform,
         mode: 'merge',
         locations,
+        ...(pageCampaignId !== undefined ? { campaignId: pageCampaignId } : {}),
       })
+      this.reportAssignments(result, locations, pageCampaignId, cfg.debug)
       // A server that predates `mode` drops the field, answers 200 without it
       // and REPLACES (it deprecates the other pages' slots). Only a declaration
       // the server confirms as merged is remembered for 24 h — a replace is
       // remembered for 1 h, so the next load (not every view) tries again,
-      // and succeeds once the server is updated.
+      // and succeeds once the server is updated. A location whose campaign the
+      // micro did not take up (no `assignment` at all — an older micro — or
+      // `none` for a campaign the bootstrap lists as active) is remembered for
+      // 1 h too, so the page's campaign lands once the micro is updated.
       if (result?.mode === 'merge') {
-        writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, now))
+        const unhandled = this.campaignNotTakenUp(result, locations, pageCampaignId)
+        const settled = keys.filter((k) => !unhandled.has(k))
+        let next = rememberSlotKeys(memory, settled, now)
+        if (unhandled.size > 0) next = rememberSlotKeys(next, [...unhandled], failedAt(now))
+        writeSlotDeclaration(storageKey, next)
       } else {
         writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, failedAt(now)))
         warn(
@@ -327,25 +354,32 @@ class VioFacade {
   /**
    * Register a slot present on the page (the `<vio-*>` elements call it with
    * their effective id — the host's `vio-slot` or the auto-generated one —
-   * and the optional display name). The registry is declared ONCE, debounced,
-   * after the first successful bootstrap — and again whenever a new id or a
-   * new display name appears. A `displayName` given later for an id already
-   * registered replaces the one kept; `undefined` leaves it alone. The
-   * returned function unregisters; removal never re-declares.
+   * the optional display name, and the element's own campaign when it has
+   * one: `vio-campaign` or an ancestor's `data-vio-campaign`). The registry is
+   * declared ONCE, debounced, after the first successful bootstrap — and again
+   * whenever a new id, display name or campaign appears. A `displayName` /
+   * `campaignId` given later for an id already registered replaces the one
+   * kept; `undefined` leaves it alone. The returned function unregisters;
+   * removal never re-declares.
    */
-  registerSlot(name: string, displayName?: string): () => void {
+  registerSlot(name: string, displayName?: string, campaignId?: number | string | null): () => void {
     const id = normalizeSlotId(name)
     if (!id) return () => {}
     const label = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined
+    const campaign = toCampaignId(campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
     const entry = this.slotRegistry.get(id)
     let changed = false
     if (!entry) {
-      this.slotRegistry.set(id, { count: 1, displayName: label })
+      this.slotRegistry.set(id, { count: 1, displayName: label, campaignId: campaign })
       changed = true
     } else {
       entry.count++
       if (label !== undefined && label !== entry.displayName) {
         entry.displayName = label
+        changed = true
+      }
+      if (campaign !== undefined && campaign !== entry.campaignId) {
+        entry.campaignId = campaign
         changed = true
       }
     }
@@ -369,9 +403,35 @@ class VioFacade {
    * open campaign for the init platform, else the surface's default. With no
    * slot, the default. `null` before the bootstrap. See `resolveSlotCampaign`.
    */
-  campaignForSlot(slot?: string | null): BootstrapCampaignEntry | null {
-    const platform = Configuration.isInitialized ? Configuration.get().platform : undefined
-    return resolveSlotCampaign(this.cachedBootstrap, slot ?? null, Date.now(), platform)
+  campaignForSlot(
+    slot?: string | null,
+    hint?: { campaignId?: CampaignHint; sponsorId?: number | string | null },
+  ): BootstrapCampaignEntry | null {
+    const config = Configuration.isInitialized ? Configuration.get() : undefined
+    return resolveSlotCampaign(
+      this.cachedBootstrap,
+      slot ?? null,
+      Date.now(),
+      config?.platform,
+      this.pageCampaignCandidates(hint?.campaignId),
+      toNumber(hint?.sponsorId),
+    )
+  }
+
+  /** The page-campaign candidates in precedence order: the element's (own, ancestor), then `Vio.init`'s. */
+  private pageCampaignCandidates(hint: CampaignHint): number[] {
+    const config = Configuration.isInitialized ? Configuration.get() : undefined
+    return campaignCandidates([...(Array.isArray(hint) ? hint : [hint]), config?.campaignId])
+  }
+
+  /**
+   * The campaign the PAGE belongs to (`Vio.init({ campaignId })`, ADR-0034
+   * amendment 3), as the last bootstrap lists it — only when it is there and
+   * active; `null` otherwise (no page campaign, paused, unknown, no bootstrap).
+   */
+  pageCampaign(): BootstrapCampaignEntry | null {
+    const config = Configuration.isInitialized ? Configuration.get() : undefined
+    return activeCampaignEntry(this.cachedBootstrap, config?.campaignId)
   }
 
   /**
@@ -384,23 +444,33 @@ class VioFacade {
    *
    * `hint.sponsorId` — when the caller already knows the sponsor (a card with
    * `sponsor-id`) it is kept as `sponsorId`, and the campaign follows the same
-   * cascade analytics uses (slot assignment → the sponsor's active campaign →
-   * default), so what the cart remembers matches what the events say.
+   * cascade analytics uses (slot assignment → page campaign → the sponsor's
+   * active campaign → default), so what the cart remembers matches what the
+   * events say — the page campaign applies there only when that sponsor takes
+   * part in it. `hint.campaignId` — the element's own page campaign
+   * candidates (`vio-campaign`, an ancestor's `data-vio-campaign`), ahead of
+   * `Vio.init`'s; an unusable one falls through to the next; `0` = unset.
    */
-  attribution(slot?: string | null, hint?: { sponsorId?: number | string }): Attribution {
+  attribution(
+    slot?: string | null,
+    hint?: { sponsorId?: number | string; campaignId?: CampaignHint },
+  ): Attribution {
     const out: Attribution = {}
     try {
       const name = normalizeSlotId(slot)
       if (name) out.slot = name
       const boot = this.cachedBootstrap
       const hinted = toNumber(hint?.sponsorId)
+      const pageCampaignId = this.pageCampaignCandidates(hint?.campaignId)
       if (boot) {
         if (hinted !== undefined) {
-          const campaignId = resolveCampaignId({ slot: name || undefined, sponsorId: hinted }, boot)
+          const campaignId = resolveCampaignId({ slot: name || undefined, sponsorId: hinted }, boot, {
+            pageCampaignId,
+          })
           if (campaignId !== undefined) out.campaignId = campaignId
           out.sponsorId = hinted
         } else {
-          const campaign = this.campaignForSlot(name || null)
+          const campaign = this.campaignForSlot(name || null, { campaignId: pageCampaignId })
           const campaignId = toNumber(campaign?.id)
           if (campaignId !== undefined) out.campaignId = campaignId
           const sponsorId = toNumber(campaign?.primarySponsor?.id)
@@ -447,15 +517,76 @@ class VioFacade {
     }
   }
 
+  /**
+   * What the micro did with the page's campaign per slot (`assignment`):
+   * `console.debug` when `Vio.init({ debug: true })`; a warning once per
+   * slot when the dashboard's own assignment stands (only for a slot this
+   * page actually sent a campaign for) and once per slot when this page moved
+   * it from an earlier page assignment (`replaced`).
+   */
+  private reportAssignments(
+    result: ManifestResult | null | undefined,
+    sent: ReadonlyArray<ManifestLocation>,
+    pageCampaignId: number | undefined,
+    debug: boolean,
+  ): void {
+    const answered = Array.isArray(result?.locations) ? result.locations : []
+    const campaignFor = (id: string) =>
+      sent.find((l) => l.id === id)?.campaignId ?? pageCampaignId
+    for (const l of answered) {
+      if (!l || typeof l !== 'object' || !l.assignment) continue
+      if (debug && typeof console !== 'undefined') console.debug('[Vio] slot', l.locationId, 'assignment:', l.assignment)
+      const sentCampaign = campaignFor(l.locationId)
+      if (sentCampaign === undefined) continue
+      if (l.assignment === 'dashboard' && !this.warnedDashboardSlots.has(l.locationId)) {
+        this.warnedDashboardSlots.add(l.locationId)
+        warn(`slot ${l.locationId} is assigned from the dashboard; the page's campaign is ignored there`)
+      }
+      if (l.assignment === 'replaced' && !this.warnedReplacedSlots.has(l.locationId)) {
+        this.warnedReplacedSlots.add(l.locationId)
+        warn(`slot ${l.locationId} moved to campaign ${sentCampaign} by this page (it replaced an earlier page assignment)`)
+      }
+    }
+  }
+
+  /**
+   * The memory keys of the sent locations whose campaign the micro did not
+   * take up: every location when a campaign was sent and no answer carries
+   * `assignment` (an older micro), or the ones answered `none` for a campaign
+   * the bootstrap lists as active. They are remembered with the 1 h TTL.
+   */
+  private campaignNotTakenUp(
+    result: ManifestResult | null | undefined,
+    sent: ReadonlyArray<ManifestLocation>,
+    pageCampaignId: number | undefined,
+  ): Set<string> {
+    const out = new Set<string>()
+    const withCampaign = sent.filter((l) => (l.campaignId ?? pageCampaignId) !== undefined)
+    if (withCampaign.length === 0) return out
+    const answered = Array.isArray(result?.locations) ? result.locations : []
+    const anyAssignment = answered.some((l) => l && typeof l === 'object' && !!l.assignment)
+    for (const l of withCampaign) {
+      const answer = answered.find((a) => a && a.locationId === l.id)
+      const campaignId = l.campaignId ?? pageCampaignId
+      const notTaken =
+        !anyAssignment ||
+        (answer?.assignment === 'none' && activeCampaignEntry(this.cachedBootstrap, campaignId) !== null)
+      if (notTaken) out.add(slotDeclarationKey(l, pageCampaignId))
+    }
+    return out
+  }
+
   private scheduleSlotDeclaration(): void {
     if (this.slotDeclareTimer) clearTimeout(this.slotDeclareTimer)
     this.slotDeclareTimer = setTimeout(() => {
       this.slotDeclareTimer = null
       this.slotsDirty = false
       void this.declareSlots(
-        [...this.slotRegistry.entries()].map(([id, { displayName }]) =>
-          displayName ? { id, displayName } : id,
-        ),
+        [...this.slotRegistry.entries()].map(([id, { displayName, campaignId }]) => ({
+          id,
+          ...(displayName ? { displayName } : {}),
+          ...(campaignId !== undefined ? { campaignId } : {}),
+        })),
       )
     }, SLOT_DECLARATION_DEBOUNCE_MS)
   }

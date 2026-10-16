@@ -9,6 +9,8 @@
  * them from env vars / their config and passes them to `Vio.init`.
  */
 
+import { toCampaignId } from './slots.js'
+
 export type Environment = 'development' | 'testing' | 'production'
 
 /**
@@ -37,6 +39,17 @@ export interface VioConfig {
   contentId?: string | number
   /** Human-readable title of that content (`content_title`); see `contentId`. */
   contentTitle?: string
+  /**
+   * The campaign this PAGE belongs to (ADR-0034, amendment 3) — an editorial
+   * page (a Vev article, a Replit article) that is part of one campaign. Its
+   * slots are declared with it (the micro assigns them unless the dashboard
+   * already did) and, until that round-trips, the elements already resolve to
+   * it: assignment → page campaign → default. DOM alternative, inheritable:
+   * `data-vio-campaign` on any ancestor, or `vio-campaign` on the element.
+   */
+  campaignId?: number
+  /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
+  debug?: boolean
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -73,6 +86,8 @@ export interface ResolvedConfig {
   platform: VioPlatform
   contentId?: string | number
   contentTitle?: string
+  campaignId?: number
+  debug: boolean
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -121,6 +136,8 @@ class ConfigurationSingleton {
       platform: input.platform ?? 'web',
       contentId: input.contentId,
       contentTitle: input.contentTitle,
+      campaignId: toCampaignId(input.campaignId),
+      debug: input.debug === true,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,

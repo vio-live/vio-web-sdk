@@ -105,6 +105,8 @@ export interface BootstrapSlot {
   platform?: string | null
   startDate?: string | null
   endDate?: string | null
+  /** Who assigned it: the dashboard (always wins) or a page's own campaign (campaigns micro PR #16). */
+  source?: 'dashboard' | 'page' | null
 }
 
 /**
@@ -154,6 +156,8 @@ export interface BootstrapResponse {
 export interface ManifestLocation {
   id: string
   displayName?: string
+  /** The campaign this location belongs to when it differs from the page's (`ManifestRequest.campaignId`). */
+  campaignId?: number
 }
 
 /**
@@ -181,6 +185,12 @@ export interface ManifestRequest {
    */
   mode: 'merge' | 'replace'
   locations: ManifestLocation[]
+  /**
+   * The campaign the PAGE belongs to (`Vio.init({ campaignId })`): the micro
+   * assigns every declared location to it (`source: 'page'`) unless the
+   * dashboard already assigned that slot.
+   */
+  campaignId?: number
 }
 
 /** Response of `POST /v2/mobile/components/manifest`. */
@@ -188,7 +198,17 @@ export interface ManifestResult {
   clientAppId: number
   platform: string
   mode: 'merge' | 'replace'
-  locations: Array<{ id: number | string; locationId: string; displayName?: string | null }>
+  locations: Array<{
+    id: number | string
+    locationId: string
+    displayName?: string | null
+    /**
+     * What the micro did with the page's campaign for this slot: `created` /
+     * `kept` / `replaced` a page assignment, `dashboard` (the dashboard's
+     * assignment stands — the page's campaign is ignored there), `none`.
+     */
+    assignment?: 'created' | 'kept' | 'replaced' | 'dashboard' | 'none'
+  }>
   deprecatedCount: number
   warnings: Array<{ kind: string; detail: string }>
 }

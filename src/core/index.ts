@@ -15,9 +15,14 @@ export {
 // the auto identity of an element (`carousel-1`, `article-123-card-2`).
 export {
   resolveSlotCampaign,
+  activeCampaignEntry,
+  sponsorCampaignEntry,
+  campaignCandidates,
+  toCampaignId,
   autoSlotId,
   autoSlotDisplayName,
   normalizeScope,
+  type CampaignHint,
   type SlotInput,
   type SlotKind,
 } from './slots.js'

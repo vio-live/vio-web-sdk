@@ -632,3 +632,221 @@ describe('Vio.cartSlices() — the split rule as public API', () => {
     expect(Vio.cartSlices(undefined, { items: [null as unknown as CartLineItem, line({ quantity: NaN, origins: 'x' as never })] })).toEqual([])
   })
 })
+
+describe('page campaign (ADR-0034, amendment 3)', () => {
+  const initWithCampaign = (campaignId: number | undefined) =>
+    Vio.init({ apiKey: 'key-A', environment: 'testing', platform: 'web', campaignId })
+
+  it('Vio.pageCampaign(): the init campaign when the bootstrap lists it as active; null otherwise', async () => {
+    initWithCampaign(12)
+    expect(Vio.pageCampaign()).toBeNull() // before the bootstrap
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()?.id).toBe(12)
+    initWithCampaign(99)
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()).toBeNull()
+    initWithCampaign(undefined)
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()).toBeNull()
+    Vio.init({ apiKey: 'key-A', environment: 'testing', campaignId: -3 })
+    expect(Vio.config.campaignId).toBeUndefined()
+  })
+
+  it('campaignForSlot / attribution: assignment > page campaign > default; the hint overrides the init page campaign', async () => {
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    // hero is assigned (to 12 anyway); carousel-1 has no assignment → the page's 12, not the default 10.
+    expect(Vio.campaignForSlot('carousel-1')?.id).toBe(12)
+    expect(Vio.campaignForSlot()?.id).toBe(12)
+    expect(Vio.attribution('carousel-1')).toEqual({ slot: 'carousel-1', campaignId: 12, sponsorId: 7 })
+    // An element's own campaign (vio-campaign / data-vio-campaign) over the page's.
+    expect(Vio.campaignForSlot('carousel-1', { campaignId: 10 })?.id).toBe(10)
+    expect(Vio.attribution('carousel-1', { campaignId: 10 })).toEqual({ slot: 'carousel-1', campaignId: 10, sponsorId: 4 })
+    // With a known sponsor the page campaign applies only when the sponsor takes part in it:
+    // 8 is a secondary of 12 → 12; 4 is not in 12 → its own campaign (the default's primary) → 10.
+    expect(Vio.attribution('carousel-1', { sponsorId: 8 })).toEqual({ slot: 'carousel-1', campaignId: 12, sponsorId: 8 })
+    expect(Vio.attribution('carousel-1', { sponsorId: 4 })).toEqual({ slot: 'carousel-1', campaignId: 10, sponsorId: 4 })
+    // W7: the hint is a candidate list; an unusable level falls through; 0 = unset.
+    expect(Vio.campaignForSlot('carousel-1', { campaignId: [99, 10] })?.id).toBe(10)
+    expect(Vio.campaignForSlot('carousel-1', { campaignId: [99] })?.id).toBe(12) // → init's 12
+    expect(Vio.campaignForSlot('carousel-1', { campaignId: 0 })?.id).toBe(12)
+    expect(Vio.attribution('carousel-1', { campaignId: [0, 10] }).campaignId).toBe(10)
+    // An assignment beats everything.
+    expect(Vio.campaignForSlot('hero', { campaignId: 10 })?.id).toBe(12)
+    // attribution and campaignForSlot agree.
+    for (const slot of ['hero', 'carousel-1', 'sidebar', undefined]) {
+      expect(Vio.attribution(slot).campaignId).toBe(Vio.campaignForSlot(slot)?.id)
+    }
+  })
+
+  it("a page-sourced assignment counts like the page campaign for a known sponsor (attribution agrees with campaignForSlot)", async () => {
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    const g = globalThis as { __VIO_FACADE__?: { cachedBootstrap?: BootstrapResponse } }
+    g.__VIO_FACADE__!.cachedBootstrap = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Page', status: 'active', primarySponsor: sponsor(7), slots: [{ name: 'by-page', source: 'page' }, { name: 'by-dash', source: 'dashboard' }] },
+        { id: 14, name: 'Other', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(Vio.attribution('by-page', { sponsorId: 9 })).toEqual({ slot: 'by-page', campaignId: 14, sponsorId: 9 })
+    expect(Vio.attribution('free', { sponsorId: 9 })).toEqual({ slot: 'free', campaignId: 14, sponsorId: 9 })
+    expect(Vio.attribution('by-dash', { sponsorId: 9 })).toEqual({ slot: 'by-dash', campaignId: 12, sponsorId: 9 })
+    expect(Vio.campaignForSlot('by-page', { sponsorId: 9 })?.id).toBe(14)
+    expect(Vio.campaignForSlot('by-dash', { sponsorId: 9 })?.id).toBe(12)
+    expect(Vio.campaignForSlot('by-page')?.id).toBe(12)
+  })
+
+  it('an inactive page campaign falls through to the default', async () => {
+    initWithCampaign(99)
+    await Vio.bootstrap()
+    expect(Vio.campaignForSlot('carousel-1')?.id).toBe(10)
+    expect(Vio.attribution('carousel-1').campaignId).toBe(10)
+  })
+
+  it('the manifest carries the page campaign top-level, and a location its own only when it differs', async () => {
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero', { id: 'side', campaignId: 12 }, { id: 'other', campaignId: 10 }])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [{ id: 'hero' }, { id: 'side' }, { id: 'other', campaignId: 10 }],
+      campaignId: 12,
+    })
+    // Without a page campaign: no top-level field, locations keep their own.
+    initWithCampaign(undefined)
+    expect(await Vio.declareSlots([{ id: 'solo', campaignId: 10 }])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[1]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'solo', campaignId: 10 }] })
+  })
+
+  it('the memory key includes the campaign: A → B → A declares three times (one state per id), a revisit none', async () => {
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    initWithCampaign(10)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[1]!.body).toMatchObject({ campaignId: 10 })
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    // B1: back to A within 24 h — B replaced A's memory, so A goes out again.
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[2]!.body).toMatchObject({ campaignId: 12 })
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    expect(await Vio.declareSlots([{ id: 'hero', campaignId: 7 }])).toEqual(MANIFEST_OK) // its own campaign is another state
+    expect(manifestRequests()).toHaveLength(4)
+  })
+
+  it('registerSlot(name, displayName, campaignId) reaches the manifest; a later campaign for the id re-declares', async () => {
+    vi.useFakeTimers()
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    const offs = [Vio.registerSlot('carousel-1', 'Carousel 1'), Vio.registerSlot('hero', undefined, 10)]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [{ id: 'carousel-1', displayName: 'Carousel 1' }, { id: 'hero', campaignId: 10 }],
+      campaignId: 12,
+    })
+    offs.push(Vio.registerSlot('hero', undefined, 7))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(2)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero', campaignId: 7 }] })
+    offs.forEach((off) => off())
+  })
+
+  const warningsIncluding = (text: string) =>
+    (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) => String(c[1]).includes(text))
+
+  it("warns ONCE per slot when the dashboard's assignment stands (only for a slot the page sent a campaign for); debug only when enabled; reset on init", async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {})
+    initWithCampaign(12)
+    manifestAnswer = () =>
+      jsonResponse({
+        ...MANIFEST_OK,
+        locations: [
+          { id: 1, locationId: 'hero', assignment: 'dashboard' },
+          { id: 2, locationId: 'carousel-1', assignment: 'created' },
+        ],
+      })
+    await Vio.declareSlots(['hero', 'carousel-1'], { force: true })
+    await Vio.declareSlots(['hero', 'carousel-1'], { force: true })
+    expect(console.debug).not.toHaveBeenCalled() // W6: debug is off
+    expect(warningsIncluding('assigned from the dashboard')).toHaveLength(1)
+    expect(warningsIncluding('assigned from the dashboard')[0]![1]).toContain('slot hero is assigned from the dashboard')
+
+    // Reset on init: the same slot warns once more under the new configuration; debug now on.
+    Vio.init({ apiKey: 'key-A', environment: 'testing', campaignId: 12, debug: true })
+    await Vio.declareSlots(['hero'], { force: true })
+    expect(warningsIncluding('assigned from the dashboard')).toHaveLength(2)
+    expect(console.debug).toHaveBeenCalledWith('[Vio] slot', 'hero', 'assignment:', 'dashboard')
+
+    // No campaign sent for the slot: nothing to warn about, whatever the micro says.
+    initWithCampaign(undefined)
+    await Vio.declareSlots(['hero'], { force: true })
+    expect(warningsIncluding('assigned from the dashboard')).toHaveLength(2)
+  })
+
+  it("W2a: warns once per slot when this page moved it from an earlier page assignment ('replaced')", async () => {
+    initWithCampaign(12)
+    manifestAnswer = () =>
+      jsonResponse({ ...MANIFEST_OK, locations: [{ id: 1, locationId: 'carousel-1', assignment: 'replaced' }] })
+    await Vio.declareSlots(['carousel-1'], { force: true })
+    await Vio.declareSlots([{ id: 'carousel-1', campaignId: 10 }], { force: true })
+    expect(warningsIncluding('moved to campaign')).toHaveLength(1)
+    expect(warningsIncluding('moved to campaign')[0]![1]).toContain('slot carousel-1 moved to campaign 12 by this page')
+  })
+
+  it('W3: a campaign the micro did not take up is remembered for 1 h, not 24 h (old micro without assignment; none for an active campaign)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-16T10:00:00Z'))
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    // Old micro: no `assignment` anywhere.
+    manifestAnswer = () => jsonResponse({ ...MANIFEST_OK, locations: [{ id: 1, locationId: 'hero' }, { id: 2, locationId: 'plain' }] })
+    expect(await Vio.declareSlots(['hero', 'plain'])).toEqual(expect.objectContaining({ mode: 'merge' }))
+    vi.setSystemTime(new Date('2026-10-16T10:30:00Z'))
+    expect(await Vio.declareSlots(['hero', 'plain'])).toBeNull()
+    vi.setSystemTime(new Date('2026-10-16T11:00:01Z'))
+    expect(await Vio.declareSlots(['hero', 'plain'])).toEqual(expect.objectContaining({ mode: 'merge' }))
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero' }, { id: 'plain' }] })
+
+    // `none` for an active campaign (12) → 1 h; `created` → 24 h; `none` for an unknown one is fine.
+    // (A fresh init: the per-load cap of 3 manifests would otherwise stop the 4th POST below.)
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    manifestAnswer = () =>
+      jsonResponse({
+        ...MANIFEST_OK,
+        locations: [
+          { id: 1, locationId: 'a', assignment: 'none' },
+          { id: 2, locationId: 'b', assignment: 'created' },
+          { id: 3, locationId: 'c', assignment: 'none' },
+        ],
+      })
+    vi.setSystemTime(new Date('2026-10-16T12:00:00Z'))
+    await Vio.declareSlots(['a', 'b', { id: 'c', campaignId: 99 }])
+    vi.setSystemTime(new Date('2026-10-16T13:00:01Z'))
+    expect(await Vio.declareSlots(['a', 'b', { id: 'c', campaignId: 99 }])).toEqual(expect.objectContaining({ mode: 'merge' }))
+    expect(manifestRequests().at(-1)!.body).toMatchObject({ locations: [{ id: 'a' }] })
+  })
+
+  it('nit: registerSlot(id, name, -5) does not mark the registry changed', async () => {
+    vi.useFakeTimers()
+    initWithCampaign(undefined)
+    await Vio.bootstrap()
+    const off1 = Vio.registerSlot('hero', 'Hero', 12)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+    const off2 = Vio.registerSlot('hero', 'Hero', -5)
+    const off3 = Vio.registerSlot('hero', 'Hero', 'x')
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(manifestRequests()).toHaveLength(1)
+    off1()
+    off2()
+    off3()
+  })
+})

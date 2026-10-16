@@ -43,6 +43,7 @@ import { Vio } from '../core/client.js'
 import {
   autoSlotDisplayName,
   autoSlotId,
+  campaignCandidates,
   normalizeScope,
   normalizeSlotId,
   type SlotKind,
@@ -51,6 +52,10 @@ import {
 export interface SlotIdentity {
   id: string
   displayName?: string
+  /** The element's own page campaign (`vio-campaign` / ancestor `data-vio-campaign`), if any — the first candidate. */
+  campaignId?: number
+  /** All of the element's page-campaign candidates, own first (an unusable one falls through to the next). */
+  campaignCandidates: number[]
 }
 
 export interface SlotAttributes {
@@ -58,6 +63,7 @@ export interface SlotAttributes {
   vioSlotName?: string | null
   vioScope?: string | null
   vioScopeName?: string | null
+  vioCampaign?: string | number | null
 }
 
 /** Attribute names, shared by the elements and the ancestor lookup. */
@@ -65,6 +71,8 @@ export const SCOPE_ATTR = 'vio-scope'
 export const SCOPE_NAME_ATTR = 'vio-scope-name'
 export const SCOPE_DATA_ATTR = 'data-vio-scope'
 export const SCOPE_NAME_DATA_ATTR = 'data-vio-scope-name'
+export const CAMPAIGN_ATTR = 'vio-campaign'
+export const CAMPAIGN_DATA_ATTR = 'data-vio-campaign'
 
 /**
  * Live elements per auto id, document-wide. Anchored on `globalThis` like the
@@ -97,6 +105,16 @@ export class SlotRegistration {
     return this.identity?.id ?? ''
   }
 
+  /** The element's own page campaign (`vio-campaign` / ancestor `data-vio-campaign`); undefined → `Vio.init`'s applies. */
+  get campaignId(): number | undefined {
+    return this.identity?.campaignId
+  }
+
+  /** The element's page-campaign candidates in order (own, ancestor) — the hint for `Vio.attribution` / `campaignForSlot`. */
+  get campaignHint(): number[] {
+    return this.identity?.campaignCandidates ?? []
+  }
+
   /** On connect: read the scope from the DOM, then register. */
   connect(attrs: SlotAttributes): void {
     this.connected = true
@@ -123,7 +141,12 @@ export class SlotRegistration {
     this.unregister()
     if (!next) return
     try {
-      this.release = typeof Vio.registerSlot === 'function' ? Vio.registerSlot(next.id, next.displayName) : null
+      this.release =
+        typeof Vio.registerSlot !== 'function'
+          ? null
+          : next.campaignId !== undefined
+            ? Vio.registerSlot(next.id, next.displayName, next.campaignId)
+            : Vio.registerSlot(next.id, next.displayName)
       this.identity = next
     } catch {
       this.release = null
@@ -136,14 +159,21 @@ export class SlotRegistration {
     const explicit = normalizeSlotId(attrs.vioSlot)
     const name =
       typeof attrs.vioSlotName === 'string' && attrs.vioSlotName.trim() ? attrs.vioSlotName.trim() : undefined
+    const campaignCandidates = campaignCandidatesOf(this.host, attrs)
+    const campaignId = campaignCandidates[0]
     if (explicit) {
       // A host id frees the auto number for the next element.
       this.releaseAuto()
-      return { id: explicit, displayName: name }
+      return { id: explicit, displayName: name, campaignId, campaignCandidates }
     }
     if (!this.connected) return null
     const auto = this.claimAuto()
-    return { id: auto.id, displayName: name ?? autoSlotDisplayName(this.kind, auto.number - 1, this.scopeName) }
+    return {
+      id: auto.id,
+      displayName: name ?? autoSlotDisplayName(this.kind, auto.number - 1, this.scopeName),
+      campaignId,
+      campaignCandidates,
+    }
   }
 
   /** Unregister whatever is registered and free the auto number. */
@@ -191,7 +221,31 @@ export class SlotRegistration {
 
 function sameIdentity(a: SlotIdentity | null, b: SlotIdentity | null): boolean {
   if (!a || !b) return a === b
-  return a.id === b.id && a.displayName === b.displayName
+  return a.id === b.id && a.displayName === b.displayName && a.campaignId === b.campaignId
+}
+
+/**
+ * The element's page-campaign candidates, in precedence order: its own
+ * `vio-campaign` (property or attribute), then the nearest ancestor's
+ * `data-vio-campaign` (through shadow hosts); `Vio.init`'s is appended by
+ * `Vio.*` itself. Invalid values (not a positive safe integer) are skipped,
+ * so an unusable level falls through to the next. Read at mount / on
+ * attribute change — there is no observer on the ancestors.
+ */
+export function campaignCandidatesOf(el: Element, attrs?: SlotAttributes): number[] {
+  const own =
+    attrs && attrs.vioCampaign !== undefined && attrs.vioCampaign !== null
+      ? attrs.vioCampaign
+      : (el as { vioCampaign?: unknown }).vioCampaign !== undefined
+        ? (el as { vioCampaign?: unknown }).vioCampaign
+        : el.getAttribute(CAMPAIGN_ATTR)
+  const ancestor = closestAcrossShadow(el, `[${CAMPAIGN_DATA_ATTR}]`)?.getAttribute(CAMPAIGN_DATA_ATTR)
+  return campaignCandidates([own as number | string | null | undefined, ancestor])
+}
+
+/** The element's own page campaign — the first usable candidate; see `campaignCandidatesOf`. */
+export function campaignOf(el: Element, attrs?: SlotAttributes): number | undefined {
+  return campaignCandidatesOf(el, attrs)[0]
 }
 
 /** The scope of an element: its own `vio-scope` (property or attribute), else the nearest `data-vio-scope`. */

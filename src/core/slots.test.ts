@@ -7,6 +7,9 @@
 import { describe, expect, it } from 'vitest'
 import type { BootstrapResponse } from './types.js'
 import {
+  activeCampaignEntry,
+  campaignCandidates,
+  toCampaignId,
   SLOT_DECLARATION_MEMORY_CAP,
   SLOT_DECLARATION_TTL_MS,
   SLOT_ID_MAX_LENGTH,
@@ -307,5 +310,102 @@ describe('auto identity (no page path: one template, thousands of articles, one 
     expect(normalizeScope('')).toBe('')
     expect(normalizeScope(undefined)).toBe('')
     expect(normalizeScope(42 as unknown as string)).toBe('')
+  })
+})
+
+describe('page campaign (ADR-0034, amendment 3): assignment > page > default', () => {
+  it('without an assignment the page campaign applies, when listed and active', () => {
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 12)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, null, OCT_15, 'web', 12)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'nope', OCT_15, 'web', '12' as unknown as number)?.id).toBe(12)
+  })
+
+  it('a dashboard/page assignment of the slot still wins over the page campaign', () => {
+    expect(resolveSlotCampaign(BOOT, 'hero', OCT_15, 'web', 10)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'sidebar', OCT_15, 'web', 12)?.id).toBe(12)
+  })
+
+  it('an inactive or unknown page campaign is ignored: the default applies', () => {
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 13)?.id).toBe(10) // paused
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 99)?.id).toBe(10) // unknown
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', null)?.id).toBe(10)
+    expect(activeCampaignEntry(BOOT, 13)).toBeNull()
+    expect(activeCampaignEntry(BOOT, 12)?.id).toBe(12)
+    expect(activeCampaignEntry(null, 12)).toBeNull()
+    expect(activeCampaignEntry({ campaigns: 'nope' } as never, 12)).toBeNull()
+  })
+
+  it('locations keep their own campaign; the memory key carries the campaign they are declared with', () => {
+    expect(normalizeSlotLocations([{ id: 'hero', campaignId: 12 }, { id: 'x', campaignId: 0 }, { id: 'y', campaignId: 'nope' as never }])).toEqual([
+      { id: 'hero', campaignId: 12 },
+      { id: 'x' },
+      { id: 'y' },
+    ])
+    expect(slotDeclarationKey({ id: 'hero' })).toBe('hero')
+    expect(slotDeclarationKey({ id: 'hero' }, 12)).toBe('hero\u001e12')
+    expect(slotDeclarationKey({ id: 'hero', campaignId: 7 }, 12)).toBe('hero\u001e7')
+    expect(slotDeclarationKey({ id: 'hero', displayName: 'Hero' }, 12)).toBe('hero\u001fHero\u001e12')
+    expect(slotDeclarationKeys([{ id: 'b' }, { id: 'a' }], 12)).toEqual(['a\u001e12', 'b\u001e12'])
+  })
+})
+
+describe('page campaign: candidates, validation and page-sourced assignments', () => {
+  it('W5: a campaign id is a positive safe integer; anything else is absent', () => {
+    expect(toCampaignId(12)).toBe(12)
+    expect(toCampaignId('12')).toBe(12)
+    expect(toCampaignId(' 7 ')).toBe(7)
+    for (const bad of [0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 'x', '', null, undefined, {}, true, '0x10', '1e3', [12], '12.0', '-3']) {
+      expect(toCampaignId(bad)).toBeUndefined()
+    }
+    expect(campaignCandidates([0, '13', null, 12, 12, -1, 'nope'])).toEqual([13, 12])
+    expect(campaignCandidates(undefined)).toEqual([])
+  })
+
+  it('W7: an unusable level falls through to the next: paused own → ancestor → init → default', () => {
+    // 13 is paused, 99 unknown, 12 active.
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', [13, 12])?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', [99, 13, 12])?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', [13, 99])?.id).toBe(10)
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', [0, 12])?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 0)?.id).toBe(10)
+    expect(activeCampaignEntry(BOOT, [13, 12])?.id).toBe(12)
+    // With a sponsor: only a campaign the sponsor takes part in.
+    expect(activeCampaignEntry(BOOT, [12, 10], 4)?.id).toBe(10)
+    expect(activeCampaignEntry(BOOT, [12], 4)).toBeNull()
+    expect(activeCampaignEntry(BOOT, [12], 8)?.id).toBe(12)
+  })
+
+  it("W2c: a page-sourced assignment yields to a different active page campaign; a dashboard one never does", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'A', status: 'active', primarySponsor: sponsor(7), slots: [{ name: 'carousel-1', source: 'page' }, { name: 'hero', source: 'dashboard' }, { name: 'legacy' }] },
+        { id: 14, name: 'B', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 14)?.id).toBe(14)
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12)?.id).toBe(12)
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web')?.id).toBe(12)
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 99)?.id).toBe(12) // the page's is not active → the assignment stands
+    expect(resolveSlotCampaign(boot, 'hero', OCT_15, 'web', 14)?.id).toBe(12)
+    expect(resolveSlotCampaign(boot, 'legacy', OCT_15, 'web', 14)?.id).toBe(12) // no source (older micro) = dashboard
+    // With a known sponsor, a page-sourced assignment applies only if the sponsor takes part in it.
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 9)?.id).toBe(14) // 9 only in 14 → its own
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 7)?.id).toBe(12) // 7 is 12's primary
+    expect(resolveSlotCampaign(boot, 'hero', OCT_15, 'web', 12, 9)?.id).toBe(12) // dashboard: unconditional
+    expect(resolveSlotCampaign(boot, 'legacy', OCT_15, 'web', 12, 9)?.id).toBe(12)
+    // …and a sponsor in no candidate at all falls to the default.
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 4)?.id).toBe(10)
+  })
+
+  it('B1: remembering an id under one campaign/name forgets its other variants (one state per id)', () => {
+    let memory = rememberSlotKeys({}, ['hero\u001e12', 'footer'], OCT_15)
+    memory = rememberSlotKeys(memory, ['hero\u001e10'], OCT_15 + 1)
+    expect(memory).toEqual({ 'hero\u001e10': OCT_15 + 1, footer: OCT_15 })
+    memory = rememberSlotKeys(memory, ['hero\u001fHero\u001e10'], OCT_15 + 2)
+    expect(Object.keys(memory).sort()).toEqual(['footer', 'hero\u001fHero\u001e10'])
+    // A → B → A: A is pending again after B.
+    expect(pendingSlotKeys(rememberSlotKeys(memory, ['hero\u001e10'], OCT_15 + 3), ['hero\u001e12'], OCT_15 + 4)).toEqual(['hero\u001e12'])
   })
 })

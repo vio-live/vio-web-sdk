@@ -33,7 +33,7 @@ export const MAX_LOCATIONS_PER_DECLARATION = 100
 export const MAX_DECLARATIONS_PER_LOAD = 3
 
 /** What `Vio.declareSlots()` accepts per slot. */
-export type SlotInput = string | { id: string; displayName?: string }
+export type SlotInput = string | { id: string; displayName?: string; campaignId?: number }
 
 type BootLike = Pick<
   BootstrapResponse,
@@ -50,18 +50,151 @@ type BootLike = Pick<
  * several qualify, the surface's default campaign wins, else the first the
  * backend lists.
  *
- * No slot, or no assignment → the default campaign: the `campaigns[]` entry
- * whose id is `campaign.id`, or a minimal entry built from `campaign` (+ the
- * top-level sponsors) when the list does not carry it. No bootstrap → null.
+ * No assignment → the PAGE's campaign (`pageCampaignId`: the element's own
+ * `vio-campaign`, an ancestor's `data-vio-campaign`, or `Vio.init({ campaignId })`)
+ * when `campaigns[]` lists it as active — an editorial page resolves to its
+ * campaign before (and regardless of) the manifest round-trip. Else the
+ * default campaign: the `campaigns[]` entry whose id is `campaign.id`, or a
+ * minimal entry built from `campaign` (+ the top-level sponsors) when the
+ * list does not carry it. No bootstrap → null.
  */
 export function resolveSlotCampaign(
   boot: BootLike | null | undefined,
   slot: string | null | undefined,
   now: number = Date.now(),
   platform?: string | null,
+  pageCampaignId?: CampaignHint,
+  sponsorId?: number | null,
 ): BootstrapCampaignEntry | null {
   if (!boot) return null
-  return findSlotAssignment(boot, slot, now, platform) ?? defaultCampaignEntry(boot)
+  const page = activeCampaignEntry(boot, pageCampaignId)
+  const assignment = findSlotAssignmentDetail(boot, slot, now, platform)
+  const sponsor = toNumber(sponsorId)
+  if (assignment && assignmentApplies(assignment, page, sponsor)) return assignment.campaign
+  return (
+    activeCampaignEntry(boot, pageCampaignId, sponsor) ??
+    (sponsor !== undefined ? sponsorCampaignEntry(boot, sponsor) : null) ??
+    defaultCampaignEntry(boot)
+  )
+}
+
+/**
+ * The sponsor rule: the active campaign of `campaigns[]` the sponsor takes
+ * part in, as its primary or one of its secondaries — when it is in several,
+ * the surface's default campaign if it is one of them, else the first one
+ * the backend lists. Null when none (or on a malformed list).
+ */
+export function sponsorCampaignEntry(
+  boot: BootLike | null | undefined,
+  sponsorId: number | null | undefined,
+): BootstrapCampaignEntry | null {
+  const id = toNumber(sponsorId)
+  if (!boot || id === undefined) return null
+  try {
+    const matches = activeCampaigns(boot).filter((c) => campaignSponsorIds(c).includes(id))
+    if (matches.length === 0) return null
+    const defaultId = toNumber(boot.campaign?.id)
+    return matches.find((c) => toNumber(c.id) === defaultId) ?? matches[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a slot assignment decides the campaign. A dashboard assignment (or
+ * one without `source`, an older micro) always does. One this page made
+ * itself (`source: 'page'`) is treated like the page campaign: it does not
+ * when the page now declares a different active campaign (it is about to be
+ * re-declared), nor — with a known sponsor — when that sponsor takes no part
+ * in it (the sponsor rule then says where the sponsor's campaign is).
+ */
+export function assignmentApplies(
+  assignment: { campaign: BootstrapCampaignEntry; slot: BootstrapSlot },
+  page: BootstrapCampaignEntry | null,
+  sponsorId?: number,
+): boolean {
+  if (assignment.slot.source !== 'page') return true
+  if (isStalePageAssignment(assignment, page)) return false
+  return sponsorId === undefined || campaignSponsorIds(assignment.campaign).includes(sponsorId)
+}
+
+/** A page-sourced assignment that disagrees with the page's current (active) campaign. */
+export function isStalePageAssignment(
+  assignment: { campaign: BootstrapCampaignEntry; slot: BootstrapSlot },
+  page: BootstrapCampaignEntry | null,
+): boolean {
+  return !!page && assignment.slot.source === 'page' && toNumber(page.id) !== toNumber(assignment.campaign.id)
+}
+
+/**
+ * A page campaign as the callers give it: one id, or the candidates in
+ * precedence order (the element's `vio-campaign`, an ancestor's
+ * `data-vio-campaign`, `Vio.init`'s). An unusable level (invalid, paused,
+ * unknown) falls through to the next one; `0`, `null`, `''` mean unset.
+ */
+export type CampaignHint = number | string | null | undefined | ReadonlyArray<number | string | null | undefined>
+
+/**
+ * A campaign id as the SDK accepts it: a positive safe integer, given as a
+ * number or as a string of decimal digits (an attribute). Anything else —
+ * `true`, `'0x10'`, `'1e3'`, an array, a float — is "absent".
+ */
+export function toCampaignId(value: unknown): number | undefined {
+  let n: number
+  if (typeof value === 'number') n = value
+  else if (typeof value === 'string' && /^\s*\d+\s*$/.test(value)) n = Number(value)
+  else return undefined
+  return Number.isSafeInteger(n) && n > 0 ? n : undefined
+}
+
+/** The usable ids of a hint, in order, without duplicates. */
+export function campaignCandidates(hint: CampaignHint): number[] {
+  const raw = Array.isArray(hint) ? hint : [hint]
+  const out: number[] = []
+  for (const v of raw) {
+    const id = toCampaignId(v)
+    if (id !== undefined && !out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/**
+ * The first candidate of `hint` that `campaigns[]` lists as ACTIVE (and, when
+ * `sponsorId` is given, that the sponsor takes part in — primary or
+ * secondary); null when none — a paused, ended or unknown page campaign is
+ * ignored and the resolution moves on.
+ */
+export function activeCampaignEntry(
+  boot: BootLike | null | undefined,
+  hint: CampaignHint,
+  sponsorId?: number,
+): BootstrapCampaignEntry | null {
+  if (!boot) return null
+  try {
+    const active = activeCampaigns(boot)
+    for (const id of campaignCandidates(hint)) {
+      const entry = active.find((c) => toNumber(c.id) === id)
+      if (!entry) continue
+      if (sponsorId !== undefined && !campaignSponsorIds(entry).includes(sponsorId)) continue
+      return entry
+    }
+  } catch {
+    /* malformed campaigns[] */
+  }
+  return null
+}
+
+/** The sponsor ids of a campaign: its primary and its secondaries. */
+export function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
+  const ids: number[] = []
+  const primary = toNumber(campaign.primarySponsor?.id)
+  if (primary !== undefined) ids.push(primary)
+  const secondaries = Array.isArray(campaign.secondarySponsors) ? campaign.secondarySponsors : []
+  for (const s of secondaries) {
+    const id = toNumber(s?.id)
+    if (id !== undefined) ids.push(id)
+  }
+  return ids
 }
 
 /**
@@ -75,15 +208,27 @@ export function findSlotAssignment(
   now: number = Date.now(),
   platform?: string | null,
 ): BootstrapCampaignEntry | null {
+  return findSlotAssignmentDetail(boot, slot, now, platform)?.campaign ?? null
+}
+
+/** Like `findSlotAssignment`, with the matching assignment itself (its `source` decides against a page campaign). */
+export function findSlotAssignmentDetail(
+  boot: BootLike | null | undefined,
+  slot: string | null | undefined,
+  now: number = Date.now(),
+  platform?: string | null,
+): { campaign: BootstrapCampaignEntry; slot: BootstrapSlot } | null {
   const name = typeof slot === 'string' ? slot.trim() : ''
   if (!boot || !name) return null
   try {
-    const matches = activeCampaigns(boot).filter((c) =>
-      slotsOf(c).some((s) => assignmentMatches(s, name, now, platform)),
-    )
+    const matches: Array<{ campaign: BootstrapCampaignEntry; slot: BootstrapSlot }> = []
+    for (const campaign of activeCampaigns(boot)) {
+      const match = slotsOf(campaign).find((s) => assignmentMatches(s, name, now, platform))
+      if (match) matches.push({ campaign, slot: match })
+    }
     if (matches.length === 0) return null
     const defaultId = toNumber(boot.campaign?.id)
-    return matches.find((c) => toNumber(c.id) === defaultId) ?? matches[0] ?? null
+    return matches.find((m) => toNumber(m.campaign.id) === defaultId) ?? matches[0] ?? null
   } catch {
     return null
   }
@@ -182,7 +327,11 @@ export function normalizeSlotLocations(slots: ReadonlyArray<SlotInput> | null | 
       raw && typeof raw === 'object' && typeof raw.displayName === 'string'
         ? raw.displayName.trim()
         : ''
-    out.push(displayName ? { id, displayName } : { id })
+    const campaignId = raw && typeof raw === 'object' ? toCampaignId(raw.campaignId) : undefined
+    const location: ManifestLocation = { id }
+    if (displayName) location.displayName = displayName
+    if (campaignId !== undefined) location.campaignId = campaignId
+    out.push(location)
   }
   return out
 }
@@ -233,26 +382,41 @@ export function normalizeScope(scope: string | null | undefined): string {
 
 /**
  * What the browser remembers per (platform, key): for each declared location
- * key (`id`, or `id\u001fdisplayName`, see `slotDeclarationKeys`) the epoch ms
- * it was declared. Per id — not per set — because a multi-page site (Vev: one
- * page per article, lazy blocks) makes a new set on every navigation; only
- * the ids not declared in the last 24 h go out. A failed attempt is stored as
- * if declared `SLOT_DECLARATION_TTL_MS − SLOT_DECLARATION_FAILURE_TTL_MS` ago,
- * so it is retried after an hour, not on every view.
+ * key — `id`, `\u001f<displayName>` when it has one, `\u001e<campaignId>` when
+ * it was declared with a campaign (its own, else the page's); see
+ * `slotDeclarationKey` — the epoch ms it was declared. Per id — not per set —
+ * because a multi-page site (Vev: one page per article, lazy blocks) makes a
+ * new set on every navigation; only the ids not declared in the last 24 h go
+ * out, and an id keeps ONE state (a new name or campaign forgets the old key).
+ * A failed attempt is stored as if declared
+ * `SLOT_DECLARATION_TTL_MS − SLOT_DECLARATION_FAILURE_TTL_MS` ago, so it is
+ * retried after an hour, not on every view.
  */
 export type SlotDeclarationMemory = Record<string, number>
 
 /** The memory keeps at most this many ids (oldest dropped). */
 export const SLOT_DECLARATION_MEMORY_CAP = 500
 
-/** The sortable key of one location, display name included — a renamed block is a new key. */
-export function slotDeclarationKey(location: ManifestLocation): string {
-  return location.displayName ? `${location.id}\u001f${location.displayName}` : location.id
+/**
+ * The sortable key of one location: id, display name and the campaign it is
+ * declared with (its own, else the page's) — a renamed block, or a page that
+ * changed campaign, is a new key and declares again.
+ */
+export function slotDeclarationKey(location: ManifestLocation, pageCampaignId?: number | null): string {
+  const campaignId = toCampaignId(location.campaignId) ?? toCampaignId(pageCampaignId)
+  return (
+    location.id +
+    (location.displayName ? `\u001f${location.displayName}` : '') +
+    (campaignId !== undefined ? `\u001e${campaignId}` : '')
+  )
 }
 
 /** Sorted keys of a set of locations (see `slotDeclarationKey`). */
-export function slotDeclarationKeys(locations: ReadonlyArray<ManifestLocation>): string[] {
-  return locations.map(slotDeclarationKey).sort()
+export function slotDeclarationKeys(
+  locations: ReadonlyArray<ManifestLocation>,
+  pageCampaignId?: number | null,
+): string[] {
+  return locations.map((l) => slotDeclarationKey(l, pageCampaignId)).sort()
 }
 
 /** The keys not remembered within `ttl` (or remembered in the future — a clock that went back). */
@@ -269,7 +433,17 @@ export function pendingSlotKeys(
   })
 }
 
-/** The memory with `keys` remembered at `at`, pruned to the newest `cap` entries. */
+/** The id part of a memory key (before the display name / campaign separators). */
+export function slotKeyId(key: string): string {
+  const cut = key.search(/[\u001f\u001e]/)
+  return cut >= 0 ? key.slice(0, cut) : key
+}
+
+/**
+ * The memory with `keys` remembered at `at`, pruned to the newest `cap`
+ * entries. ONE state per id: remembering `hero` under campaign B forgets
+ * `hero` under campaign A (or another name), so A → B → A declares A again.
+ */
 export function rememberSlotKeys(
   memory: SlotDeclarationMemory | null | undefined,
   keys: ReadonlyArray<string>,
@@ -277,6 +451,10 @@ export function rememberSlotKeys(
   cap: number = SLOT_DECLARATION_MEMORY_CAP,
 ): SlotDeclarationMemory {
   const next: SlotDeclarationMemory = { ...(memory ?? {}) }
+  const ids = new Set(keys.map(slotKeyId))
+  for (const existing of Object.keys(next)) {
+    if (ids.has(slotKeyId(existing)) && !keys.includes(existing)) delete next[existing]
+  }
   for (const key of keys) next[key] = at
   const entries = Object.entries(next)
   if (entries.length <= cap) return next

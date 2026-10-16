@@ -1177,3 +1177,96 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
     expect(purchases.map((p) => (p.commerce as { value: number }).value).sort()).toEqual([100, 50])
   })
 })
+
+describe('campaign_id y la campaña de la PÁGINA (ADR-0034, enmienda 3)', () => {
+  afterEach(removeFacade)
+
+  it('resolveCampaignId: asignación > campaña de la página (si el sponsor participa) > regla del sponsor > default; una inactiva se ignora', () => {
+    // Sin sponsor: la página dice 12 → 12.
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ campaignId: 1 }, BOOT, { pageCampaignId: 12 })).toBe(1)
+    // sponsor 5 participa en 12 (secundario) y en la default: la página gana → 12.
+    expect(resolveCampaignId({ sponsorId: 5 }, BOOT, { pageCampaignId: 12 })).toBe(12)
+    // W1: sponsor 4 NO participa en 12 → regla del sponsor (primario de la default) → 10.
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 12 })).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 13 })).toBe(10) // pausada
+    expect(resolveCampaignId({ sponsorId: 8 }, BOOT, { pageCampaignId: 99 })).toBe(12) // desconocida → regla del sponsor
+    // W7: una lista de candidatos cae al siguiente nivel; 0 = sin campaña.
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: [13, 12] })).toBe(12)
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: [0, 99, 12] })).toBe(12)
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: 0 })).toBe(10)
+    const withSlot: BootstrapResponse = {
+      ...BOOT,
+      campaigns: [
+        ...BOOT.campaigns!.slice(0, 1),
+        { ...BOOT.campaigns![1]!, slots: [{ name: 'hero' }] }, // hero asignado a la default 10
+        ...BOOT.campaigns!.slice(2),
+      ],
+    }
+    expect(resolveCampaignId({ slot: 'hero' }, withSlot, { pageCampaignId: 12 })).toBe(10)
+  })
+
+  it('en los eventos sale la campaña de Vio.init({ campaignId }) cuando no hay asignación ni campaignId explícito', async () => {
+    installFacade(BOOT)
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', campaignId: 12 })
+    const m = new AnalyticsManager()
+    m.track('view_item', { context: { sponsorId: 5, slot: 'carousel-1' } }) // 5 participa en 12
+    m.track('view_item', { context: { sponsorId: 4, slot: 'carousel-1' } }) // 4 no → su campaña (10)
+    m.track('view_item', { context: { sponsorId: 5, slot: 'carousel-1', campaignId: 10 } })
+    m.track('view_item', { context: { slot: 'carousel-1' } })
+    await m.flush()
+    const ctxs = flushedBatches.at(-1)!.events.filter((e) => e.name === 'view_item').map((e) => e.context as Record<string, unknown>)
+    expect(ctxs.map((c) => c.campaign_id)).toEqual([12, 10, 10, 12])
+  })
+
+  it('W1: página 12, card con sponsor 9 que solo está en la campaña 14 → 14', () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Página', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)], slots: [] },
+        { id: 14, name: 'Otra', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(14)
+    expect(resolveCampaignId({ sponsorId: 8, slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+  })
+
+  it("W2c: una asignación hecha por la página (source: 'page') cede ante otra campaña activa que la página declare ahora; la del dashboard no", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'A', status: 'active', primarySponsor: sponsor(7), slots: [{ name: 'carousel-1', source: 'page' }, { name: 'hero', source: 'dashboard' }] },
+        { id: 14, name: 'B', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 14 })).toBe(14)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, {})).toBe(12)
+    expect(resolveCampaignId({ slot: 'hero' }, boot, { pageCampaignId: 14 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 99 })).toBe(12) // la nueva no está activa: la asignación sigue
+  })
+
+  it("una asignación 'page' cuenta como la campaña de la página con sponsor conocido: solo si el sponsor participa", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Página', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)], slots: [{ name: 'by-page', source: 'page' }, { name: 'by-dash', source: 'dashboard' }] },
+        { id: 14, name: 'Otra', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    // sponsor 9 solo está en la 14: slot asignado por la página a 12 → 14, igual que sin asignación.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(14)
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'free' }, boot, { pageCampaignId: 12 })).toBe(14)
+    // Asignado por el dashboard a 12 → 12, sin condiciones.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-dash' }, boot, { pageCampaignId: 12 })).toBe(12)
+    // Un sponsor que sí participa (8) y sin sponsor: la asignación de la página aplica.
+    expect(resolveCampaignId({ sponsorId: 8, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'by-page' }, boot, {})).toBe(12)
+  })
+})

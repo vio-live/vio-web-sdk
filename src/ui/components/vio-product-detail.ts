@@ -25,6 +25,7 @@ import {
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { SlotRegistration } from '../slot-registration.js'
+import { toCampaignId } from '../../core/slots.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -102,9 +103,10 @@ export class VioProductDetail extends LitElement {
     return (this.fromCard && this.eventSlot) || this.effectiveSlot
   }
 
-  /** The page campaign the open product is attributed to: the opening card's, else this element's. */
-  private get activeCampaignId(): number | undefined {
-    return (this.fromCard ? this.eventCampaignId : undefined) ?? this.effectiveCampaignId
+  /** The page-campaign candidates of the open product: the opening card's, then this element's own and its ancestor's. */
+  private get activeCampaignHint(): number[] {
+    const own = this.slotRegistration.campaignHint
+    return this.fromCard && this.eventCampaignId !== undefined ? [this.eventCampaignId, ...own] : own
   }
 
   private slotAttributes() {
@@ -123,7 +125,7 @@ export class VioProductDetail extends LitElement {
       typeof Vio.attribution === 'function'
         ? Vio.attribution(this.activeSlot, {
             sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
-            campaignId: this.activeCampaignId,
+            campaignId: this.activeCampaignHint,
           })
         : { slot: this.activeSlot || undefined }
     const contentId = (this.fromCard && this.eventContentId) || this.vioContentId
@@ -192,7 +194,7 @@ export class VioProductDetail extends LitElement {
         typeof Vio.campaignForSlot === 'function'
           ? Number(
               Vio.campaignForSlot(slot || this.effectiveSlot || null, {
-                campaignId: ev.detail.campaignId ?? this.effectiveCampaignId,
+                campaignId: [ev.detail.campaignId, ...this.slotRegistration.campaignHint],
               })?.primarySponsor?.id,
             )
           : NaN
@@ -200,10 +202,7 @@ export class VioProductDetail extends LitElement {
       sponsorIdNum = fromSlot
     }
     this.eventSlot = slot
-    this.eventCampaignId =
-      ev.detail.campaignId !== undefined && Number.isFinite(Number(ev.detail.campaignId)) && Number(ev.detail.campaignId) > 0
-        ? Number(ev.detail.campaignId)
-        : undefined
+    this.eventCampaignId = toCampaignId(ev.detail.campaignId)
     this.eventProductId = String(ev.detail.productId)
     this.eventContentId =
       ev.detail.contentId !== undefined && ev.detail.contentId !== null ? String(ev.detail.contentId).trim() : ''
@@ -821,7 +820,7 @@ export class VioProductDetail extends LitElement {
     const spId =
       this.sponsorId ||
       (typeof Vio.campaignForSlot === 'function'
-        ? Number(Vio.campaignForSlot(this.activeSlot || null, { campaignId: this.activeCampaignId })?.primarySponsor?.id)
+        ? Number(Vio.campaignForSlot(this.activeSlot || null, { campaignId: this.activeCampaignHint })?.primarySponsor?.id)
         : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return

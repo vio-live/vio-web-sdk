@@ -116,7 +116,7 @@ export class VioProductCarousel extends LitElement {
       typeof Vio.attribution === 'function'
         ? Vio.attribution(this.effectiveSlot, {
             sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
-            campaignId: this.effectiveCampaignId,
+            campaignId: this.slotRegistration.campaignHint,
           })
         : { slot: this.effectiveSlot || undefined }
     return {
@@ -301,7 +301,8 @@ export class VioProductCarousel extends LitElement {
       changed.has('productIds') ||
       changed.has('commerceKey') ||
       changed.has('sponsorId') ||
-      changed.has('vioSlot')
+      changed.has('vioSlot') ||
+      changed.has('vioCampaign') // another campaign → another sponsor → refetch
     if (propChanged && (this.productRefs.trim() || this.productIds.trim())) {
       void this.autoFetch()
     }
@@ -316,7 +317,7 @@ export class VioProductCarousel extends LitElement {
     if (this.sponsorId > 0) return this.sponsorId
     const fromSlot =
       typeof Vio.campaignForSlot === 'function'
-        ? Number(Vio.campaignForSlot(this.effectiveSlot || null, { campaignId: this.effectiveCampaignId })?.primarySponsor?.id)
+        ? Number(Vio.campaignForSlot(this.effectiveSlot || null, { campaignId: this.slotRegistration.campaignHint })?.primarySponsor?.id)
         : NaN
     return Number.isFinite(fromSlot) && fromSlot > 0 ? fromSlot : 0
   }

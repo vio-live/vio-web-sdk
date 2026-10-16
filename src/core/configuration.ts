@@ -9,6 +9,8 @@
  * them from env vars / their config and passes them to `Vio.init`.
  */
 
+import { toCampaignId } from './slots.js'
+
 export type Environment = 'development' | 'testing' | 'production'
 
 /**
@@ -46,6 +48,8 @@ export interface VioConfig {
    * `data-vio-campaign` on any ancestor, or `vio-campaign` on the element.
    */
   campaignId?: number
+  /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
+  debug?: boolean
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -83,6 +87,7 @@ export interface ResolvedConfig {
   contentId?: string | number
   contentTitle?: string
   campaignId?: number
+  debug: boolean
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -132,6 +137,7 @@ class ConfigurationSingleton {
       contentId: input.contentId,
       contentTitle: input.contentTitle,
       campaignId: toCampaignId(input.campaignId),
+      debug: input.debug === true,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,
@@ -198,13 +204,6 @@ class ConfigurationSingleton {
     this.resolved = null
     this.readyWaiters = []
   }
-}
-
-/** A positive finite campaign id, or undefined (a page without one). */
-function toCampaignId(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined
-  const n = Number(value)
-  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 export const Configuration = /* @__PURE__ */ new ConfigurationSingleton()

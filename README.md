@@ -183,10 +183,11 @@ Every mounted element registers its id (and label); after the first successful
 `Vio.bootstrap()` the SDK sends **one** manifest for the whole page
 (`POST /v2/mobile/components/manifest`, `mode: 'merge'`, so one page never
 deprecates another page's slots) and again whenever a new id or label appears.
-The browser remembers **each id (under its label) for 24 h** in `localStorage`
-(under the platform and a hash of the key — never the key itself), so a
-multi-page site posts only the ids a page adds, a revisit posts nothing, a
-renamed block posts again; without storage it simply posts each load. A failed
+The browser remembers **each id — under its label and the campaign it was
+declared with — for 24 h** in `localStorage` (under the platform and a hash of
+the key — never the key itself; one state per id), so a multi-page site posts
+only the ids a page adds, a revisit posts nothing, a renamed block or a page that
+changed campaign posts again; without storage it simply posts each load. A failed
 attempt (or a server that ignored `merge`) is not retried for 1 h; a declaration
 sends at most 100 locations and a page load at most 3 manifests (each cap warns
 once). Best-effort, never throws. By hand, e.g. from an editor (`force` re-sends
@@ -201,10 +202,11 @@ await Vio.declareSlots(['hero', { id: 'sidebar', displayName: 'Sidebar' }], { fo
 
 Among the active campaigns of the bootstrap, the one whose assignment names the
 slot (for this platform, or for all) and whose window is open right now; if
-several, the default campaign, else the first listed. No assignment → the default
+several, the default campaign, else the first listed. No assignment → the page's
+campaign (see *Page campaign*) when the bootstrap lists it as active → the default
 campaign. `Vio.campaignForSlot('hero')` answers from the last bootstrap (`null`
-before it); the pure `resolveSlotCampaign(boot, slot, now?, platform?)` is exported
-from `/core`. A carousel or card **without a `sponsor-id`** uses the primary sponsor
+before it); the pure `resolveSlotCampaign(boot, slot, now?, platform?, pageCampaignId?)`
+is exported from `/core`. A carousel or card **without a `sponsor-id`** uses the primary sponsor
 of its slot's campaign (the default campaign's when the slot has none), and the
 detail opened by such a card does the same — before 0.23 a sponsorless card did
 nothing. An explicit `sponsor-id` still wins.
@@ -225,18 +227,28 @@ Vio.init({ apiKey: '…', campaignId: 12 })          // the whole page
 ```
 
 Precedence per element: `vio-campaign` on the element → the nearest ancestor's
-`data-vio-campaign` → `Vio.init({ campaignId })`. What it does:
+`data-vio-campaign` → `Vio.init({ campaignId })`; an unusable level (not a positive
+integer, paused, unknown) falls through to the next. The attributes are read when
+the element mounts or its own attribute changes — there is no observer on the
+ancestors. On web/Replit a **per-article** campaign needs a per-article scope too
+(`data-vio-scope`, see above): without it the auto ids of every article are the
+same `carousel-1`, and the articles' campaigns would overwrite one another's
+assignment; Vev ids are per block, so it does not apply there. What it does:
 
 - **Declaration.** The manifest carries the page's campaign (top-level) and an
   element's own campaign per location when it differs. The campaigns service
-  turns that into assignments of the page's slots (`source: 'page'`) — **unless
-  the dashboard already assigned the slot: the dashboard wins**, and the SDK warns
-  once per such slot. A page that changes campaign declares again.
+  (campaigns micro PR #16) turns that into assignments of the page's slots
+  (`source: 'page'`) — **unless the dashboard already assigned the slot: the
+  dashboard wins**, and the SDK warns once per such slot (and once when this page
+  moved a slot from an earlier page assignment). A page that changes campaign
+  declares again; a campaign the micro did not take up is retried after an hour.
 - **Resolution, immediately.** `Vio.campaignForSlot()` / `Vio.attribution()` (and
   so the elements, the cart origins and the events) resolve as: the slot's
-  assignment → the page's campaign, when the bootstrap lists it as active → the
-  default. An editor sees the effect in the Vev editor before the manifest
-  round-trips; a paused or unknown page campaign is simply ignored.
+  assignment (a dashboard one always; a page-sourced one unless the page now
+  declares a different active campaign) → the page's campaign, when the bootstrap
+  lists it as active and — with a known sponsor — that sponsor takes part in it →
+  the sponsor's campaign → the default. An editor sees the effect in the Vev
+  editor before the manifest round-trips.
 - `Vio.pageCampaign()` returns the init-level campaign as the bootstrap lists it
   (active), else `null`.
 
@@ -272,7 +284,8 @@ titles are cut — in one place, before anything is sent. Per element,
 tracks carries `slot` (the effective id), `location_id` (= the slot), `content_id`
 and `content_title`. `campaign_id` resolves as explicit `campaignId` (the element's
 own attribution travels in its event detail and is honored as such) → the slot's
-assigned campaign → the sponsor's campaign → the default. Two things changed from
+assigned campaign → the page's campaign (when the sponsor takes part in it) → the
+sponsor's campaign → the default. Two things changed from
 0.22 for carousels: a carousel's impressions and `view_item_list` report
 `location_id` as its slot id (`carousel-1`, or the `vio-slot`) instead of its
 `label`, and every event now carries `content_id` / `content_title` — including

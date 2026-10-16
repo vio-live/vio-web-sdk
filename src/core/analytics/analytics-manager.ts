@@ -31,7 +31,14 @@
 
 import { Configuration } from '../configuration.js'
 import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, resolveContent, type ContentRef } from '../content.js'
-import { activeCampaignEntry, findSlotAssignment, toNumber } from '../slots.js'
+import {
+  activeCampaignEntry,
+  campaignSponsorIds,
+  findSlotAssignmentDetail,
+  isStalePageAssignment,
+  toNumber,
+  type CampaignHint,
+} from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
@@ -1017,20 +1024,32 @@ function vioCart(): CartManager | null {
 export function resolveCampaignId(
   ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId' | 'slot'>,
   boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
-  opts: { pageCampaignId?: number | null } = {},
+  opts: { pageCampaignId?: CampaignHint } = {},
 ): number | undefined {
   if (ctx.campaignId !== undefined) return ctx.campaignId
   const defaultId = boot?.campaign?.id
   const config = Configuration.isInitialized ? Configuration.get() : undefined
-  if (ctx.slot) {
-    const assigned = toNumber(findSlotAssignment(boot, ctx.slot, Date.now(), config?.platform)?.id)
-    if (assigned !== undefined) return assigned
-  }
-  // The page's campaign (ADR-0034, amendment 3) — an editorial page that
-  // belongs to one campaign — beats the sponsor heuristic, after the dashboard.
-  const page = toNumber(activeCampaignEntry(boot, opts.pageCampaignId ?? config?.campaignId)?.id)
-  if (page !== undefined) return page
   const sponsorId = toNumber(ctx.sponsorId)
+  // The page's campaign (ADR-0034, amendment 3): the element's candidates
+  // first, then Vio.init's; an unusable level falls through to the next. With
+  // a known sponsor it applies only when that sponsor takes part in it —
+  // otherwise the sponsor rule below says where the sponsor's campaign is.
+  const candidates = [
+    ...(Array.isArray(opts.pageCampaignId) ? opts.pageCampaignId : [opts.pageCampaignId]),
+    config?.campaignId,
+  ]
+  const page = activeCampaignEntry(boot, candidates, sponsorId)
+  if (ctx.slot) {
+    const assignment = findSlotAssignmentDetail(boot, ctx.slot, Date.now(), config?.platform)
+    // A dashboard assignment always wins; one this page made itself is stale
+    // when the page now declares another active campaign (see slots.ts).
+    if (assignment && !isStalePageAssignment(assignment, activeCampaignEntry(boot, candidates))) {
+      const assigned = toNumber(assignment.campaign.id)
+      if (assigned !== undefined) return assigned
+    }
+  }
+  const pageId = toNumber(page?.id)
+  if (pageId !== undefined) return pageId
   if (sponsorId === undefined) return defaultId
   try {
     const campaigns = Array.isArray(boot?.campaigns) ? boot.campaigns : []
@@ -1099,17 +1118,6 @@ function contentOf(detail: { contentId?: unknown; contentTitle?: unknown }): Pic
   return out
 }
 
-function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
-  const ids: number[] = []
-  const primary = toNumber(campaign.primarySponsor?.id)
-  if (primary !== undefined) ids.push(primary)
-  const secondaries = Array.isArray(campaign.secondarySponsors) ? campaign.secondarySponsors : []
-  for (const s of secondaries) {
-    const id = toNumber(s?.id)
-    if (id !== undefined) ids.push(id)
-  }
-  return ids
-}
 
 /**
  * `detail` of `vio:payment-success` as the checkout emits it. Four paths,

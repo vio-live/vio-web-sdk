@@ -105,6 +105,8 @@ export interface BootstrapSlot {
   platform?: string | null
   startDate?: string | null
   endDate?: string | null
+  /** Who assigned it: the dashboard (always wins) or a page's own campaign (campaigns micro PR #16). */
+  source?: 'dashboard' | 'page' | null
 }
 
 /**

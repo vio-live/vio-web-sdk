@@ -72,7 +72,7 @@ export class VioProduct extends LitElement {
   private sponsorFromAttribution(): string {
     const id =
       typeof Vio.attribution === 'function'
-        ? Vio.attribution(this.effectiveSlot, { campaignId: this.effectiveCampaignId }).sponsorId
+        ? Vio.attribution(this.effectiveSlot, { campaignId: this.slotRegistration.campaignHint }).sponsorId
         : undefined
     return id !== undefined ? String(id) : ''
   }
@@ -96,7 +96,10 @@ export class VioProduct extends LitElement {
     // A page whose `Vio` singleton comes from an older bundle has no attribution().
     const base =
       typeof Vio.attribution === 'function'
-        ? Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId || undefined, campaignId: this.effectiveCampaignId })
+        ? Vio.attribution(this.effectiveSlot, {
+            sponsorId: this.sponsorId || undefined,
+            campaignId: this.slotRegistration.campaignHint,
+          })
         : { slot: this.effectiveSlot || undefined }
     return {
       ...base,

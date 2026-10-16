@@ -29,6 +29,7 @@ import {
   SLOT_DECLARATION_FAILURE_TTL_MS,
   SLOT_DECLARATION_TTL_MS,
   activeCampaignEntry,
+  campaignCandidates,
   normalizeSlotId,
   normalizeSlotLocations,
   pendingSlotKeys,
@@ -37,8 +38,10 @@ import {
   resolveSlotCampaign,
   slotDeclarationKey,
   slotDeclarationStorageKey,
+  toCampaignId,
   toNumber,
   writeSlotDeclaration,
+  type CampaignHint,
   type SlotInput,
 } from './slots.js'
 import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
@@ -70,8 +73,9 @@ class VioFacade {
 
   /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each, its display name and its own campaign. */
   private slotRegistry = new Map<string, { count: number; displayName?: string; campaignId?: number }>()
-  /** Slots the dashboard assigns itself (the page's campaign is ignored there) — warned once each. */
+  /** Slots already warned about (`dashboard`: the dashboard's assignment stands; `replaced`: this page moved it). */
   private warnedDashboardSlots = new Set<string>()
+  private warnedReplacedSlots = new Set<string>()
   /** Pending debounced declaration of the registry. */
   private slotDeclareTimer: ReturnType<typeof setTimeout> | null = null
   /** A name appeared (or the key changed) since the registry was last declared. */
@@ -110,6 +114,8 @@ class VioFacade {
     this.declarationsThisLoad = 0
     this.warnedLocationCap = false
     this.warnedDeclarationCap = false
+    this.warnedDashboardSlots.clear()
+    this.warnedReplacedSlots.clear()
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
   }
@@ -313,14 +319,21 @@ class VioFacade {
         locations,
         ...(pageCampaignId !== undefined ? { campaignId: pageCampaignId } : {}),
       })
-      this.reportAssignments(result)
+      this.reportAssignments(result, locations, pageCampaignId, cfg.debug)
       // A server that predates `mode` drops the field, answers 200 without it
       // and REPLACES (it deprecates the other pages' slots). Only a declaration
       // the server confirms as merged is remembered for 24 h — a replace is
       // remembered for 1 h, so the next load (not every view) tries again,
-      // and succeeds once the server is updated.
+      // and succeeds once the server is updated. A location whose campaign the
+      // micro did not take up (no `assignment` at all — an older micro — or
+      // `none` for a campaign the bootstrap lists as active) is remembered for
+      // 1 h too, so the page's campaign lands once the micro is updated.
       if (result?.mode === 'merge') {
-        writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, now))
+        const unhandled = this.campaignNotTakenUp(result, locations, pageCampaignId)
+        const settled = keys.filter((k) => !unhandled.has(k))
+        let next = rememberSlotKeys(memory, settled, now)
+        if (unhandled.size > 0) next = rememberSlotKeys(next, [...unhandled], failedAt(now))
+        writeSlotDeclaration(storageKey, next)
       } else {
         writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, failedAt(now)))
         warn(
@@ -353,7 +366,7 @@ class VioFacade {
     const id = normalizeSlotId(name)
     if (!id) return () => {}
     const label = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined
-    const campaign = toNumber(campaignId)
+    const campaign = toCampaignId(campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
     const entry = this.slotRegistry.get(id)
     let changed = false
     if (!entry) {
@@ -390,15 +403,21 @@ class VioFacade {
    * open campaign for the init platform, else the surface's default. With no
    * slot, the default. `null` before the bootstrap. See `resolveSlotCampaign`.
    */
-  campaignForSlot(slot?: string | null, hint?: { campaignId?: number | string | null }): BootstrapCampaignEntry | null {
+  campaignForSlot(slot?: string | null, hint?: { campaignId?: CampaignHint }): BootstrapCampaignEntry | null {
     const config = Configuration.isInitialized ? Configuration.get() : undefined
     return resolveSlotCampaign(
       this.cachedBootstrap,
       slot ?? null,
       Date.now(),
       config?.platform,
-      toNumber(hint?.campaignId) ?? config?.campaignId,
+      this.pageCampaignCandidates(hint?.campaignId),
     )
+  }
+
+  /** The page-campaign candidates in precedence order: the element's (own, ancestor), then `Vio.init`'s. */
+  private pageCampaignCandidates(hint: CampaignHint): number[] {
+    const config = Configuration.isInitialized ? Configuration.get() : undefined
+    return campaignCandidates([...(Array.isArray(hint) ? hint : [hint]), config?.campaignId])
   }
 
   /**
@@ -423,12 +442,14 @@ class VioFacade {
    * `sponsor-id`) it is kept as `sponsorId`, and the campaign follows the same
    * cascade analytics uses (slot assignment → page campaign → the sponsor's
    * active campaign → default), so what the cart remembers matches what the
-   * events say. `hint.campaignId` — the element's own page campaign
-   * (`vio-campaign` / an ancestor's `data-vio-campaign`), over `Vio.init`'s.
+   * events say — the page campaign applies there only when that sponsor takes
+   * part in it. `hint.campaignId` — the element's own page campaign
+   * candidates (`vio-campaign`, an ancestor's `data-vio-campaign`), ahead of
+   * `Vio.init`'s; an unusable one falls through to the next; `0` = unset.
    */
   attribution(
     slot?: string | null,
-    hint?: { sponsorId?: number | string; campaignId?: number | string | null },
+    hint?: { sponsorId?: number | string; campaignId?: CampaignHint },
   ): Attribution {
     const out: Attribution = {}
     try {
@@ -436,7 +457,7 @@ class VioFacade {
       if (name) out.slot = name
       const boot = this.cachedBootstrap
       const hinted = toNumber(hint?.sponsorId)
-      const pageCampaignId = toNumber(hint?.campaignId)
+      const pageCampaignId = this.pageCampaignCandidates(hint?.campaignId)
       if (boot) {
         if (hinted !== undefined) {
           const campaignId = resolveCampaignId({ slot: name || undefined, sponsorId: hinted }, boot, {
@@ -494,19 +515,61 @@ class VioFacade {
 
   /**
    * What the micro did with the page's campaign per slot (`assignment`):
-   * debug for the record; a warning, once per slot, when the dashboard's own
-   * assignment stands and the page's campaign is ignored there.
+   * `console.debug` when `Vio.init({ debug: true })`; a warning once per
+   * slot when the dashboard's own assignment stands (only for a slot this
+   * page actually sent a campaign for) and once per slot when this page moved
+   * it from an earlier page assignment (`replaced`).
    */
-  private reportAssignments(result: ManifestResult | null | undefined): void {
-    const locations = Array.isArray(result?.locations) ? result.locations : []
-    for (const l of locations) {
+  private reportAssignments(
+    result: ManifestResult | null | undefined,
+    sent: ReadonlyArray<ManifestLocation>,
+    pageCampaignId: number | undefined,
+    debug: boolean,
+  ): void {
+    const answered = Array.isArray(result?.locations) ? result.locations : []
+    const campaignFor = (id: string) =>
+      sent.find((l) => l.id === id)?.campaignId ?? pageCampaignId
+    for (const l of answered) {
       if (!l || typeof l !== 'object' || !l.assignment) continue
-      if (typeof console !== 'undefined') console.debug('[Vio] slot', l.locationId, 'assignment:', l.assignment)
+      if (debug && typeof console !== 'undefined') console.debug('[Vio] slot', l.locationId, 'assignment:', l.assignment)
+      const sentCampaign = campaignFor(l.locationId)
+      if (sentCampaign === undefined) continue
       if (l.assignment === 'dashboard' && !this.warnedDashboardSlots.has(l.locationId)) {
         this.warnedDashboardSlots.add(l.locationId)
         warn(`slot ${l.locationId} is assigned from the dashboard; the page's campaign is ignored there`)
       }
+      if (l.assignment === 'replaced' && !this.warnedReplacedSlots.has(l.locationId)) {
+        this.warnedReplacedSlots.add(l.locationId)
+        warn(`slot ${l.locationId} moved to campaign ${sentCampaign} by this page (it replaced an earlier page assignment)`)
+      }
     }
+  }
+
+  /**
+   * The memory keys of the sent locations whose campaign the micro did not
+   * take up: every location when a campaign was sent and no answer carries
+   * `assignment` (an older micro), or the ones answered `none` for a campaign
+   * the bootstrap lists as active. They are remembered with the 1 h TTL.
+   */
+  private campaignNotTakenUp(
+    result: ManifestResult | null | undefined,
+    sent: ReadonlyArray<ManifestLocation>,
+    pageCampaignId: number | undefined,
+  ): Set<string> {
+    const out = new Set<string>()
+    const withCampaign = sent.filter((l) => (l.campaignId ?? pageCampaignId) !== undefined)
+    if (withCampaign.length === 0) return out
+    const answered = Array.isArray(result?.locations) ? result.locations : []
+    const anyAssignment = answered.some((l) => l && typeof l === 'object' && !!l.assignment)
+    for (const l of withCampaign) {
+      const answer = answered.find((a) => a && a.locationId === l.id)
+      const campaignId = l.campaignId ?? pageCampaignId
+      const notTaken =
+        !anyAssignment ||
+        (answer?.assignment === 'none' && activeCampaignEntry(this.cachedBootstrap, campaignId) !== null)
+      if (notTaken) out.add(slotDeclarationKey(l, pageCampaignId))
+    }
+    return out
   }
 
   private scheduleSlotDeclaration(): void {

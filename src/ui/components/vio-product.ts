@@ -9,6 +9,7 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
+import { SlotRegistration } from '../slot-registration.js'
 
 export class VioProduct extends LitElement {
   /** Brand label shown at the top (uppercase, gray, small). */
@@ -25,6 +26,14 @@ export class VioProduct extends LitElement {
   @property({ type: String, attribute: 'product-id' }) productId = ''
   /** Vio sponsor id, propagated to click event. */
   @property({ type: String, attribute: 'sponsor-id' }) sponsorId = ''
+  /**
+   * Slot this card sits in (ADR-0027): registered with the campaigns service
+   * on mount and carried by every event the card emits, so attribution goes
+   * to the campaign assigned to the slot. The attribute is `vio-slot`, not
+   * `slot` — that one is HTML's own (shadow DOM slotting).
+   */
+  @property({ type: String, attribute: 'vio-slot' }) vioSlot = ''
+  private readonly slotRegistration = new SlotRegistration()
   /** Whether the product has selectable variants — the quick-add button then
    * opens the detail to pick one instead of adding directly. */
   @property({ type: Boolean, attribute: 'has-variants' }) hasVariants = false
@@ -159,17 +168,21 @@ export class VioProduct extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback()
     this.updateInCart()
+    this.slotRegistration.sync(this.vioSlot)
     Vio.cart.addEventListener('change', this.boundCartChange)
   }
 
   override disconnectedCallback(): void {
     Vio.cart.removeEventListener('change', this.boundCartChange)
+    this.slotRegistration.clear()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
     // product-id / sponsor-id are set as attributes after construction.
     if (changed.has('productId') || changed.has('sponsorId')) this.updateInCart()
+    // vio-slot too (the React wrappers set properties after mount).
+    if (changed.has('vioSlot')) this.slotRegistration.sync(this.vioSlot)
   }
 
   /** Reflect whether (and how many units of) this product sit in the cart. */
@@ -203,6 +216,7 @@ export class VioProduct extends LitElement {
           price: this.price,
           retailer: this.retailer,
           imageUrl: this.imageUrl,
+          slot: this.vioSlot || undefined,
         },
       }),
     )
@@ -240,6 +254,7 @@ export class VioProduct extends LitElement {
           price: this.price,
           retailer: this.retailer,
           imageUrl: this.imageUrl,
+          slot: this.vioSlot || undefined,
         },
       }),
     )

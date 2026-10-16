@@ -30,6 +30,7 @@
  */
 
 import { Configuration } from '../configuration.js'
+import { findSlotAssignment } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import type { CartLineItem } from '../cart/types.js'
@@ -87,6 +88,14 @@ export interface AnalyticsContext {
   /** Código corto del fallo (`sdk_error` / `checkout_error`). */
   errorCode?: string
   variant?: string
+  /**
+   * The slot (ADR-0027) the component sits in — its `vio-slot`. Attribution
+   * follows it: the event's `campaign_id` is the campaign assigned to the slot
+   * right now, before the sponsor rule. On the wire it fills `location_id`
+   * when no explicit `locationId` is given (a slot IS a location id to the
+   * campaigns service).
+   */
+  slot?: string
 }
 
 export interface AnalyticsItemInput {
@@ -427,7 +436,8 @@ export class AnalyticsManager extends EventTarget {
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
-      location_id: ctx.locationId,
+      // A slot is a location id to the campaigns service (ADR-0027).
+      location_id: ctx.locationId ?? ctx.slot,
       component_template_id: ctx.componentTemplateId,
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
@@ -611,10 +621,10 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string; slot?: string }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d) },
         commerce: {
           items: [
             {
@@ -642,10 +652,11 @@ export class AnalyticsManager extends EventTarget {
         quantity?: number
         currency?: string
         sponsorId?: number
+        slot?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       this.track('remove_from_cart', {
-        context: { sponsorId: d.sponsorId },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d) },
         commerce: {
           items: [
             {
@@ -680,11 +691,12 @@ export class AnalyticsManager extends EventTarget {
         name?: string
         brand?: string
         price?: number | string
+        slot?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d) },
         commerce: {
           items: [
             {
@@ -704,10 +716,10 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:checkout-open', (ev) => {
-      const d = (ev as CustomEvent<{ sponsorId?: number }>).detail ?? {}
+      const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string }>).detail ?? {}
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
-        context: { sponsorId: d.sponsorId },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d) },
         ...(snap ? { commerce: snap } : {}),
       })
     })
@@ -717,7 +729,7 @@ export class AnalyticsManager extends EventTarget {
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
       this.track('purchase', {
-        context: { sponsorId },
+        context: { sponsorId, slot: slotOf(d) },
         commerce: {
           // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
@@ -854,22 +866,29 @@ function vioCart(): CartManager | null {
 
 /**
  * The `campaign_id` of an event. In order: the context's explicit id; the
- * active campaign of `campaigns[]` the event's sponsor takes part in, as its
- * primary or one of its secondaries — when it is in several, the surface's
- * default campaign if it is one of them, else the first one the backend
- * lists; the default campaign (`campaign.id`). `/v2/mobile/config` has no
- * top-level `campaignId` — reading one is why every event used to leave
- * with `campaign_id: 0` and the campaigns screen stayed empty.
+ * campaign assigned to the context's `slot` right now (ADR-0027 — only an
+ * open assignment for the init platform counts, see `findSlotAssignment`);
+ * the active campaign of `campaigns[]` the event's sponsor takes part in, as
+ * its primary or one of its secondaries — when it is in several, the
+ * surface's default campaign if it is one of them, else the first one the
+ * backend lists; the default campaign (`campaign.id`). `/v2/mobile/config`
+ * has no top-level `campaignId` — reading one is why every event used to
+ * leave with `campaign_id: 0` and the campaigns screen stayed empty.
  *
  * A malformed `campaigns[]` (not an array, a null entry) never breaks
  * `track()`: it falls back to `campaign.id`.
  */
 export function resolveCampaignId(
-  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId'>,
+  ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId' | 'slot'>,
   boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
 ): number | undefined {
   if (ctx.campaignId !== undefined) return ctx.campaignId
   const defaultId = boot?.campaign?.id
+  if (ctx.slot) {
+    const platform = Configuration.isInitialized ? Configuration.get().platform : undefined
+    const assigned = toNumber(findSlotAssignment(boot, ctx.slot, Date.now(), platform)?.id)
+    if (assigned !== undefined) return assigned
+  }
   const sponsorId = toNumber(ctx.sponsorId)
   if (sponsorId === undefined) return defaultId
   try {
@@ -888,6 +907,11 @@ export function resolveCampaignId(
     /* a malformed campaigns[] must never break track() */
   }
   return defaultId
+}
+
+/** The `slot` a `vio:*` event detail carries, when it is a non-empty string. */
+function slotOf(detail: { slot?: unknown }): string | undefined {
+  return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
 }
 
 function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
@@ -912,6 +936,8 @@ function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
 export interface PaymentSuccessDetail {
   method?: string
   sponsorId?: number | string
+  /** The slot the purchase started from, when the emitter knows it. */
+  slot?: string
   /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */

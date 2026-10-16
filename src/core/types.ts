@@ -147,6 +147,38 @@ export interface BootstrapResponse {
 }
 
 /**
+ * A slot this page declares to the campaigns service (ADR-0027 / ADR-0034):
+ * `id` is the slot name (≤ 100 chars, what `vio-slot` carries and what the
+ * dashboard assigns a campaign to); `displayName` is only for the dashboard.
+ */
+export interface ManifestLocation {
+  id: string
+  displayName?: string
+}
+
+/** Body of `POST /v2/mobile/components/manifest`. */
+export interface ManifestRequest {
+  platform: string
+  /**
+   * `merge` upserts the slots without deprecating those of other pages (a
+   * surface on the web has many pages, each knowing only its own blocks);
+   * `replace` (the native SDKs' mode) deprecates whatever is not listed.
+   */
+  mode: 'merge' | 'replace'
+  locations: ManifestLocation[]
+}
+
+/** Response of `POST /v2/mobile/components/manifest`. */
+export interface ManifestResult {
+  clientAppId: number
+  platform: string
+  mode: 'merge' | 'replace'
+  locations: Array<{ id: number | string; locationId: string; displayName?: string | null }>
+  deprecatedCount: number
+  warnings: Array<{ kind: string; detail: string }>
+}
+
+/**
  * A placement component returned by `/v2/mobile/campaigns/:id/components`.
  * Used by `<vio-product-carousel campaign-id="...">` to know which products
  * to render at a given slot.

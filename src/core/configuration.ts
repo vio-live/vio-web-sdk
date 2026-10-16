@@ -11,11 +11,23 @@
 
 export type Environment = 'development' | 'testing' | 'production'
 
+/**
+ * Platform type of the surface this page belongs to (ADR-0027). It travels
+ * with every slot declaration and as `?platform=` on the bootstrap, so the
+ * campaigns service only answers with the slot assignments of this platform.
+ */
+export type VioPlatform = 'web' | 'custom-web' | 'vev'
+
 export interface VioConfig {
   /** Vio API key for this client app (from the Vio dashboard). */
   apiKey: string
   /** Target environment. Defaults to 'development'. */
   environment?: Environment
+  /**
+   * Platform type of this surface: `web` (the no-code snippet), `custom-web`
+   * (the SDK integrated by code) or `vev`. Defaults to `web`.
+   */
+  platform?: VioPlatform
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -49,6 +61,7 @@ export interface VioConfig {
 export interface ResolvedConfig {
   apiKey: string
   environment: Environment
+  platform: VioPlatform
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -94,6 +107,7 @@ class ConfigurationSingleton {
     this.resolved = {
       apiKey: input.apiKey,
       environment: env,
+      platform: input.platform ?? 'web',
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,
@@ -109,6 +123,7 @@ class ConfigurationSingleton {
           : '****'
       console.info('[Vio] Initialized', {
         environment: env,
+        platform: this.resolved.platform,
         apiBase: this.resolved.apiBase,
         apiKey: masked,
         stripeConfigured: !!input.stripePublishableKey,

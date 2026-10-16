@@ -112,6 +112,64 @@ Hosts with their own quantity stepper: change a line with
 live quantity, so quick taps before a re-render never ask for the same target
 twice, and the backend sees one request in flight per line.
 
+## Slots
+
+A **slot** is a named place on a page (ADR-0027). The page declares its slots to
+Vio, the dashboard assigns a campaign to each one (optionally with a date
+window), and whatever no slot names shows the surface's **default campaign**.
+Several campaigns can therefore run on one page at the same time.
+
+Tell the SDK which platform the page is (it travels with every declaration and
+with the bootstrap, so only this platform's assignments come back):
+
+```ts
+Vio.init({ apiKey: '…', environment: 'production', platform: 'web' }) // 'web' | 'custom-web' | 'vev' — default 'web'
+```
+
+Name the slot on the element. The attribute is **`vio-slot`** (property `vioSlot`,
+React prop `vioSlot`) — **not `slot`**, which is HTML's own attribute for shadow DOM
+slotting and must stay untouched:
+
+```html
+<vio-product-carousel vio-slot="hero" product-ids="408909,408910"></vio-product-carousel>
+<vio-product vio-slot="sidebar" product-id="408911" sponsor-id="1"></vio-product>
+```
+
+```tsx
+<VioProductCarousel vioSlot="hero" productIds="408909,408910" />
+```
+
+What a slot changes:
+
+- **Declaration.** Every mounted element with a `vio-slot` registers its name;
+  after the first successful `Vio.bootstrap()` the SDK sends **one** manifest
+  for the whole page (`POST /v2/mobile/components/manifest`, `mode: 'merge'`, so
+  one page never deprecates another page's slots), and again whenever a new
+  name appears. The same set is not re-sent from the same browser for **24 h**
+  (remembered in `localStorage` under the platform and a hash of the key — never
+  the key itself; without storage it simply posts each load). It is best-effort
+  and never throws. To declare by hand — e.g. from an editor, or to bypass the
+  24 h memory:
+
+  ```ts
+  await Vio.declareSlots(['hero', { id: 'sidebar', displayName: 'Sidebar' }], { force: true })
+  // → ManifestResult | null (null = skipped as already declared, or failed — see the console)
+  ```
+
+- **Which campaign the slot shows.** Among the active campaigns of the bootstrap,
+  the one whose assignment names the slot (for this platform, or for all) and
+  whose window is open right now; if several, the default campaign, else the first
+  listed. No assignment → the default campaign. `Vio.campaignForSlot('hero')`
+  gives it from the last bootstrap (`null` before it); the pure
+  `resolveSlotCampaign(boot, slot, now?, platform?)` is exported from `/core`.
+- **Sponsor.** A carousel or card with a `vio-slot` and no `sponsor-id` uses the
+  primary sponsor of the slot's campaign. An explicit `sponsor-id` still wins.
+- **Attribution.** Every event the element emits (`vio:product-click`,
+  `vio:added-to-cart`, `vio:checkout-open`, …) and every analytics event it
+  tracks carries the slot: `campaign_id` resolves as explicit `campaignId` → the
+  slot's assigned campaign → the sponsor's campaign → the default, and the slot
+  fills `location_id` when no explicit `locationId` is given.
+
 ## Theming
 
 Every component reads its colors and fonts from `--vio-*` CSS custom properties

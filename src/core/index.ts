@@ -7,8 +7,12 @@ export {
   Configuration,
   type VioConfig,
   type Environment,
+  type VioPlatform,
   type ResolvedConfig,
 } from './configuration.js'
+
+// Slots (ADR-0027): which campaign a slot shows, from a bootstrap response.
+export { resolveSlotCampaign, type SlotInput } from './slots.js'
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
@@ -123,6 +127,9 @@ export type {
   BootstrapCampaignEntry,
   BootstrapCampaignStatus,
   BootstrapSlot,
+  ManifestLocation,
+  ManifestRequest,
+  ManifestResult,
   PlacementComponent,
   ImageSize,
 } from './types.js'

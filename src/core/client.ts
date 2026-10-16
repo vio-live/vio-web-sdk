@@ -22,7 +22,25 @@ import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager } from './analytics/analytics-manager.js'
-import type { BootstrapResponse, Sponsor } from './types.js'
+import {
+  isSlotDeclarationFresh,
+  normalizeSlotId,
+  normalizeSlotLocations,
+  readSlotDeclaration,
+  resolveSlotCampaign,
+  slotDeclarationStorageKey,
+  writeSlotDeclaration,
+  type SlotInput,
+} from './slots.js'
+import type {
+  BootstrapCampaignEntry,
+  BootstrapResponse,
+  ManifestResult,
+  Sponsor,
+} from './types.js'
+
+/** Mount storms (a carousel of cards, Vev blocks) collapse into ONE manifest. */
+const SLOT_DECLARATION_DEBOUNCE_MS = 1_000
 
 class VioFacade {
   private apiInstance: VioApi | null = null
@@ -36,6 +54,13 @@ class VioFacade {
    * (another key or environment) is still in flight after a re-init; its answer
    * belongs to that configuration and must not land in this one. */
   private generation = 0
+
+  /** Slot names present on the page (`Vio.registerSlot`) → how many elements hold each. */
+  private slotRegistry = new Map<string, number>()
+  /** Pending debounced declaration of the registry. */
+  private slotDeclareTimer: ReturnType<typeof setTimeout> | null = null
+  /** A name appeared (or the key changed) since the registry was last declared. */
+  private slotsDirty = false
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
@@ -54,6 +79,13 @@ class VioFacade {
     this.generation++
     // A new key/environment invalidates the per-sponsor payment methods too.
     this.checkoutManager?.clearPaymentMethodsCache()
+    // The page's slots stay; they are declared again once the NEW key has
+    // bootstrapped (a declaration pending for the old key is dropped).
+    if (this.slotDeclareTimer) {
+      clearTimeout(this.slotDeclareTimer)
+      this.slotDeclareTimer = null
+    }
+    this.slotsDirty = this.slotRegistry.size > 0
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
   }
@@ -115,12 +147,14 @@ class VioFacade {
     }
     const generation = this.generation
     const promise: Promise<BootstrapResponse> = this.api
-      .bootstrap()
+      .bootstrap(Configuration.get().platform)
       .then(
         (res) => {
           if (generation !== this.generation) return this.bootstrap()
           this.cachedBootstrap = res
           this.bootstrapFailedAt = 0
+          // The slots that mounted before this answer can be declared now.
+          if (this.slotsDirty) this.scheduleSlotDeclaration()
           return res
         },
         (err) => {
@@ -169,13 +203,124 @@ class VioFacade {
     return createCommerceClient({ endpoint: cfg.graphQLBase, apiKey: commerceApiKey })
   }
 
+  // MARK: - Slots (ADR-0027 / ADR-0034)
+
+  /**
+   * Declare this page's slots to the campaigns service
+   * (`POST /v2/mobile/components/manifest`, `mode: 'merge'`, the init
+   * platform). Best-effort: it NEVER throws — a failure is logged and resolves
+   * `null`. The same set is not re-posted from this browser for 24 h unless
+   * `force` (then `null` also means "skipped, already declared"). Ids are
+   * trimmed, cut at 100 chars, deduped; empties are dropped.
+   */
+  async declareSlots(
+    slots: ReadonlyArray<SlotInput>,
+    opts: { force?: boolean } = {},
+  ): Promise<ManifestResult | null> {
+    try {
+      const locations = normalizeSlotLocations(slots)
+      if (locations.length === 0) return null
+      if (!Configuration.isInitialized) {
+        warn('declareSlots() before Vio.init() — nothing declared')
+        return null
+      }
+      const cfg = Configuration.get()
+      const storageKey = slotDeclarationStorageKey(cfg.platform, cfg.apiKey)
+      const ids = locations.map((l) => l.id).sort()
+      const now = Date.now()
+      if (!opts.force && isSlotDeclarationFresh(readSlotDeclaration(storageKey), ids, now)) {
+        return null
+      }
+      const result = await this.api.declareManifest({
+        platform: cfg.platform,
+        mode: 'merge',
+        locations,
+      })
+      // A server that predates `mode` drops the field, answers 200 without it
+      // and REPLACES (it deprecates the other pages' slots). Only a declaration
+      // the server confirms as merged is remembered — otherwise the next page
+      // load tries again, and succeeds once the server is updated.
+      if (result?.mode === 'merge') {
+        writeSlotDeclaration(storageKey, { ids, at: now })
+      } else {
+        warn(
+          'slots declared but the server ignored mode=merge (old server); not caching, will retry next load',
+        )
+      }
+      return result
+    } catch (err) {
+      warn('declareSlots() failed —', err)
+      return null
+    }
+  }
+
+  /**
+   * Register a slot name present on the page (the `<vio-*>` elements call it
+   * from `vio-slot`). The registry is declared ONCE, debounced, after the
+   * first successful bootstrap — and again whenever a new name appears. The
+   * returned function unregisters the name; removal never re-declares.
+   */
+  registerSlot(name: string): () => void {
+    const id = normalizeSlotId(name)
+    if (!id) return () => {}
+    const count = this.slotRegistry.get(id) ?? 0
+    this.slotRegistry.set(id, count + 1)
+    if (count === 0) {
+      this.slotsDirty = true
+      if (this.cachedBootstrap) this.scheduleSlotDeclaration()
+    }
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const current = this.slotRegistry.get(id) ?? 0
+      if (current <= 1) this.slotRegistry.delete(id)
+      else this.slotRegistry.set(id, current - 1)
+    }
+  }
+
+  /**
+   * The campaign a slot shows now, from the last bootstrap: its assigned and
+   * open campaign for the init platform, else the surface's default. With no
+   * slot, the default. `null` before the bootstrap. See `resolveSlotCampaign`.
+   */
+  campaignForSlot(slot?: string | null): BootstrapCampaignEntry | null {
+    const platform = Configuration.isInitialized ? Configuration.get().platform : undefined
+    return resolveSlotCampaign(this.cachedBootstrap, slot ?? null, Date.now(), platform)
+  }
+
+  private scheduleSlotDeclaration(): void {
+    if (this.slotDeclareTimer) clearTimeout(this.slotDeclareTimer)
+    this.slotDeclareTimer = setTimeout(() => {
+      this.slotDeclareTimer = null
+      this.slotsDirty = false
+      void this.declareSlots([...this.slotRegistry.keys()])
+    }, SLOT_DECLARATION_DEBOUNCE_MS)
+  }
+
   private findSponsor(sponsorId: number): Sponsor | undefined {
     const boot = this.cachedBootstrap
     if (!boot) return undefined
     const id = Number(sponsorId)
     if (Number(boot.primarySponsor?.id) === id) return boot.primarySponsor
-    return boot.secondarySponsors?.find((s) => Number(s.id) === id)
+    const secondary = boot.secondarySponsors?.find((s) => Number(s.id) === id)
+    if (secondary) return secondary
+    // A sponsor may live only in a non-default campaign (the one a slot shows).
+    const campaigns = Array.isArray(boot.campaigns) ? boot.campaigns : []
+    for (const c of campaigns) {
+      if (!c || typeof c !== 'object') continue
+      if (Number(c.primarySponsor?.id) === id) return c.primarySponsor ?? undefined
+      const s = Array.isArray(c.secondarySponsors)
+        ? c.secondarySponsors.find((x) => Number(x?.id) === id)
+        : undefined
+      if (s) return s
+    }
+    return undefined
   }
+}
+
+function warn(...args: unknown[]): void {
+  if (typeof console !== 'undefined') console.warn('[Vio]', ...args)
 }
 
 // Cross-bundle singleton. Some hosts (e.g. Vev) bundle each component into its

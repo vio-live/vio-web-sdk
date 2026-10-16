@@ -24,6 +24,7 @@ import {
 } from '../../core/types.js'
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { SlotRegistration } from '../slot-registration.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -44,6 +45,21 @@ export class VioProductDetail extends LitElement {
   /** Subscribe to `vio:product-click` on the document and auto-open. */
   @property({ type: Boolean, attribute: 'auto-open' }) autoOpen = true
   @property({ type: String }) currency = 'NOK'
+  /**
+   * Slot this detail belongs to (ADR-0027): registered with the campaigns
+   * service on mount and carried by every event it emits. A `vio:product-click`
+   * that names a slot (a card with `vio-slot`) takes precedence while that
+   * product is open. The attribute is `vio-slot`, not `slot` (HTML's own).
+   */
+  @property({ type: String, attribute: 'vio-slot' }) vioSlot = ''
+  private readonly slotRegistration = new SlotRegistration()
+  /** The slot of the card whose click opened the detail ('' when it had none). */
+  private eventSlot = ''
+
+  /** The slot in effect: the opening card's, else this element's own. */
+  private get activeSlot(): string {
+    return this.eventSlot || this.vioSlot
+  }
 
   @state() private product: Product | null = null
   /**
@@ -82,12 +98,19 @@ export class VioProductDetail extends LitElement {
 
   private boundProductClick = (e: Event): void => {
     if (!this.autoOpen) return
-    const ev = e as CustomEvent<{ productId: string; sponsorId: string; currency?: string }>
+    const ev = e as CustomEvent<{ productId: string; sponsorId: string; currency?: string; slot?: string }>
     const productIdNum = parseInt(ev.detail.productId, 10)
     // Skip non-numeric IDs (affiliate products) — host handles those.
     if (Number.isNaN(productIdNum)) return
-    const sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
-    if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) return
+    const slot = typeof ev.detail.slot === 'string' ? ev.detail.slot.trim() : ''
+    let sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
+    if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) {
+      // A card without a sponsor: the primary of the campaign its slot shows.
+      const fromSlot = Number(Vio.campaignForSlot(slot || this.vioSlot || null)?.primarySponsor?.id)
+      if (!Number.isFinite(fromSlot) || fromSlot <= 0) return
+      sponsorIdNum = fromSlot
+    }
+    this.eventSlot = slot
     this.productId = ev.detail.productId
     this.sponsorId = sponsorIdNum
     // The event may carry the page currency; otherwise use the global one.
@@ -542,17 +565,21 @@ export class VioProductDetail extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    this.slotRegistration.sync(this.vioSlot)
     void this.loadVippsButton()
     document.addEventListener('vio:product-click', this.boundProductClick)
   }
 
   override disconnectedCallback(): void {
     document.removeEventListener('vio:product-click', this.boundProductClick)
+    this.slotRegistration.clear()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
     if (changed.has('open')) this.dialogFocus.update(this.open)
+    // The React wrappers set properties after mount.
+    if (changed.has('vioSlot')) this.slotRegistration.sync(this.vioSlot)
   }
 
   show(): void { this.open = true }
@@ -634,6 +661,7 @@ export class VioProductDetail extends LitElement {
           context: {
             sponsorId: this.sponsorId > 0 ? Number(this.sponsorId) : undefined,
             componentTemplateId: 'product-detail',
+            slot: this.activeSlot || undefined,
           },
           commerce: {
             items: [
@@ -687,6 +715,7 @@ export class VioProductDetail extends LitElement {
   private async loadAvailablePaymentMethods(): Promise<void> {
     const spId =
       this.sponsorId ||
+      Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
     try {
@@ -1064,6 +1093,7 @@ export class VioProductDetail extends LitElement {
             sponsorId: this.sponsorId,
             quantity: this.quantity,
             variantId,
+            slot: this.activeSlot || undefined,
           },
         }),
       )
@@ -1089,7 +1119,7 @@ export class VioProductDetail extends LitElement {
         new CustomEvent('vio:checkout-open', {
           bubbles: true,
           composed: true,
-          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true },
+          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true, slot: this.activeSlot || undefined },
         }),
       )
     } finally {
@@ -1120,7 +1150,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, express: false },
+        detail: { sponsorId: this.sponsorId, express: false, slot: this.activeSlot || undefined },
       }),
     )
   }
@@ -1162,7 +1192,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false },
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false, slot: this.activeSlot || undefined },
       }),
     )
   }
@@ -1176,7 +1206,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false },
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false, slot: this.activeSlot || undefined },
       }),
     )
   }

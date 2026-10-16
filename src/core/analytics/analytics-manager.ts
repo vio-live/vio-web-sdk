@@ -30,11 +30,11 @@
  */
 
 import { Configuration } from '../configuration.js'
-import { resolveContent, type ContentRef } from '../content.js'
-import { findSlotAssignment } from '../slots.js'
+import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, resolveContent, type ContentRef } from '../content.js'
+import { findSlotAssignment, toNumber } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
-import { lineOrigins } from '../cart/cart-manager.js'
+import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
@@ -173,14 +173,6 @@ const IMPRESSION_THRESHOLD = 0.5
 const IMPRESSION_DWELL_MS = 1_000
 
 // ── Wire shape (snake_case, contract v1) ────────────────────────────────────
-
-/** One campaign's share of the cart (see `cartSlices`). */
-interface CartSlice {
-  campaignId?: number
-  slot?: string
-  contentId?: string
-  commerce: AnalyticsCommerce
-}
 
 interface WireEvent {
   event_id: string
@@ -442,31 +434,35 @@ export class AnalyticsManager extends EventTarget {
     const boot = vioBootstrapCache()
     const ctx = opts.context ?? {}
     // The article/page this instance renders in — resolved by the SDK when the
-    // event brings no explicit content (see core/content.ts).
-    const content = ctx.contentId === undefined || ctx.contentTitle === undefined ? vioContent() : {}
+    // event brings no explicit content, or when the explicit id does not fit
+    // the collector (see core/content.ts). The ONE place the collector's caps
+    // are enforced: it rejects a whole event over a long id, silently.
+    const explicitContentId = fitsId(ctx.contentId)
+    const content =
+      explicitContentId === undefined || ctx.contentTitle === undefined ? vioContent() : {}
     const context: Record<string, unknown> = compact({
       campaign_id: resolveCampaignId(ctx, boot),
       broadcast_id: ctx.broadcastId,
       campaign_component_id: ctx.campaignComponentId,
       app_placement_id: ctx.appPlacementId,
       // A slot is a location id to the campaigns service (ADR-0027).
-      location_id: ctx.locationId ?? ctx.slot,
+      location_id: fitsId(ctx.locationId ?? ctx.slot),
       component_template_id: ctx.componentTemplateId,
       sponsor_id: ctx.sponsorId,
       activation_id: ctx.activationId,
       content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
       // The host's own content id — its join key back onto its reporting.
-      // Explicit on the event, else what the SDK resolved for the page.
-      content_id: ctx.contentId ?? content.id,
+      // Explicit on the event when it fits, else what the SDK resolved for
+      // the page (already capped per source), else nothing.
+      content_id: explicitContentId ?? fitsId(content.id),
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
       error_code: ctx.errorCode,
-      content_title:
+      content_title: capTitle(
         ctx.contentTitle ??
-        content.title ??
-        (typeof document !== 'undefined' && document.title
-          ? document.title.slice(0, 255)
-          : undefined),
+          content.title ??
+          (typeof document !== 'undefined' && document.title ? document.title : undefined),
+      ),
       variant: ctx.variant,
     })
 
@@ -636,10 +632,10 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; campaignId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -667,13 +663,14 @@ export class AnalyticsManager extends EventTarget {
         quantity?: number
         currency?: string
         sponsorId?: number
+        campaignId?: number
         slot?: string
         contentId?: string | number
         contentTitle?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       this.track('remove_from_cart', {
-        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
+        context: { sponsorId: d.sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -708,6 +705,7 @@ export class AnalyticsManager extends EventTarget {
         name?: string
         brand?: string
         price?: number | string
+        campaignId?: number
         slot?: string
         contentId?: string | number
         contentTitle?: string
@@ -715,7 +713,7 @@ export class AnalyticsManager extends EventTarget {
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -735,22 +733,24 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:checkout-open', (ev) => {
-      const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
-      const slices = this.cartSlices(d.sponsorId)
+      const d = (ev as CustomEvent<{ sponsorId?: number; campaignId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
+      const base: AnalyticsContext = { sponsorId: d.sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
+      const { slices, explicit } = this.cartSlices(d.sponsorId)
       if (slices.length > 1) {
         // Several campaigns in the cart: one begin_checkout per campaign, each
-        // with its own items and value (see cartSlices).
+        // with its own items and value (see cart/slices.ts).
         for (const slice of slices) {
           this.track('begin_checkout', {
-            context: this.sliceContext(slice, { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) }),
-            commerce: slice.commerce,
+            context: this.sliceContext(slice, base),
+            commerce: sliceCommerce(slice),
+            props: { slice: slice.slice, slices: slice.slices },
           })
         }
         return
       }
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
-        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
+        context: this.singleSliceContext(slices[0], explicit, base),
         ...(snap ? { commerce: snap } : {}),
       })
     })
@@ -758,22 +758,25 @@ export class AnalyticsManager extends EventTarget {
     on('vio:payment-success', (ev) => {
       const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
-      const slices = this.cartSlices(sponsorId) // falls back to the pre-clear snapshot
+      const base: AnalyticsContext = { sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
+      const { slices, explicit } = this.cartSlices(sponsorId) // falls back to the pre-clear snapshot
       if (slices.length > 1) {
         // Several campaigns paid in one go: one purchase per campaign — its
         // items and value, the SAME order_id — so each campaign's revenue is
-        // its own and the order still adds up.
+        // its own and the order still adds up. `props.slice/slices` lets the
+        // collector count the order once.
         for (const slice of slices) {
           this.track('purchase', {
-            context: this.sliceContext(slice, { sponsorId, slot: slotOf(d), ...contentOf(d) }),
-            commerce: { ...slice.commerce, ...purchaseFromPaymentSuccess(d), paymentMethod: d.method },
+            context: this.sliceContext(slice, base),
+            commerce: { ...sliceCommerce(slice), ...purchaseFromPaymentSuccess(d), paymentMethod: d.method },
+            props: { slice: slice.slice, slices: slice.slices },
           })
         }
         return
       }
       const snap = this.cartCommerce(sponsorId)
       this.track('purchase', {
-        context: { sponsorId, slot: slotOf(d), ...contentOf(d) },
+        context: this.singleSliceContext(slices[0], explicit, base),
         commerce: {
           // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
@@ -803,69 +806,53 @@ export class AnalyticsManager extends EventTarget {
   }
 
   /**
-   * The cart split per campaign (ADR-0034): every unit of every line goes to
-   * the campaign of its origin — the one the place showed when it was added
-   * — and units without one to the campaign the current rule resolves for
-   * the line's sponsor. One slice per campaign: its items (quantities from
-   * the origins), its value, and the slot / content when they are the same
-   * for the whole slice. A cart with one campaign is one slice.
+   * The cart split per campaign — the shared rule of cart/slices.ts over the
+   * current cart (else the pre-clear snapshot), plus whether any unit named
+   * its campaign itself (a cart without origins is reported as before).
    */
-  private cartSlices(sponsorId?: number): CartSlice[] {
+  private cartSlices(sponsorId?: number): { slices: CartSlice[]; explicit: boolean } {
     const lines = this.cartLines(sponsorId)
-    if (lines.length === 0) return []
+    if (lines.length === 0) return { slices: [], explicit: false }
     const boot = vioBootstrapCache()
-    const slices = new Map<string, CartSlice & { slots: Set<string>; contents: Set<string>; lines: Map<string, AnalyticsItemInput> }>()
-    for (const line of lines) {
-      for (const origin of lineOrigins(line)) {
-        const campaignId =
-          origin.campaignId ?? resolveCampaignId({ slot: origin.slot, sponsorId: line.sponsorId }, boot)
-        const key = campaignId === undefined ? 'default' : String(campaignId)
-        let slice = slices.get(key)
-        if (!slice) {
-          slice = {
-            campaignId,
-            commerce: { items: [], value: 0, currency: line.currency ?? this.lastCartSnapshot?.currency },
-            slots: new Set(),
-            contents: new Set(),
-            lines: new Map(),
-          }
-          slices.set(key, slice)
-        }
-        if (origin.slot) slice.slots.add(origin.slot)
-        if (origin.contentId) slice.contents.add(origin.contentId)
-        const itemKey = `${line.productId}::${line.variantId ?? ''}`
-        const item = slice.lines.get(itemKey)
-        if (item) item.quantity = (item.quantity ?? 0) + origin.quantity
-        else {
-          const fresh: AnalyticsItemInput = {
-            productId: line.productId,
-            name: line.name,
-            brand: line.brand,
-            variantId: line.variantId,
-            price: line.unitPrice,
-            quantity: origin.quantity,
-          }
-          slice.lines.set(itemKey, fresh)
-          slice.commerce.items!.push(fresh)
-        }
-        slice.commerce.value = (slice.commerce.value ?? 0) + line.unitPrice * origin.quantity
-      }
-    }
-    return [...slices.values()].map((s) => ({
-      campaignId: s.campaignId,
-      slot: s.slots.size === 1 ? [...s.slots][0] : undefined,
-      contentId: s.contents.size === 1 ? [...s.contents][0] : undefined,
-      commerce: s.commerce,
-    }))
+    const slices = cartSlicesFrom(
+      lines,
+      (slot, lineSponsorId) => resolveCampaignId({ slot, sponsorId: lineSponsorId }, boot),
+      this.lastCartSnapshot?.currency,
+    )
+    return { slices, explicit: hasExplicitCampaign(lines) }
   }
 
-  /** The context of a per-campaign event: the slice's campaign, slot and content, over the event's own. */
+  /**
+   * The context of one of several per-campaign events: the slice's campaign,
+   * slot and content — only its own; when the slice spans several slots or
+   * articles the event names none rather than the one the click came from.
+   */
   private sliceContext(slice: CartSlice, base: AnalyticsContext): AnalyticsContext {
     return compact({
       ...base,
-      campaignId: slice.campaignId ?? base.campaignId,
-      slot: slice.slot ?? base.slot,
-      contentId: slice.contentId ?? base.contentId,
+      sponsorId: slice.sponsorId ?? base.sponsorId,
+      campaignId: slice.campaignId,
+      slot: slice.slot,
+      contentId: slice.contentId,
+    }) as AnalyticsContext
+  }
+
+  /**
+   * The context of a single-campaign checkout/purchase: when the cart's origins
+   * say which campaign they came from, the event says it too (plus the slot /
+   * content when unique) — a cart without origins is exactly as before.
+   */
+  private singleSliceContext(
+    slice: CartSlice | undefined,
+    explicit: boolean,
+    base: AnalyticsContext,
+  ): AnalyticsContext {
+    if (!slice || !explicit) return base
+    return compact({
+      ...base,
+      campaignId: base.campaignId ?? slice.campaignId,
+      slot: base.slot ?? slice.slot,
+      contentId: base.contentId ?? slice.contentId,
     }) as AnalyticsContext
   }
 
@@ -1047,6 +1034,29 @@ export function resolveCampaignId(
   return defaultId
 }
 
+/** The explicit `campaignId` a `vio:*` event detail carries (the element's attribution). */
+function campaignOf(detail: { campaignId?: unknown }): number | undefined {
+  return toNumber(detail.campaignId)
+}
+
+/** An id the collector accepts (≤ 128 chars, as given — it coerces numbers); `undefined` otherwise. */
+function fitsId<T extends string | number>(value: T | null | undefined): T | undefined {
+  if (value === undefined || value === null) return undefined
+  const s = String(value)
+  return s && s.length <= CONTENT_ID_MAX_LENGTH ? value : undefined
+}
+
+/** A title cut to what the collector accepts (≤ 255 chars). */
+function capTitle(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  return value.length > CONTENT_TITLE_MAX_LENGTH ? value.slice(0, CONTENT_TITLE_MAX_LENGTH) : value
+}
+
+/** A slice as the commerce block of its event. */
+function sliceCommerce(slice: CartSlice): AnalyticsCommerce {
+  return { items: slice.items, value: slice.value, currency: slice.currency }
+}
+
 /** The `slot` a `vio:*` event detail carries, when it is a non-empty string. */
 function slotOf(detail: { slot?: unknown }): string | undefined {
   return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
@@ -1085,6 +1095,8 @@ export interface PaymentSuccessDetail {
   sponsorId?: number | string
   /** The slot the purchase started from, when the emitter knows it. */
   slot?: string
+  /** The campaign the emitter attributed the purchase to (its `Vio.attribution`). */
+  campaignId?: number
   /** Per-element content override (`vio-content-id` / `vio-content-title`), when the emitter carries one. */
   contentId?: string | number
   contentTitle?: string
@@ -1132,12 +1144,6 @@ function firstId(...candidates: unknown[]): string | undefined {
     if (s !== '') return s
   }
   return undefined
-}
-
-function toNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined
-  const n = Number(value)
-  return Number.isFinite(n) ? n : undefined
 }
 
 // ── GA4 dataLayer sink (publisher feature; NOT the Vio pipeline) ────────────

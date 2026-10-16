@@ -58,7 +58,7 @@ export class VioProduct extends LitElement {
 
   /** The slot campaign's sponsor as the string the attributes use ('' when unknown). */
   private sponsorFromAttribution(): string {
-    const id = Vio.attribution(this.effectiveSlot).sponsorId
+    const id = typeof Vio.attribution === 'function' ? Vio.attribution(this.effectiveSlot).sponsorId : undefined
     return id !== undefined ? String(id) : ''
   }
 
@@ -77,7 +77,11 @@ export class VioProduct extends LitElement {
    * set `vio-content-id` / `vio-content-title` on this card.
    */
   private attribution() {
-    const base = Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId || undefined })
+    // A page whose `Vio` singleton comes from an older bundle has no attribution().
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId || undefined })
+        : { slot: this.effectiveSlot || undefined }
     return {
       ...base,
       ...(this.vioContentId ? { contentId: this.vioContentId } : {}),

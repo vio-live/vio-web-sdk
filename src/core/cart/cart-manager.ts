@@ -133,6 +133,11 @@ export class CartManager extends EventTarget {
     }
   }
 
+  /** True while an AddItem/UpdateItem/DeleteItem of this sponsor has not settled. */
+  private hasMutationsInFlight(sponsorId: number): boolean {
+    return (this.inFlightMutations.get(sponsorId)?.size ?? 0) > 0
+  }
+
   /** Register a backend mutation so `waitForCartMutations` can await it. */
   private trackMutation(sponsorId: number, mutation: Promise<unknown>): void {
     let set = this.inFlightMutations.get(sponsorId)
@@ -196,7 +201,9 @@ export class CartManager extends EventTarget {
     let changed = false
     if (server.quantity !== line.quantity) {
       line.quantity = server.quantity
-      line.origins = reconciledOrigins(line.origins, server.quantity)
+      if (!this.hasMutationsInFlight(sponsorId)) {
+        line.origins = reconciledOrigins(line.origins, server.quantity)
+      }
       changed = true
     }
     if (price != null && price !== line.unitPrice) {
@@ -397,10 +404,14 @@ export class CartManager extends EventTarget {
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
-          // The server knows nothing about origins: keep the local ones,
-          // squared with the quantity it answered.
+          // The server knows nothing about origins: keep the local ones. They
+          // are squared with its quantity only when nothing is in flight for
+          // this sponsor — an AddItem answering while another is pending
+          // reports a quantity that is already old (see `lineOrigins`).
           origins: matchedLocal
-            ? reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
+            ? this.hasMutationsInFlight(sponsorId)
+              ? matchedLocal.origins
+              : reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
             : undefined,
           shipping: li.shipping,
           availableShippings: li.available_shippings,
@@ -550,7 +561,8 @@ export class CartManager extends EventTarget {
         const line = c?.items.find((i) => i.id === addedLineId)
         if (c && line) {
           line.quantity -= qty
-          removeOriginQuantity(line, qty)
+          // Off the origin whose add failed — not whatever was added last.
+          removeFromOrigin(line, opts.origin, qty)
           if (line.quantity <= 0) c.items = c.items.filter((i) => i !== line)
           if (c.items.length === 0) this.cartsBySponsor.delete(opts.sponsorId)
           this.persist()
@@ -922,6 +934,31 @@ export function addOriginQuantity(
   line.origins = origins
 }
 
+/**
+ * `qty` fewer units off a given origin first (a rejected add is reverted from
+ * the origin that failed), then off the most recent ones.
+ */
+export function removeFromOrigin(
+  line: Pick<CartLineItem, 'origins'>,
+  origin: CartOrigin | null | undefined,
+  qty: number,
+): void {
+  if (!(qty > 0) || !Array.isArray(line.origins)) return
+  let left = qty
+  if (origin) {
+    const target = normalizeOrigin(origin)
+    const index = line.origins.findIndex((o) => sameOrigin(o, target))
+    if (index >= 0) {
+      const found = line.origins[index]!
+      const take = Math.min(found.quantity, left)
+      found.quantity -= take
+      left -= take
+      if (found.quantity <= 0) line.origins.splice(index, 1)
+    }
+  }
+  if (left > 0) removeOriginQuantity(line, left)
+}
+
 /** `qty` fewer units: off the most recent origins first. */
 export function removeOriginQuantity(line: Pick<CartLineItem, 'origins'>, qty: number): void {
   if (!(qty > 0) || !Array.isArray(line.origins)) return
@@ -959,6 +996,12 @@ export function lineOrigins(line: Pick<CartLineItem, 'origins' | 'quantity'>): C
   const known = (Array.isArray(line.origins) ? line.origins : []).filter((o) => o && o.quantity > 0)
   const total = known.reduce((sum, o) => sum + o.quantity, 0)
   const quantity = line.quantity > 0 ? line.quantity : 0
-  if (total >= quantity) return known.map((o) => ({ ...o }))
-  return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
+  if (total === quantity) return known.map((o) => ({ ...o }))
+  if (total < quantity) return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
+  // More units remembered than the line has (a server clamp while an add was
+  // in flight): report the line's quantity, trimming the most recent first —
+  // on a copy, the line's own origins are not touched.
+  const copy = { origins: known.map((o) => ({ ...o })) }
+  removeOriginQuantity(copy, total - quantity)
+  return copy.origins
 }

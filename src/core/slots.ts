@@ -25,6 +25,12 @@ export const SLOT_ID_MAX_LENGTH = 100
 
 /** A declared set is not re-posted from the same browser for this long. */
 export const SLOT_DECLARATION_TTL_MS = 24 * 60 * 60 * 1000
+/** After a failure (or a server that ignored `merge`) the same set is not retried for this long. */
+export const SLOT_DECLARATION_FAILURE_TTL_MS = 60 * 60 * 1000
+/** The server takes at most this many locations per manifest. */
+export const MAX_LOCATIONS_PER_DECLARATION = 100
+/** Declarations a page load may POST (a `force` call bypasses it). */
+export const MAX_DECLARATIONS_PER_LOAD = 3
 
 /** What `Vio.declareSlots()` accepts per slot. */
 export type SlotInput = string | { id: string; displayName?: string }
@@ -139,7 +145,8 @@ function parseTime(value: string | null | undefined): number | undefined {
   return Number.isFinite(t) ? t : undefined
 }
 
-function toNumber(value: unknown): number | undefined {
+/** A finite number from a number or numeric string; `undefined` otherwise. */
+export function toNumber(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
   const n = Number(value)
   return Number.isFinite(n) ? n : undefined
@@ -195,8 +202,13 @@ export type SlotKind = 'card' | 'carousel' | 'detail'
  * which ADR-0034 accepts.
  */
 export function autoSlotId(kind: SlotKind, ordinal: number, scope?: string | null): string {
-  const prefix = normalizeScope(scope)
-  return `${prefix ? `${prefix}-` : ''}${kind}-${ordinal + 1}`
+  const tail = `${kind}-${ordinal + 1}`
+  let prefix = normalizeScope(scope)
+  // The whole id must fit the server's 100 chars: a long scope is cut, the
+  // kind + number never are (they are what keeps the id unique).
+  const room = SLOT_ID_MAX_LENGTH - tail.length - 1
+  if (prefix.length > room) prefix = prefix.slice(0, Math.max(0, room)).replace(/-+$/, '')
+  return `${prefix ? `${prefix}-` : ''}${tail}`
 }
 
 /** `"Carousel 1"`, `"Card 3"` — with ` · ${scopeName}` when the scope has a human label. */
@@ -214,22 +226,57 @@ export function normalizeScope(scope: string | null | undefined): string {
 
 // ── Declaration memory ──────────────────────────────────────────────────────
 
-/** What the browser remembers about the last declaration of a (platform, key). */
-export interface SlotDeclarationMemory {
-  /** Sorted keys of the declared locations (see `slotDeclarationKeys`). */
-  keys: string[]
-  /** Epoch ms of the declaration. */
-  at: number
+/**
+ * What the browser remembers per (platform, key): for each declared location
+ * key (`id`, or `id\u001fdisplayName`, see `slotDeclarationKeys`) the epoch ms
+ * it was declared. Per id — not per set — because a multi-page site (Vev: one
+ * page per article, lazy blocks) makes a new set on every navigation; only
+ * the ids not declared in the last 24 h go out. A failed attempt is stored as
+ * if declared `SLOT_DECLARATION_TTL_MS − SLOT_DECLARATION_FAILURE_TTL_MS` ago,
+ * so it is retried after an hour, not on every view.
+ */
+export type SlotDeclarationMemory = Record<string, number>
+
+/** The memory keeps at most this many ids (oldest dropped). */
+export const SLOT_DECLARATION_MEMORY_CAP = 500
+
+/** The sortable key of one location, display name included — a renamed block is a new key. */
+export function slotDeclarationKey(location: ManifestLocation): string {
+  return location.displayName ? `${location.id}\u001f${location.displayName}` : location.id
 }
 
-/**
- * One sortable key per location, display name included — a renamed block
- * must declare again even when the set of ids is the same.
- */
+/** Sorted keys of a set of locations (see `slotDeclarationKey`). */
 export function slotDeclarationKeys(locations: ReadonlyArray<ManifestLocation>): string[] {
-  return locations
-    .map((l) => (l.displayName ? `${l.id}\u001f${l.displayName}` : l.id))
-    .sort()
+  return locations.map(slotDeclarationKey).sort()
+}
+
+/** The keys not remembered within `ttl` (or remembered in the future — a clock that went back). */
+export function pendingSlotKeys(
+  memory: SlotDeclarationMemory | null | undefined,
+  keys: ReadonlyArray<string>,
+  now: number = Date.now(),
+  ttl: number = SLOT_DECLARATION_TTL_MS,
+): string[] {
+  return keys.filter((key) => {
+    const at = memory?.[key]
+    if (typeof at !== 'number' || !Number.isFinite(at)) return true
+    return now - at >= ttl || now < at
+  })
+}
+
+/** The memory with `keys` remembered at `at`, pruned to the newest `cap` entries. */
+export function rememberSlotKeys(
+  memory: SlotDeclarationMemory | null | undefined,
+  keys: ReadonlyArray<string>,
+  at: number,
+  cap: number = SLOT_DECLARATION_MEMORY_CAP,
+): SlotDeclarationMemory {
+  const next: SlotDeclarationMemory = { ...(memory ?? {}) }
+  for (const key of keys) next[key] = at
+  const entries = Object.entries(next)
+  if (entries.length <= cap) return next
+  entries.sort((a, b) => b[1] - a[1])
+  return Object.fromEntries(entries.slice(0, cap))
 }
 
 /**
@@ -251,44 +298,33 @@ export function fnv1a(input: string): string {
   return hash.toString(16).padStart(8, '0')
 }
 
-/** The remembered declaration, or null (missing, malformed, no storage). */
-export function readSlotDeclaration(storageKey: string): SlotDeclarationMemory | null {
-  if (typeof localStorage === 'undefined') return null
+/** The remembered map, or `{}` (missing, malformed, no storage, old shape). */
+export function readSlotDeclaration(storageKey: string): SlotDeclarationMemory {
   try {
+    // Even `typeof localStorage` can throw (sandboxed iframes, cookies off).
+    if (typeof localStorage === 'undefined') return {}
     const raw = localStorage.getItem(storageKey)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as Partial<SlotDeclarationMemory> | null
-    if (!parsed || !Array.isArray(parsed.keys) || typeof parsed.at !== 'number') return null
-    return { keys: parsed.keys.filter((x): x is string => typeof x === 'string'), at: parsed.at }
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    // The 0.23.0 shape (`{ keys: [...], at }`) is not a map: forget it, declare once more.
+    if (Array.isArray((parsed as { keys?: unknown }).keys)) return {}
+    const out: SlotDeclarationMemory = {}
+    for (const [key, at] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof at === 'number' && Number.isFinite(at)) out[key] = at
+    }
+    return out
   } catch {
-    return null // private mode, quota, corrupted JSON — all "nothing remembered"
+    return {} // private mode, quota, corrupted JSON — all "nothing remembered"
   }
 }
 
-/** Remember a declaration; silently does nothing without storage. */
+/** Persist the map; silently does nothing without storage. */
 export function writeSlotDeclaration(storageKey: string, memory: SlotDeclarationMemory): void {
-  if (typeof localStorage === 'undefined') return
   try {
+    if (typeof localStorage === 'undefined') return
     localStorage.setItem(storageKey, JSON.stringify(memory))
   } catch {
     /* private mode / quota — we just post again next time */
   }
-}
-
-/**
- * True when exactly `keys` (ids + display names, see `slotDeclarationKeys`)
- * was declared from this browser less than `SLOT_DECLARATION_TTL_MS` ago —
- * the POST can be skipped.
- */
-export function isSlotDeclarationFresh(
-  memory: SlotDeclarationMemory | null,
-  keys: ReadonlyArray<string>,
-  now: number = Date.now(),
-): boolean {
-  if (!memory) return false
-  if (now - memory.at >= SLOT_DECLARATION_TTL_MS || now < memory.at) return false
-  if (memory.keys.length !== keys.length) return false
-  const remembered = [...memory.keys].sort()
-  const wanted = [...keys].sort()
-  return remembered.every((key, i) => key === wanted[i])
 }

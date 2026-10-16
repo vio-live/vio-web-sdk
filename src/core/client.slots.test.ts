@@ -6,8 +6,17 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+
+// The cart stays local (no commerce key resolved): these tests are about
+// slots, not about the backend cart sync.
+vi.mock('./api/cart-queries.js', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getCartGraphQLOptions: vi.fn(async () => ({ sponsorResolved: false })),
+}))
+
 import { Configuration } from './configuration.js'
 import type { BootstrapResponse, ManifestResult } from './types.js'
+import type { CartLineItem } from './cart/types.js'
 
 let Vio: typeof import('./client.js').Vio
 
@@ -146,29 +155,41 @@ describe('Vio.declareSlots()', () => {
     })
   })
 
-  it('does not POST again for the same set within 24 h, in any order; a new set or force does', async () => {
+  it('remembers per id for 24 h: a known set POSTs nothing, a new page POSTs only its new ids, force POSTs all', async () => {
     init()
     expect(await Vio.declareSlots(['hero', 'footer'])).toEqual(MANIFEST_OK)
+    // Revisiting the page (any order, trimmed): nothing to say.
     expect(await Vio.declareSlots(['footer', 'hero '])).toBeNull()
     expect(manifestRequests()).toHaveLength(1)
 
-    expect(await Vio.declareSlots(['hero', 'footer'], { force: true })).toEqual(MANIFEST_OK)
+    // Another page of the site shares `hero` and adds one: only the new id goes out.
+    expect(await Vio.declareSlots(['hero', 'sidebar'])).toEqual(MANIFEST_OK)
     expect(manifestRequests()).toHaveLength(2)
+    expect(manifestRequests()[1]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'sidebar' }] })
 
-    expect(await Vio.declareSlots(['hero', 'footer', 'sidebar'])).toEqual(MANIFEST_OK)
+    // Back on the first page within 24 h: nothing.
+    expect(await Vio.declareSlots(['hero', 'footer'])).toBeNull()
+
+    // force: everything, remembered or not.
+    expect(await Vio.declareSlots(['hero', 'footer'], { force: true })).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[2]!.body).toMatchObject({ locations: [{ id: 'hero' }, { id: 'footer' }] })
     expect(manifestRequests()).toHaveLength(3)
   })
 
-  it('declares again once 24 h have passed', async () => {
+  it('declares an id again once its 24 h have passed — only that id', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-10-16T10:00:00Z'))
     init()
     await Vio.declareSlots(['hero'])
+    vi.setSystemTime(new Date('2026-10-16T12:00:00Z'))
+    await Vio.declareSlots(['hero', 'footer']) // footer only
     vi.setSystemTime(new Date('2026-10-17T09:59:00Z'))
-    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    expect(await Vio.declareSlots(['hero', 'footer'])).toBeNull()
     vi.setSystemTime(new Date('2026-10-17T10:00:01Z'))
-    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
-    expect(manifestRequests()).toHaveLength(2)
+    expect(await Vio.declareSlots(['hero', 'footer'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()).toHaveLength(3)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'footer' }] })
+    expect(manifestRequests()[2]!.body).toMatchObject({ locations: [{ id: 'hero' }] })
   })
 
   it('remembers per platform and per key — and never writes the key itself', async () => {
@@ -178,7 +199,7 @@ describe('Vio.declareSlots()', () => {
     expect(keys).toHaveLength(1)
     expect(keys[0]).toMatch(/^vio\.slots\.web\.[0-9a-f]{8}$/)
     expect(JSON.stringify([...store.entries()])).not.toContain('SECRET')
-    expect(JSON.parse(store.get(keys[0]!)!)).toEqual({ keys: ['hero'], at: expect.any(Number) })
+    expect(JSON.parse(store.get(keys[0]!)!)).toEqual({ hero: expect.any(Number) })
 
     // Another key on the same origin (Vev's remembered key → the page's own).
     init('web', 'another-key')
@@ -207,23 +228,63 @@ describe('Vio.declareSlots()', () => {
     manifestAnswer = () => { throw new Error('network down') }
     await expect(Vio.declareSlots(['hero'])).resolves.toBeNull()
     manifestAnswer = () => jsonResponse({ message: 'unknown platform' }, 400)
-    await expect(Vio.declareSlots(['hero'])).resolves.toBeNull()
+    await expect(Vio.declareSlots(['footer'])).resolves.toBeNull()
     expect(console.warn).toHaveBeenCalledTimes(2)
-    // A failure is not remembered: the next call tries again.
-    manifestAnswer = () => jsonResponse(MANIFEST_OK)
-    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()).toHaveLength(2)
 
     expect(await Vio.declareSlots([])).toBeNull()
     expect(await Vio.declareSlots(['', '   '])).toBeNull()
     expect(await Vio.declareSlots(null as unknown as string[])).toBeNull()
-    expect(manifestRequests()).toHaveLength(3)
+    expect(manifestRequests()).toHaveLength(2)
 
     Configuration.reset()
-    await expect(Vio.declareSlots(['hero'])).resolves.toBeNull()
-    expect(manifestRequests()).toHaveLength(3)
+    await expect(Vio.declareSlots(['sidebar'])).resolves.toBeNull()
+    expect(manifestRequests()).toHaveLength(2)
   })
 
-  it('an old server that ignores mode (no `mode` in the answer) replaces: the result is returned but NOT remembered', async () => {
+  it('a failure is negative-cached for 1 h: no POST on every view, a retry after the hour', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-16T10:00:00Z'))
+    init()
+    manifestAnswer = () => { throw new Error('network down') }
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    manifestAnswer = () => jsonResponse(MANIFEST_OK)
+    vi.setSystemTime(new Date('2026-10-16T10:59:00Z'))
+    expect(await Vio.declareSlots(['hero'])).toBeNull() // still the failed attempt
+    expect(manifestRequests()).toHaveLength(1)
+    // Another id is not held back by hero's failure.
+    expect(await Vio.declareSlots(['hero', 'footer'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'footer' }] })
+    vi.setSystemTime(new Date('2026-10-16T11:00:01Z'))
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()).toHaveLength(3)
+    // And a success is then remembered for the full 24 h.
+    vi.setSystemTime(new Date('2026-10-17T10:00:00Z'))
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+  })
+
+  it('caps a declaration at 100 locations and a page load at 3 manifests, warning once each; force bypasses the load cap', async () => {
+    init()
+    const many = Array.from({ length: 150 }, (_, i) => `slot-${i}`)
+    expect(await Vio.declareSlots(many)).toEqual(MANIFEST_OK)
+    expect((manifestRequests()[0]!.body as { locations: unknown[] }).locations).toHaveLength(100)
+    expect(console.warn).toHaveBeenCalledTimes(1)
+    expect(console.warn).toHaveBeenCalledWith('[Vio]', expect.stringContaining('only the first 100'))
+
+    expect(await Vio.declareSlots(['a'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['b'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['c'])).toBeNull() // the 4th of this load
+    expect(await Vio.declareSlots(['d'])).toBeNull()
+    expect(manifestRequests()).toHaveLength(3)
+    expect(console.warn).toHaveBeenCalledTimes(2)
+    expect(console.warn).toHaveBeenLastCalledWith('[Vio]', expect.stringContaining('already 3 manifests'))
+    expect(await Vio.declareSlots(['c'], { force: true })).toEqual(MANIFEST_OK)
+    expect(manifestRequests()).toHaveLength(4)
+  })
+
+  it('an old server that ignores mode (no `mode` in the answer) replaces: the result is returned, remembered only for 1 h', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-16T10:00:00Z'))
     init()
     const { mode: _dropped, ...oldServer } = MANIFEST_OK
     manifestAnswer = () => jsonResponse(oldServer)
@@ -232,17 +293,27 @@ describe('Vio.declareSlots()', () => {
       '[Vio]',
       expect.stringContaining('server ignored mode=merge'),
     )
-    expect(store.size).toBe(0)
-    // Next load tries again — and is remembered once the server merges.
-    expect(await Vio.declareSlots(['hero'])).toEqual(oldServer)
+    // Not on every view…
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    // …but the next load after an hour tries again — and is remembered for 24 h once the server merges.
+    vi.setSystemTime(new Date('2026-10-16T11:00:01Z'))
     manifestAnswer = () => jsonResponse({ ...MANIFEST_OK, mode: 'replace' })
     expect(await Vio.declareSlots(['hero'])).toMatchObject({ mode: 'replace' })
-    expect(store.size).toBe(0)
+    vi.setSystemTime(new Date('2026-10-16T12:00:02Z'))
     manifestAnswer = () => jsonResponse(MANIFEST_OK)
     expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
-    expect(store.size).toBe(1)
+    vi.setSystemTime(new Date('2026-10-17T11:00:00Z'))
     expect(await Vio.declareSlots(['hero'])).toBeNull()
-    expect(manifestRequests()).toHaveLength(4)
+    expect(manifestRequests()).toHaveLength(3)
+  })
+
+  it('tolerates the 0.23.0 memory shape ({ keys, at }): declares once more and moves on', async () => {
+    init('web', 'key-A')
+    const key = `vio.slots.web.${(await import('./slots.js')).fnv1a('key-A')}`
+    store.set(key, JSON.stringify({ keys: ['hero'], at: Date.now() }))
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(JSON.parse(store.get(key)!)).toEqual({ hero: expect.any(Number) })
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
   })
 })
 
@@ -292,7 +363,7 @@ describe('Vio.registerSlot()', () => {
     const offDup = Vio.registerSlot('sidebar')
     await vi.advanceTimersByTimeAsync(1_000)
     expect(manifestRequests()).toHaveLength(2)
-    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'sidebar' }] })
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'sidebar' }] }) // hero was declared already
     offAgain()
     offDup()
   })
@@ -386,19 +457,19 @@ describe('Vio.registerSlot(name, displayName) and Vio.declareSlots with names', 
     await vi.advanceTimersByTimeAsync(1_000)
     expect(manifestRequests()).toHaveLength(2)
     expect(manifestRequests()[1]!.body).toMatchObject({
-      locations: [{ id: 'hero', displayName: 'Hero (top)' }, { id: 'carousel-1', displayName: 'Carousel 1' }],
+      locations: [{ id: 'hero', displayName: 'Hero (top)' }],
     })
     offs.forEach((off) => off())
   })
 
-  it('the 24 h memory keys on the names too: the same ids with another name POST again', async () => {
+  it('the memory keys on the names too: a renamed id POSTs again (and only it)', async () => {
     init()
-    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }])).toEqual(MANIFEST_OK)
-    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }])).toBeNull()
-    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero banner' }])).toEqual(MANIFEST_OK)
-    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }, 'footer'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }, 'footer'])).toBeNull()
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero banner' }, 'footer'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['hero', 'footer'])).toEqual(MANIFEST_OK)
     expect(manifestRequests()).toHaveLength(3)
-    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero', displayName: 'Hero banner' }] })
+    expect(manifestRequests()[1]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'hero', displayName: 'Hero banner' }] })
     expect(manifestRequests()[2]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'hero' }] })
   })
 
@@ -457,16 +528,101 @@ describe('Vio.content()', () => {
     expect(Vio.content()).toEqual({ id: '/sport/42', title: 'Later hydrated' })
   })
 
-  it('caches per page and recomputes after init() — which may carry its own content', () => {
-    vi.stubGlobal('document', { title: 'Article A', querySelector: () => null })
-    vi.stubGlobal('location', { pathname: '/a', search: '' })
+  it('is live: an SPA route change or a new title is seen without a re-init; init() may carry its own content', () => {
+    const doc = { title: 'Article A', querySelector: () => null }
+    const loc = { pathname: '/a', search: '' }
+    vi.stubGlobal('document', doc)
+    vi.stubGlobal('location', loc)
     init()
     expect(Vio.content()).toEqual({ id: '/a', title: 'Article A' })
-    ;(globalThis as { document: { title: string } }).document.title = 'Changed'
-    expect(Vio.content()).toEqual({ id: '/a', title: 'Article A' }) // cached
+    doc.title = 'Article B'
+    loc.pathname = '/b'
+    expect(Vio.content()).toEqual({ id: '/b', title: 'Article B' })
 
     Vio.init({ apiKey: 'key-A', environment: 'testing', contentId: 123, contentTitle: 'From init' })
     expect(Vio.content()).toEqual({ id: '123', title: 'From init' })
     expect(Vio.attribution('hero')).toMatchObject({ slot: 'hero', contentId: '123', contentTitle: 'From init' })
+  })
+})
+
+describe('Vio.cartSlices() — the split rule as public API', () => {
+  const line = (over: Partial<CartLineItem>): CartLineItem => ({
+    id: 'l',
+    productId: 1,
+    sponsorId: 4,
+    brand: 'B',
+    name: 'Lamp',
+    unitPrice: 100,
+    currency: 'NOK',
+    imageUrl: '',
+    quantity: 1,
+    ...over,
+  })
+
+  it('is empty with an empty cart and pure over a given snapshot', async () => {
+    init('web')
+    await Vio.bootstrap()
+    Vio.cart.clearAllCarts()
+    expect(Vio.cartSlices()).toEqual([])
+    const items = [
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 3, origins: [
+        { campaignId: 12, slot: 'hero', contentId: 'art-1', quantity: 2 },
+        { campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 },
+      ] }),
+      line({ id: 'b', productId: 2, unitPrice: 33.333, quantity: 1 }), // no origins → resolved: sponsor 4 → default 10
+    ]
+    const slices = Vio.cartSlices(undefined, { items })
+    expect(slices).toEqual([
+      {
+        campaignId: 12,
+        sponsorId: 4,
+        slot: 'hero',
+        contentId: 'art-1',
+        items: [{ productId: 1, name: 'Lamp', brand: 'B', variantId: undefined, price: 100, quantity: 2 }],
+        value: 200,
+        currency: 'NOK',
+        slice: 1,
+        slices: 2,
+      },
+      {
+        campaignId: 10,
+        sponsorId: 4,
+        // Unique among the units that HAVE one: an originless unit (no slot, no
+        // content) does not veto it. Two different slots would (see the analytics tests).
+        slot: 'carousel-1',
+        contentId: 'art-1',
+        items: [
+          { productId: 1, name: 'Lamp', brand: 'B', variantId: undefined, price: 100, quantity: 1 },
+          { productId: 2, name: 'Lamp', brand: 'B', variantId: undefined, price: 33.333, quantity: 1 },
+        ],
+        value: 133.33,
+        currency: 'NOK',
+        slice: 2,
+        slices: 2,
+      },
+    ])
+    // The snapshot was not touched.
+    expect(items[0]!.origins).toHaveLength(2)
+  })
+
+  it("reads the live cart, filters by sponsor, and resolves a slot's campaign for units without a campaignId", async () => {
+    init('web')
+    await Vio.bootstrap()
+    Vio.cart.clearAllCarts()
+    Vio.cart.addManual({ productId: 1, sponsorId: 4, brand: 'B', name: 'A', unitPrice: 10, currency: 'NOK', imageUrl: '', origin: { slot: 'hero' } })
+    Vio.cart.addManual({ productId: 2, sponsorId: 7, brand: 'B', name: 'B', unitPrice: 20, currency: 'NOK', imageUrl: '' })
+    const all = Vio.cartSlices()
+    // hero → campaign 12 (slot assignment); sponsor 7 alone → its campaign 12 too → one slice of both sponsors
+    expect(all).toHaveLength(1)
+    expect(all[0]).toMatchObject({ campaignId: 12, sponsorId: undefined, value: 30, slice: 1, slices: 1 })
+    expect(Vio.cartSlices(4)).toHaveLength(1)
+    expect(Vio.cartSlices(4)[0]).toMatchObject({ campaignId: 12, sponsorId: 4, slot: 'hero', value: 10 })
+    expect(Vio.cartSlices(99)).toEqual([])
+    Vio.cart.clearAllCarts()
+  })
+
+  it('never throws on odd input', () => {
+    init('web')
+    expect(Vio.cartSlices(undefined, { items: [null as unknown as CartLineItem, line({ quantity: NaN, origins: 'x' as never })] })).toEqual([])
   })
 })

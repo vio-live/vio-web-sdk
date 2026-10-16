@@ -28,6 +28,15 @@ export const CONTENT_ID_QUERY = 'vio_content'
 export const CONTENT_TITLE_QUERY = 'vio_content_title'
 
 /**
+ * The collector's caps (vio-analytics `analytics-schema.ts`): an event with a
+ * longer `content_id` is rejected whole, silently. A candidate id that does
+ * not fit is skipped — the next source is tried — never cut, since a cut
+ * canonical URL is not the article any more. Titles are cut.
+ */
+export const CONTENT_ID_MAX_LENGTH = 128
+export const CONTENT_TITLE_MAX_LENGTH = 255
+
+/**
  * Id: `Vio.init({ contentId })` → `?vio_content=` → `<meta name="vio:content-id">`
  * → `<link rel="canonical">` href or `<meta property="og:url">` (without query
  * and hash) → `location.pathname`.
@@ -45,11 +54,12 @@ export function resolveContent(
   try {
     const query = parseQuery(loc?.search)
     const id =
-      text(init?.contentId) ??
-      text(query.get(CONTENT_ID_QUERY)) ??
-      text(meta(doc, 'name', 'vio:content-id')) ??
-      stripQueryAndHash(text(attr(doc, 'link[rel="canonical"]', 'href')) ?? text(meta(doc, 'property', 'og:url'))) ??
-      text(loc?.pathname)
+      fits(text(init?.contentId)) ??
+      fits(text(query.get(CONTENT_ID_QUERY))) ??
+      fits(text(meta(doc, 'name', 'vio:content-id'))) ??
+      fits(stripQueryAndHash(text(attr(doc, 'link[rel="canonical"]', 'href')))) ??
+      fits(stripQueryAndHash(text(meta(doc, 'property', 'og:url')))) ??
+      fits(text(loc?.pathname))
     const title =
       text(init?.contentTitle) ??
       text(query.get(CONTENT_TITLE_QUERY)) ??
@@ -58,11 +68,16 @@ export function resolveContent(
       text(doc?.title)
     const out: ContentRef = {}
     if (id !== undefined) out.id = id
-    if (title !== undefined) out.title = title.slice(0, 255)
+    if (title !== undefined) out.title = title.slice(0, CONTENT_TITLE_MAX_LENGTH)
     return out
   } catch {
     return {}
   }
+}
+
+/** The candidate when it fits the collector's id cap; `undefined` (= try the next) otherwise. */
+function fits(value: string | undefined): string | undefined {
+  return value !== undefined && value.length <= CONTENT_ID_MAX_LENGTH ? value : undefined
 }
 
 function text(value: unknown): string | undefined {

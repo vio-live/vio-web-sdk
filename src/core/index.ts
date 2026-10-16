@@ -75,6 +75,8 @@ export type {
 export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
 // Origins: where each unit of a line came from (pure helpers, for hosts and tests).
 export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
+// The cart split per campaign — the rule behind begin_checkout / purchase and `Vio.cartSlices()`.
+export { cartSlicesFrom, type CartSlice, type VioItem } from './cart/slices.js'
 
 // Analytics
 export {

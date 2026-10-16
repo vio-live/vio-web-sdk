@@ -24,16 +24,24 @@ import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import { resolveContent, type ContentRef } from './content.js'
 import {
-  isSlotDeclarationFresh,
+  MAX_DECLARATIONS_PER_LOAD,
+  MAX_LOCATIONS_PER_DECLARATION,
+  SLOT_DECLARATION_FAILURE_TTL_MS,
+  SLOT_DECLARATION_TTL_MS,
   normalizeSlotId,
   normalizeSlotLocations,
+  pendingSlotKeys,
   readSlotDeclaration,
+  rememberSlotKeys,
   resolveSlotCampaign,
-  slotDeclarationKeys,
+  slotDeclarationKey,
   slotDeclarationStorageKey,
+  toNumber,
   writeSlotDeclaration,
   type SlotInput,
 } from './slots.js'
+import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
+import type { CartLineItem } from './cart/types.js'
 import type {
   Attribution,
   BootstrapCampaignEntry,
@@ -64,8 +72,11 @@ class VioFacade {
   private slotDeclareTimer: ReturnType<typeof setTimeout> | null = null
   /** A name appeared (or the key changed) since the registry was last declared. */
   private slotsDirty = false
-  /** `Vio.content()` resolved once per page; forgotten on every init(). */
-  private contentCache: ContentRef | null = null
+  /** Manifests POSTed by this page load (abuse / rollout guard, see declareSlots). */
+  private declarationsThisLoad = 0
+  /** Each cap warns once per page load. */
+  private warnedLocationCap = false
+  private warnedDeclarationCap = false
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
@@ -91,8 +102,10 @@ class VioFacade {
       this.slotDeclareTimer = null
     }
     this.slotsDirty = this.slotRegistry.size > 0
-    // A re-init may carry another contentId/contentTitle.
-    this.contentCache = null
+    // The declaration caps are per configuration: a new key starts afresh.
+    this.declarationsThisLoad = 0
+    this.warnedLocationCap = false
+    this.warnedDeclarationCap = false
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
   }
@@ -100,23 +113,19 @@ class VioFacade {
   /**
    * The content (article, page) this SDK instance is rendered in — what every
    * analytics event carries as `content_id` / `content_title` when the event
-   * has no explicit one. Resolved once per page (init option → URL query →
-   * `vio:content-*` metas → canonical/og:url → pathname; see
-   * `resolveContent`), forgotten on every `init()`. Never throws; `{}` without
-   * a document.
+   * has no explicit one: init option → URL query → `vio:content-*` metas →
+   * canonical/og:url → pathname (see `resolveContent`). Resolved LIVE on each
+   * call — a few querySelectors — so an SPA route change, a new canonical or
+   * a new title are seen without any re-init. Never throws; `{}` without a
+   * document.
    */
   content(): ContentRef {
-    if (this.contentCache) return this.contentCache
     let init: { contentId?: string | number; contentTitle?: string } | undefined
     if (Configuration.isInitialized) {
       const cfg = Configuration.get()
       init = { contentId: cfg.contentId, contentTitle: cfg.contentTitle }
     }
-    const resolved = resolveContent(init)
-    // Cache only once a document could be asked — SSR answers `{}` and must
-    // not freeze an empty answer for a later hydration on the same facade.
-    if (typeof document !== 'undefined') this.contentCache = resolved
-    return resolved
+    return resolveContent(init)
   }
 
   get isInitialized(): boolean { return Configuration.isInitialized }
@@ -246,21 +255,46 @@ class VioFacade {
     slots: ReadonlyArray<SlotInput>,
     opts: { force?: boolean } = {},
   ): Promise<ManifestResult | null> {
+    let storageKey: string | undefined
+    let keys: string[] = []
+    let now = Date.now()
     try {
-      const locations = normalizeSlotLocations(slots)
-      if (locations.length === 0) return null
+      const all = normalizeSlotLocations(slots)
+      if (all.length === 0) return null
       if (!Configuration.isInitialized) {
         warn('declareSlots() before Vio.init() — nothing declared')
         return null
       }
       const cfg = Configuration.get()
-      const storageKey = slotDeclarationStorageKey(cfg.platform, cfg.apiKey)
-      // Display names are part of the key: a renamed block declares again.
-      const keys = slotDeclarationKeys(locations)
-      const now = Date.now()
-      if (!opts.force && isSlotDeclarationFresh(readSlotDeclaration(storageKey), keys, now)) {
+      storageKey = slotDeclarationStorageKey(cfg.platform, cfg.apiKey)
+      now = Date.now()
+      // Per id, not per set: only what this browser has not declared (under
+      // this name) in the last 24 h goes out — a multi-page site declares each
+      // page's new ids once, a renamed block again, a failed attempt after 1 h.
+      const memory = readSlotDeclaration(storageKey)
+      const pending = new Set(pendingSlotKeys(memory, all.map(slotDeclarationKey), now))
+      let locations = opts.force ? all : all.filter((l) => pending.has(slotDeclarationKey(l)))
+      if (locations.length === 0) return null
+      if (locations.length > MAX_LOCATIONS_PER_DECLARATION) {
+        if (!this.warnedLocationCap) {
+          this.warnedLocationCap = true
+          warn(
+            `declareSlots(): ${locations.length} slots on one page — only the first ${MAX_LOCATIONS_PER_DECLARATION} are declared`,
+          )
+        }
+        locations = locations.slice(0, MAX_LOCATIONS_PER_DECLARATION)
+      }
+      keys = locations.map(slotDeclarationKey)
+      if (!opts.force && this.declarationsThisLoad >= MAX_DECLARATIONS_PER_LOAD) {
+        if (!this.warnedDeclarationCap) {
+          this.warnedDeclarationCap = true
+          warn(
+            `declareSlots(): already ${MAX_DECLARATIONS_PER_LOAD} manifests this page load — further ones are skipped (force: true to override)`,
+          )
+        }
         return null
       }
+      this.declarationsThisLoad++
       const result = await this.api.declareManifest({
         platform: cfg.platform,
         mode: 'merge',
@@ -268,17 +302,23 @@ class VioFacade {
       })
       // A server that predates `mode` drops the field, answers 200 without it
       // and REPLACES (it deprecates the other pages' slots). Only a declaration
-      // the server confirms as merged is remembered — otherwise the next page
-      // load tries again, and succeeds once the server is updated.
+      // the server confirms as merged is remembered for 24 h — a replace is
+      // remembered for 1 h, so the next load (not every view) tries again,
+      // and succeeds once the server is updated.
       if (result?.mode === 'merge') {
-        writeSlotDeclaration(storageKey, { keys, at: now })
+        writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, now))
       } else {
+        writeSlotDeclaration(storageKey, rememberSlotKeys(memory, keys, failedAt(now)))
         warn(
           'slots declared but the server ignored mode=merge (old server); not caching, will retry next load',
         )
       }
       return result
     } catch (err) {
+      // Not retried for an hour: a failing micro must not get a POST per view.
+      if (storageKey && keys.length > 0) {
+        writeSlotDeclaration(storageKey, rememberSlotKeys(readSlotDeclaration(storageKey), keys, failedAt(now)))
+      }
       warn('declareSlots() failed —', err)
       return null
     }
@@ -378,6 +418,35 @@ class VioFacade {
     return out
   }
 
+  /**
+   * The cart split per campaign — the SAME rule `begin_checkout` / `purchase`
+   * use, for hosts with their own analytics sink (Vev). Every unit of every
+   * line goes to the campaign of its origin; units without one to the campaign
+   * the current rule resolves for the line's sponsor (slot assignment → the
+   * sponsor's active campaign → default); `slot` / `contentId` / `sponsorId`
+   * only when they are the same for the whole slice; `value` with two
+   * decimals; `slice` / `slices` number the parts. Pure over the current cart
+   * (or over `opts.items`); `[]` when there is nothing.
+   */
+  cartSlices(sponsorId?: number, opts: { items?: CartLineItem[] } = {}): CartSlice[] {
+    try {
+      let lines: CartLineItem[] = []
+      if (Array.isArray(opts.items)) {
+        lines = opts.items.filter((i) => sponsorId === undefined || Number(i?.sponsorId) === Number(sponsorId))
+      } else {
+        this.cart.getAllCarts().forEach((state, id) => {
+          if (sponsorId === undefined || id === Number(sponsorId)) lines.push(...state.items)
+        })
+      }
+      const boot = this.cachedBootstrap
+      return cartSlicesFrom(lines, (slot, lineSponsorId) =>
+        resolveCampaignId({ slot, sponsorId: lineSponsorId }, boot),
+      )
+    } catch {
+      return []
+    }
+  }
+
   private scheduleSlotDeclaration(): void {
     if (this.slotDeclareTimer) clearTimeout(this.slotDeclareTimer)
     this.slotDeclareTimer = setTimeout(() => {
@@ -416,11 +485,11 @@ function warn(...args: unknown[]): void {
   if (typeof console !== 'undefined') console.warn('[Vio]', ...args)
 }
 
-function toNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined
-  const n = Number(value)
-  return Number.isFinite(n) ? n : undefined
+/** The timestamp a failed attempt is remembered at: it expires after the 1 h failure TTL. */
+function failedAt(now: number): number {
+  return now - (SLOT_DECLARATION_TTL_MS - SLOT_DECLARATION_FAILURE_TTL_MS)
 }
+
 
 // Cross-bundle singleton. Some hosts (e.g. Vev) bundle each component into its
 // own chunk, so a plain module-level instance would give EACH chunk its own

@@ -137,8 +137,13 @@ In order:
    carousel's id). `vio-slot-name` is its optional human label for the dashboard.
 2. Otherwise an **auto id**: `${scope}-${kind}-${ordinal + 1}` — `carousel-1`,
    `card-3`, `detail-1`, `article-123-carousel-1` — counted among the same kind of
-   element **with the same scope**, in document order, when the element connects.
-   Its label is `Carousel 1` (` · Title` when the scope has a label).
+   element **with the same scope**: on a fresh load elements connect in document
+   order, so the number is the document position; in a dynamic DOM a later element
+   takes the first free number and a removed element's number is reused — two live
+   elements never share an id. Its label is `Carousel 1` (` · Title` when the
+   scope has a label). Every id is capped at 100 characters (a long scope is cut,
+   the kind and number are kept), and the capped id is what gets declared,
+   exposed and sent.
 
 The attribute is **`vio-slot`** (property `vioSlot`, React prop `vioSlot`) — **not
 `slot`**, which is HTML's own attribute for shadow DOM slotting and stays untouched.
@@ -177,11 +182,15 @@ template that wants slots shared across articles simply sets no scope.
 Every mounted element registers its id (and label); after the first successful
 `Vio.bootstrap()` the SDK sends **one** manifest for the whole page
 (`POST /v2/mobile/components/manifest`, `mode: 'merge'`, so one page never
-deprecates another page's slots) and again whenever a new id or label appears. The
-same set is not re-sent from the same browser for **24 h** (remembered in
-`localStorage` under the platform and a hash of the key — never the key itself;
-without storage it simply posts each load). Best-effort, never throws. By hand,
-e.g. from an editor:
+deprecates another page's slots) and again whenever a new id or label appears.
+The browser remembers **each id (under its label) for 24 h** in `localStorage`
+(under the platform and a hash of the key — never the key itself), so a
+multi-page site posts only the ids a page adds, a revisit posts nothing, a
+renamed block posts again; without storage it simply posts each load. A failed
+attempt (or a server that ignored `merge`) is not retried for 1 h; a declaration
+sends at most 100 locations and a page load at most 3 manifests (each cap warns
+once). Best-effort, never throws. By hand, e.g. from an editor (`force` re-sends
+everything and ignores the per-load cap):
 
 ```ts
 await Vio.declareSlots(['hero', { id: 'sidebar', displayName: 'Sidebar' }], { force: true })
@@ -196,7 +205,9 @@ several, the default campaign, else the first listed. No assignment → the defa
 campaign. `Vio.campaignForSlot('hero')` answers from the last bootstrap (`null`
 before it); the pure `resolveSlotCampaign(boot, slot, now?, platform?)` is exported
 from `/core`. A carousel or card **without a `sponsor-id`** uses the primary sponsor
-of its slot's campaign; an explicit `sponsor-id` still wins.
+of its slot's campaign (the default campaign's when the slot has none), and the
+detail opened by such a card does the same — before 0.23 a sponsorless card did
+nothing. An explicit `sponsor-id` still wins.
 
 ## Attribution — the slot, the campaign, the article
 
@@ -205,26 +216,36 @@ and so do the Vev blocks and the Replit site:
 
 ```ts
 Vio.attribution('hero')
-// → { slot: 'hero', campaignId: 12, sponsorId: 7, contentId: 'https://host/sport/42', contentTitle: 'Why the lamp matters' }
+// → { slot: 'hero', campaignId: 12, sponsorId: 7, contentId: 'article-42', contentTitle: 'Why the lamp matters' }
 ```
 
 `campaignId`/`sponsorId` are the slot's campaign and its primary sponsor (`{}` before
 the bootstrap); `contentId`/`contentTitle` are the **content** (the article) the page
 is. The place is the slot, the article is the content — both automatic.
 
-**Article (content) attribution.** `Vio.content()` resolves it once per page and
-every analytics event carries it as `content_id` / `content_title`: id from
-`Vio.init({ contentId })` → `?vio_content=` → `<meta name="vio:content-id">` →
+**Article (content) attribution.** `Vio.content()` resolves it **live** (a few
+`querySelector`s, so an SPA route change or a new title is seen on the next event)
+and every analytics event carries it as `content_id` / `content_title`: id from
+`Vio.init({ contentId })` → `?vio_content=` (honored by design — a page may be
+told which article it is) → `<meta name="vio:content-id">` →
 `<link rel="canonical">` / `og:url` (without query and hash) → `location.pathname`;
 title from `Vio.init({ contentTitle })` → `?vio_content_title=` →
-`<meta name="vio:content-title">` → `og:title` → `document.title`. Per element,
+`<meta name="vio:content-title">` → `og:title` → `document.title`. The collector
+rejects a whole event over an id of 128 chars or a title of 255, so a candidate id
+that does not fit is skipped for the next one (and omitted when none fits) and
+titles are cut — in one place, before anything is sent. Per element,
 `vio-content-id` / `vio-content-title` override it (a teaser for another article).
 
 **What analytics gets.** Every event an element emits (`vio:product-click`,
 `vio:product-add`, `vio:added-to-cart`, `vio:checkout-open`, …) and every event it
 tracks carries `slot` (the effective id), `location_id` (= the slot), `content_id`
-and `content_title`. `campaign_id` resolves as explicit `campaignId` → the slot's
-assigned campaign → the sponsor's campaign → the default.
+and `content_title`. `campaign_id` resolves as explicit `campaignId` (the element's
+own attribution travels in its event detail and is honored as such) → the slot's
+assigned campaign → the sponsor's campaign → the default. Two things changed from
+0.22 for carousels: a carousel's impressions and `view_item_list` report
+`location_id` as its slot id (`carousel-1`, or the `vio-slot`) instead of its
+`label`, and every event now carries `content_id` / `content_title` — including
+the single-campaign `begin_checkout` / `purchase`.
 
 ### Cart origins and the purchase per campaign
 
@@ -246,9 +267,21 @@ They persist with the cart; carts from before origins read as one empty origin.
 At checkout and purchase the cart is **split per campaign**: `begin_checkout` and
 `purchase` go out **once per campaign in the cart**, each with that campaign's
 items (quantities from the origins; units without one fall into the campaign the
-current rule resolves), its own `value`, the same `order_id`, and the slice's
-`slot` / `content_id` when they are unique in it. A cart with a single campaign
-behaves exactly as before: one event.
+current rule resolves), its own `value` (two decimals), the same `order_id`, the
+slice's `slot` / `content_id` only when they are unique in it, and
+`props: { slice, slices }` so the collector can count the order once. A cart with a
+single campaign is one event, as before; when its origins name the campaign, the
+event names it too (plus the unique slot / content). A cart without origins
+(0.22) reports exactly as it did.
+
+The split is public, so a host with its own analytics sink (Vev) applies the same
+rule instead of its own:
+
+```ts
+Vio.cartSlices()            // over the live cart; Vio.cartSlices(sponsorId) for one sponsor
+Vio.cartSlices(undefined, { items }) // pure, over a snapshot of lines
+// → CartSlice[]: { campaignId?, sponsorId?, slot?, contentId?, items: VioItem[], value, currency?, slice, slices }
+```
 
 ## Theming
 

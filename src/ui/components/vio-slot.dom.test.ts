@@ -192,6 +192,89 @@ describe('scope, inherited from the DOM', () => {
     const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'hero' })
     expect(el.effectiveSlot).toBe('hero')
   })
+
+  it('B1: a 120-char scope still gives a ≤ 100-char id, and the SAME string is registered, exposed and emitted', async () => {
+    document.body.setAttribute('data-vio-scope', 's'.repeat(120))
+    const click = lastEvent<Record<string, unknown>>('vio:product-click')
+    const el = await mountWithAttributes<VioProduct>('vio-product', CARD)
+    expect(el.effectiveSlot.length).toBe(100)
+    expect(el.effectiveSlot.endsWith('-card-1')).toBe(true)
+    expect(registerSlot).toHaveBeenCalledWith(el.effectiveSlot, 'Card 1')
+    el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+    expect(click.detail!.slot).toBe(el.effectiveSlot)
+    // A host id is cut the same way.
+    unmountAll()
+    const long = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'h'.repeat(130) })
+    expect(long.effectiveSlot).toBe('h'.repeat(100))
+    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(100), undefined)
+  })
+})
+
+describe('W3: auto ids are unique per (scope, kind) in a dynamic DOM', () => {
+  it('removing one and appending another never reuses a live id', async () => {
+    const a = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    const b = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    const c = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    expect([a, b, c].map((x) => x.effectiveSlot)).toEqual(['carousel-1', 'carousel-2', 'carousel-3'])
+    a.remove()
+    const d = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    // The freed number is taken; c keeps its own — no two live elements share an id.
+    expect(d.effectiveSlot).toBe('carousel-1')
+    expect(c.effectiveSlot).toBe('carousel-3')
+    const ids = [b, c, d].map((x) => x.effectiveSlot)
+    expect(new Set(ids).size).toBe(3)
+  })
+
+  it('inserting before the others does not duplicate `carousel-1`', async () => {
+    const a = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    const b = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', {})
+    const first = document.createElement('vio-product-carousel') as VioProductCarousel
+    document.body.insertBefore(first, a)
+    await settle(first)
+    expect([first, a, b].map((x) => x.effectiveSlot)).toEqual(['carousel-3', 'carousel-1', 'carousel-2'])
+  })
+
+  it('elements in different shadow roots are numbered document-wide', async () => {
+    const hosts = [1, 2, 3].map(() => {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      return host.attachShadow({ mode: 'open' })
+    })
+    const els: VioProductCarousel[] = []
+    for (const root of hosts) {
+      const el = document.createElement('vio-product-carousel') as VioProductCarousel
+      root.appendChild(el)
+      await settle(el)
+      els.push(el)
+    }
+    expect(els.map((x) => x.effectiveSlot)).toEqual(['carousel-1', 'carousel-2', 'carousel-3'])
+  })
+
+  it('a removed element frees its number for a later mount, and a re-added one is numbered again', async () => {
+    const a = await mountWithAttributes<VioProduct>('vio-product', CARD)
+    expect(a.effectiveSlot).toBe('card-1')
+    a.remove()
+    expect(a.effectiveSlot).toBe('')
+    document.body.appendChild(a)
+    await settle(a)
+    expect(a.effectiveSlot).toBe('card-1')
+  })
+})
+
+describe('W7: a page whose `Vio` singleton predates attribution()', () => {
+  it('still renders, registers and emits the slot', async () => {
+    const original = Vio.attribution
+    ;(Vio as unknown as { attribution?: unknown }).attribution = undefined
+    try {
+      const click = lastEvent<Record<string, unknown>>('vio:product-click')
+      const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'hero' })
+      el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+      expect(click.detail).toMatchObject({ slot: 'hero', sponsorId: '7' })
+      expect(registerSlot).toHaveBeenCalledWith('hero', undefined)
+    } finally {
+      ;(Vio as unknown as { attribution?: unknown }).attribution = original
+    }
+  })
 })
 
 describe('<vio-product>: what its events carry', () => {
@@ -354,5 +437,19 @@ describe('<vio-product-detail> and the card that opened it', () => {
       'view_item',
       expect.objectContaining({ context: expect.objectContaining({ slot: 'hero', sponsorId: 3 }) }),
     )
+  })
+
+  it('W6: close() forgets what the opening card said, so the next product is not attributed to it', async () => {
+    const el = await mount<VioProductDetail>('vio-product-detail')
+    await click({ productId: '9', sponsorId: '3', slot: 'hero', contentId: 'art-9' }, el)
+    expect(track).toHaveBeenCalledWith('view_item', expect.objectContaining({ context: expect.objectContaining({ slot: 'hero', contentId: 'art-9' }) }))
+    el.close()
+    await new Promise((r) => setTimeout(r, 450)) // the reset follows the slide-out animation
+    track.mockClear()
+    // Opened again by a card that says nothing: the detail's own identity and the page's content apply.
+    await click({ productId: '9', sponsorId: '3' }, el)
+    const ctx = (track.mock.calls.find((c) => c[0] === 'view_item')![1] as { context: Record<string, unknown> }).context
+    expect(ctx.slot).toBe('detail-1')
+    expect(ctx.contentId).toBe('article-123')
   })
 })

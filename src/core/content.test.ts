@@ -54,6 +54,20 @@ describe('resolveContent — id', () => {
   })
 })
 
+describe('resolveContent — the collector\'s caps', () => {
+  it('skips an id that does not fit 128 chars and tries the next source; omits it when none fits', () => {
+    const long = '/' + 'a'.repeat(145) // a 146-char pathname
+    const canonicalLong = 'https://host.example/' + 'b'.repeat(140)
+    expect(resolveContent({ contentId: 'x'.repeat(129) }, fakeDocument({}), loc('/short')).id).toBe('/short')
+    expect(resolveContent({}, fakeDocument({ 'link[rel="canonical"]': { href: canonicalLong } }), loc('/short')).id).toBe('/short')
+    expect(resolveContent({}, fakeDocument({ 'link[rel="canonical"]': { href: canonicalLong } }), loc(long)).id).toBeUndefined()
+    expect(resolveContent({}, fakeDocument({}), loc(long)).id).toBeUndefined()
+    expect(resolveContent({}, fakeDocument({}), loc('/' + 'a'.repeat(127))).id).toHaveLength(128)
+    // The query and the metas are candidates like any other.
+    expect(resolveContent({}, fakeDocument({ 'meta[name="vio:content-id"]': { content: 'm'.repeat(200) } }), loc('/p', `?vio_content=${'q'.repeat(200)}`)).id).toBe('/p')
+  })
+})
+
 describe('resolveContent — title', () => {
   it('init option > URL query > vio:content-title meta > og:title > document.title', () => {
     const doc = fakeDocument(

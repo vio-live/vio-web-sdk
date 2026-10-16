@@ -94,7 +94,10 @@ export class VioProductDetail extends LitElement {
 
   /** Attribution every event of the open product carries (`Vio.attribution` of the opening card's slot, else this element's). */
   private attribution() {
-    const base = Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+        : { slot: this.activeSlot || undefined }
     const contentId = this.eventContentId || this.vioContentId
     const contentTitle = this.eventContentTitle || this.vioContentTitle
     return {
@@ -156,7 +159,10 @@ export class VioProductDetail extends LitElement {
     let sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
     if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) {
       // A card without a sponsor: the primary of the campaign its slot shows.
-      const fromSlot = Number(Vio.campaignForSlot(slot || this.effectiveSlot || null)?.primarySponsor?.id)
+      const fromSlot =
+        typeof Vio.campaignForSlot === 'function'
+          ? Number(Vio.campaignForSlot(slot || this.effectiveSlot || null)?.primarySponsor?.id)
+          : NaN
       if (!Number.isFinite(fromSlot) || fromSlot <= 0) return
       sponsorIdNum = fromSlot
     }
@@ -643,6 +649,10 @@ export class VioProductDetail extends LitElement {
     // Reset state after the slide-out animation completes.
     setTimeout(() => {
       if (!this.open) {
+        // What the opening card said belongs to that product, not the next.
+        this.eventSlot = ''
+        this.eventContentId = ''
+        this.eventContentTitle = ''
         this.product = null
         this.sellerName = null
         this.sellerSettled = false
@@ -770,7 +780,9 @@ export class VioProductDetail extends LitElement {
   private async loadAvailablePaymentMethods(): Promise<void> {
     const spId =
       this.sponsorId ||
-      Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id) ||
+      (typeof Vio.campaignForSlot === 'function'
+        ? Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id)
+        : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
     try {

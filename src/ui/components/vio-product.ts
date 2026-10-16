@@ -295,6 +295,7 @@ export class VioProduct extends LitElement {
       this.onClick()
       return
     }
+    const attribution = this.attribution()
     this.dispatchEvent(
       new CustomEvent('vio:product-add', {
         bubbles: true,
@@ -306,9 +307,16 @@ export class VioProduct extends LitElement {
           price: this.price,
           retailer: this.retailer,
           imageUrl: this.imageUrl,
-          ...this.attribution(),
+          ...attribution,
           // The host's sponsor-id wins; without one, the slot's campaign sponsor.
           sponsorId: this.sponsorId || this.sponsorFromAttribution(),
+          // The host adds to the cart: pass this through as `origin` so the
+          // purchase is attributed to this place and campaign.
+          origin: {
+            campaignId: attribution.campaignId,
+            slot: attribution.slot,
+            contentId: attribution.contentId,
+          },
         },
       }),
     )

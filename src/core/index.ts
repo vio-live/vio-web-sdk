@@ -72,7 +72,9 @@ export type {
   AddProductOptions,
   AddManualOptions,
 } from './cart/cart-manager.js'
-export type { CartLineItem, SponsorCartState } from './cart/types.js'
+export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
+// Origins: where each unit of a line came from (pure helpers, for hosts and tests).
+export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
 
 // Analytics
 export {

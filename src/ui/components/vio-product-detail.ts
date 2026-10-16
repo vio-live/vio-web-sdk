@@ -1124,12 +1124,16 @@ export class VioProductDetail extends LitElement {
       sponsor?.id === this.sponsorId
         ? sponsor.name
         : secondaries.find((s) => s.id === this.sponsorId)?.name
+    // Where these units come from: the campaign the place showed, the place
+    // and the article — the purchase is split per campaign from it.
+    const { campaignId, slot, contentId } = this.attribution()
     Vio.cart.addProduct({
       product: this.product,
       sponsorId: this.sponsorId,
       sponsorName,
       quantity: this.quantity,
       variantId: variant?.id,
+      origin: { campaignId, slot, contentId },
     })
     return variant?.id
   }

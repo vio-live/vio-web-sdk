@@ -34,6 +34,7 @@ import { resolveContent, type ContentRef } from '../content.js'
 import { findSlotAssignment } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
+import { lineOrigins } from '../cart/cart-manager.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
@@ -172,6 +173,14 @@ const IMPRESSION_THRESHOLD = 0.5
 const IMPRESSION_DWELL_MS = 1_000
 
 // ── Wire shape (snake_case, contract v1) ────────────────────────────────────
+
+/** One campaign's share of the cart (see `cartSlices`). */
+interface CartSlice {
+  campaignId?: number
+  slot?: string
+  contentId?: string
+  commerce: AnalyticsCommerce
+}
 
 interface WireEvent {
   event_id: string
@@ -727,6 +736,18 @@ export class AnalyticsManager extends EventTarget {
 
     on('vio:checkout-open', (ev) => {
       const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
+      const slices = this.cartSlices(d.sponsorId)
+      if (slices.length > 1) {
+        // Several campaigns in the cart: one begin_checkout per campaign, each
+        // with its own items and value (see cartSlices).
+        for (const slice of slices) {
+          this.track('begin_checkout', {
+            context: this.sliceContext(slice, { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) }),
+            commerce: slice.commerce,
+          })
+        }
+        return
+      }
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
         context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
@@ -737,7 +758,20 @@ export class AnalyticsManager extends EventTarget {
     on('vio:payment-success', (ev) => {
       const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
-      const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
+      const slices = this.cartSlices(sponsorId) // falls back to the pre-clear snapshot
+      if (slices.length > 1) {
+        // Several campaigns paid in one go: one purchase per campaign — its
+        // items and value, the SAME order_id — so each campaign's revenue is
+        // its own and the order still adds up.
+        for (const slice of slices) {
+          this.track('purchase', {
+            context: this.sliceContext(slice, { sponsorId, slot: slotOf(d), ...contentOf(d) }),
+            commerce: { ...slice.commerce, ...purchaseFromPaymentSuccess(d), paymentMethod: d.method },
+          })
+        }
+        return
+      }
+      const snap = this.cartCommerce(sponsorId)
       this.track('purchase', {
         context: { sponsorId, slot: slotOf(d), ...contentOf(d) },
         commerce: {
@@ -749,6 +783,90 @@ export class AnalyticsManager extends EventTarget {
         },
       })
     })
+  }
+
+  /** The lines of the cart (current, else the pre-clear snapshot), optionally one sponsor's. */
+  private cartLines(sponsorId?: number): CartLineItem[] {
+    let items: CartLineItem[] = []
+    const cart = vioCart()
+    if (cart) {
+      cart.getAllCarts().forEach((state, id) => {
+        if (sponsorId === undefined || id === sponsorId) items.push(...state.items)
+      })
+    }
+    if (items.length === 0 && this.lastCartSnapshot) {
+      items = this.lastCartSnapshot.items.filter(
+        (i) => sponsorId === undefined || i.sponsorId === sponsorId,
+      )
+    }
+    return items
+  }
+
+  /**
+   * The cart split per campaign (ADR-0034): every unit of every line goes to
+   * the campaign of its origin — the one the place showed when it was added
+   * — and units without one to the campaign the current rule resolves for
+   * the line's sponsor. One slice per campaign: its items (quantities from
+   * the origins), its value, and the slot / content when they are the same
+   * for the whole slice. A cart with one campaign is one slice.
+   */
+  private cartSlices(sponsorId?: number): CartSlice[] {
+    const lines = this.cartLines(sponsorId)
+    if (lines.length === 0) return []
+    const boot = vioBootstrapCache()
+    const slices = new Map<string, CartSlice & { slots: Set<string>; contents: Set<string>; lines: Map<string, AnalyticsItemInput> }>()
+    for (const line of lines) {
+      for (const origin of lineOrigins(line)) {
+        const campaignId =
+          origin.campaignId ?? resolveCampaignId({ slot: origin.slot, sponsorId: line.sponsorId }, boot)
+        const key = campaignId === undefined ? 'default' : String(campaignId)
+        let slice = slices.get(key)
+        if (!slice) {
+          slice = {
+            campaignId,
+            commerce: { items: [], value: 0, currency: line.currency ?? this.lastCartSnapshot?.currency },
+            slots: new Set(),
+            contents: new Set(),
+            lines: new Map(),
+          }
+          slices.set(key, slice)
+        }
+        if (origin.slot) slice.slots.add(origin.slot)
+        if (origin.contentId) slice.contents.add(origin.contentId)
+        const itemKey = `${line.productId}::${line.variantId ?? ''}`
+        const item = slice.lines.get(itemKey)
+        if (item) item.quantity = (item.quantity ?? 0) + origin.quantity
+        else {
+          const fresh: AnalyticsItemInput = {
+            productId: line.productId,
+            name: line.name,
+            brand: line.brand,
+            variantId: line.variantId,
+            price: line.unitPrice,
+            quantity: origin.quantity,
+          }
+          slice.lines.set(itemKey, fresh)
+          slice.commerce.items!.push(fresh)
+        }
+        slice.commerce.value = (slice.commerce.value ?? 0) + line.unitPrice * origin.quantity
+      }
+    }
+    return [...slices.values()].map((s) => ({
+      campaignId: s.campaignId,
+      slot: s.slots.size === 1 ? [...s.slots][0] : undefined,
+      contentId: s.contents.size === 1 ? [...s.contents][0] : undefined,
+      commerce: s.commerce,
+    }))
+  }
+
+  /** The context of a per-campaign event: the slice's campaign, slot and content, over the event's own. */
+  private sliceContext(slice: CartSlice, base: AnalyticsContext): AnalyticsContext {
+    return compact({
+      ...base,
+      campaignId: slice.campaignId ?? base.campaignId,
+      slot: slice.slot ?? base.slot,
+      contentId: slice.contentId ?? base.contentId,
+    }) as AnalyticsContext
   }
 
   /** Current cart → commerce payload; falls back to the pre-clear snapshot. */

@@ -679,6 +679,27 @@ describe('page campaign (ADR-0034, amendment 3)', () => {
     }
   })
 
+  it("a page-sourced assignment counts like the page campaign for a known sponsor (attribution agrees with campaignForSlot)", async () => {
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    const g = globalThis as { __VIO_FACADE__?: { cachedBootstrap?: BootstrapResponse } }
+    g.__VIO_FACADE__!.cachedBootstrap = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Page', status: 'active', primarySponsor: sponsor(7), slots: [{ name: 'by-page', source: 'page' }, { name: 'by-dash', source: 'dashboard' }] },
+        { id: 14, name: 'Other', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(Vio.attribution('by-page', { sponsorId: 9 })).toEqual({ slot: 'by-page', campaignId: 14, sponsorId: 9 })
+    expect(Vio.attribution('free', { sponsorId: 9 })).toEqual({ slot: 'free', campaignId: 14, sponsorId: 9 })
+    expect(Vio.attribution('by-dash', { sponsorId: 9 })).toEqual({ slot: 'by-dash', campaignId: 12, sponsorId: 9 })
+    expect(Vio.campaignForSlot('by-page', { sponsorId: 9 })?.id).toBe(14)
+    expect(Vio.campaignForSlot('by-dash', { sponsorId: 9 })?.id).toBe(12)
+    expect(Vio.campaignForSlot('by-page')?.id).toBe(12)
+  })
+
   it('an inactive page campaign falls through to the default', async () => {
     initWithCampaign(99)
     await Vio.bootstrap()

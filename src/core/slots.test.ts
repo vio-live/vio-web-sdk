@@ -353,7 +353,8 @@ describe('page campaign: candidates, validation and page-sourced assignments', (
   it('W5: a campaign id is a positive safe integer; anything else is absent', () => {
     expect(toCampaignId(12)).toBe(12)
     expect(toCampaignId('12')).toBe(12)
-    for (const bad of [0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 'x', '', null, undefined, {}]) {
+    expect(toCampaignId(' 7 ')).toBe(7)
+    for (const bad of [0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 'x', '', null, undefined, {}, true, '0x10', '1e3', [12], '12.0', '-3']) {
       expect(toCampaignId(bad)).toBeUndefined()
     }
     expect(campaignCandidates([0, '13', null, 12, 12, -1, 'nope'])).toEqual([13, 12])
@@ -389,6 +390,13 @@ describe('page campaign: candidates, validation and page-sourced assignments', (
     expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 99)?.id).toBe(12) // the page's is not active → the assignment stands
     expect(resolveSlotCampaign(boot, 'hero', OCT_15, 'web', 14)?.id).toBe(12)
     expect(resolveSlotCampaign(boot, 'legacy', OCT_15, 'web', 14)?.id).toBe(12) // no source (older micro) = dashboard
+    // With a known sponsor, a page-sourced assignment applies only if the sponsor takes part in it.
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 9)?.id).toBe(14) // 9 only in 14 → its own
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 7)?.id).toBe(12) // 7 is 12's primary
+    expect(resolveSlotCampaign(boot, 'hero', OCT_15, 'web', 12, 9)?.id).toBe(12) // dashboard: unconditional
+    expect(resolveSlotCampaign(boot, 'legacy', OCT_15, 'web', 12, 9)?.id).toBe(12)
+    // …and a sponsor in no candidate at all falls to the default.
+    expect(resolveSlotCampaign(boot, 'carousel-1', OCT_15, 'web', 12, 4)?.id).toBe(10)
   })
 
   it('B1: remembering an id under one campaign/name forgets its other variants (one state per id)', () => {

@@ -245,12 +245,19 @@ assignment; Vev ids are per block, so it does not apply there. What it does:
 - **Resolution, immediately.** `Vio.campaignForSlot()` / `Vio.attribution()` (and
   so the elements, the cart origins and the events) resolve as: the slot's
   assignment (a dashboard one always; a page-sourced one unless the page now
-  declares a different active campaign) → the page's campaign, when the bootstrap
-  lists it as active and — with a known sponsor — that sponsor takes part in it →
-  the sponsor's campaign → the default. An editor sees the effect in the Vev
+  declares a different active campaign or the known sponsor takes no part in it)
+  → the page's campaign, when the bootstrap lists it as active and — with a known
+  sponsor — that sponsor takes part in it → the sponsor's campaign → the default. An editor sees the effect in the Vev
   editor before the manifest round-trips.
 - `Vio.pageCampaign()` returns the init-level campaign as the bootstrap lists it
   (active), else `null`.
+- With a **known sponsor** (a card with `sponsor-id`), the page's campaign — and a
+  slot assignment the page made itself (`source: 'page'`) — count only when that
+  sponsor takes part in the campaign; otherwise the sponsor's own campaign applies.
+  A dashboard assignment counts unconditionally.
+- `Vio.init({ debug: true })` logs the micro's `assignment` per slot at
+  `console.debug`. It is independent of `Vio.analytics.start({ debug })`, which
+  logs the analytics events.
 
 ## Attribution — the slot, the campaign, the article
 

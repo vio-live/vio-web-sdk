@@ -403,7 +403,10 @@ class VioFacade {
    * open campaign for the init platform, else the surface's default. With no
    * slot, the default. `null` before the bootstrap. See `resolveSlotCampaign`.
    */
-  campaignForSlot(slot?: string | null, hint?: { campaignId?: CampaignHint }): BootstrapCampaignEntry | null {
+  campaignForSlot(
+    slot?: string | null,
+    hint?: { campaignId?: CampaignHint; sponsorId?: number | string | null },
+  ): BootstrapCampaignEntry | null {
     const config = Configuration.isInitialized ? Configuration.get() : undefined
     return resolveSlotCampaign(
       this.cachedBootstrap,
@@ -411,6 +414,7 @@ class VioFacade {
       Date.now(),
       config?.platform,
       this.pageCampaignCandidates(hint?.campaignId),
+      toNumber(hint?.sponsorId),
     )
   }
 

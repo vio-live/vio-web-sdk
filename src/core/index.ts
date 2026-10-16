@@ -16,6 +16,7 @@ export {
 export {
   resolveSlotCampaign,
   activeCampaignEntry,
+  sponsorCampaignEntry,
   campaignCandidates,
   toCampaignId,
   autoSlotId,

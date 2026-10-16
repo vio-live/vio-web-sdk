@@ -1249,4 +1249,24 @@ describe('campaign_id y la campaña de la PÁGINA (ADR-0034, enmienda 3)', () =>
     expect(resolveCampaignId({ slot: 'hero' }, boot, { pageCampaignId: 14 })).toBe(12)
     expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 99 })).toBe(12) // la nueva no está activa: la asignación sigue
   })
+
+  it("una asignación 'page' cuenta como la campaña de la página con sponsor conocido: solo si el sponsor participa", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Página', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)], slots: [{ name: 'by-page', source: 'page' }, { name: 'by-dash', source: 'dashboard' }] },
+        { id: 14, name: 'Otra', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    // sponsor 9 solo está en la 14: slot asignado por la página a 12 → 14, igual que sin asignación.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(14)
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'free' }, boot, { pageCampaignId: 12 })).toBe(14)
+    // Asignado por el dashboard a 12 → 12, sin condiciones.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-dash' }, boot, { pageCampaignId: 12 })).toBe(12)
+    // Un sponsor que sí participa (8) y sin sponsor: la asignación de la página aplica.
+    expect(resolveCampaignId({ sponsorId: 8, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'by-page' }, boot, {})).toBe(12)
+  })
 })

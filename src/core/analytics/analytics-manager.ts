@@ -33,9 +33,9 @@ import { Configuration } from '../configuration.js'
 import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, resolveContent, type ContentRef } from '../content.js'
 import {
   activeCampaignEntry,
-  campaignSponsorIds,
+  assignmentApplies,
   findSlotAssignmentDetail,
-  isStalePageAssignment,
+  sponsorCampaignEntry,
   toNumber,
   type CampaignHint,
 } from '../slots.js'
@@ -1041,9 +1041,10 @@ export function resolveCampaignId(
   const page = activeCampaignEntry(boot, candidates, sponsorId)
   if (ctx.slot) {
     const assignment = findSlotAssignmentDetail(boot, ctx.slot, Date.now(), config?.platform)
-    // A dashboard assignment always wins; one this page made itself is stale
-    // when the page now declares another active campaign (see slots.ts).
-    if (assignment && !isStalePageAssignment(assignment, activeCampaignEntry(boot, candidates))) {
+    // A dashboard assignment always wins; one this page made itself counts
+    // like the page campaign: not when the page now declares another active
+    // campaign, nor for a sponsor that takes no part in it (see slots.ts).
+    if (assignment && assignmentApplies(assignment, activeCampaignEntry(boot, candidates), sponsorId)) {
       const assigned = toNumber(assignment.campaign.id)
       if (assigned !== undefined) return assigned
     }
@@ -1051,22 +1052,9 @@ export function resolveCampaignId(
   const pageId = toNumber(page?.id)
   if (pageId !== undefined) return pageId
   if (sponsorId === undefined) return defaultId
-  try {
-    const campaigns = Array.isArray(boot?.campaigns) ? boot.campaigns : []
-    const matches = campaigns.filter(
-      (c): c is BootstrapCampaignEntry =>
-        !!c &&
-        typeof c === 'object' &&
-        c.status === 'active' &&
-        campaignSponsorIds(c).includes(sponsorId),
-    )
-    const chosen = matches.find((c) => c.id === defaultId) ?? matches[0]
-    const chosenId = toNumber(chosen?.id)
-    if (chosenId !== undefined) return chosenId
-  } catch {
-    /* a malformed campaigns[] must never break track() */
-  }
-  return defaultId
+  // The sponsor rule (shared with resolveSlotCampaign); a malformed
+  // campaigns[] never breaks track(): it answers null and campaign.id applies.
+  return toNumber(sponsorCampaignEntry(boot, sponsorId)?.id) ?? defaultId
 }
 
 /** The explicit `campaignId` a `vio:*` event detail carries (the element's attribution). */

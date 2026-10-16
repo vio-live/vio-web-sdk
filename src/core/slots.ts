@@ -64,15 +64,58 @@ export function resolveSlotCampaign(
   now: number = Date.now(),
   platform?: string | null,
   pageCampaignId?: CampaignHint,
+  sponsorId?: number | null,
 ): BootstrapCampaignEntry | null {
   if (!boot) return null
   const page = activeCampaignEntry(boot, pageCampaignId)
   const assignment = findSlotAssignmentDetail(boot, slot, now, platform)
-  // A dashboard assignment always wins. One this page made itself
-  // (`source: 'page'`) is stale when the page now declares a different active
-  // campaign — it is about to be re-declared — so the page's wins meanwhile.
-  if (assignment && !isStalePageAssignment(assignment, page)) return assignment.campaign
-  return page ?? defaultCampaignEntry(boot)
+  const sponsor = toNumber(sponsorId)
+  if (assignment && assignmentApplies(assignment, page, sponsor)) return assignment.campaign
+  return (
+    activeCampaignEntry(boot, pageCampaignId, sponsor) ??
+    (sponsor !== undefined ? sponsorCampaignEntry(boot, sponsor) : null) ??
+    defaultCampaignEntry(boot)
+  )
+}
+
+/**
+ * The sponsor rule: the active campaign of `campaigns[]` the sponsor takes
+ * part in, as its primary or one of its secondaries — when it is in several,
+ * the surface's default campaign if it is one of them, else the first one
+ * the backend lists. Null when none (or on a malformed list).
+ */
+export function sponsorCampaignEntry(
+  boot: BootLike | null | undefined,
+  sponsorId: number | null | undefined,
+): BootstrapCampaignEntry | null {
+  const id = toNumber(sponsorId)
+  if (!boot || id === undefined) return null
+  try {
+    const matches = activeCampaigns(boot).filter((c) => campaignSponsorIds(c).includes(id))
+    if (matches.length === 0) return null
+    const defaultId = toNumber(boot.campaign?.id)
+    return matches.find((c) => toNumber(c.id) === defaultId) ?? matches[0] ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a slot assignment decides the campaign. A dashboard assignment (or
+ * one without `source`, an older micro) always does. One this page made
+ * itself (`source: 'page'`) is treated like the page campaign: it does not
+ * when the page now declares a different active campaign (it is about to be
+ * re-declared), nor — with a known sponsor — when that sponsor takes no part
+ * in it (the sponsor rule then says where the sponsor's campaign is).
+ */
+export function assignmentApplies(
+  assignment: { campaign: BootstrapCampaignEntry; slot: BootstrapSlot },
+  page: BootstrapCampaignEntry | null,
+  sponsorId?: number,
+): boolean {
+  if (assignment.slot.source !== 'page') return true
+  if (isStalePageAssignment(assignment, page)) return false
+  return sponsorId === undefined || campaignSponsorIds(assignment.campaign).includes(sponsorId)
 }
 
 /** A page-sourced assignment that disagrees with the page's current (active) campaign. */
@@ -91,10 +134,16 @@ export function isStalePageAssignment(
  */
 export type CampaignHint = number | string | null | undefined | ReadonlyArray<number | string | null | undefined>
 
-/** A campaign id as the SDK accepts it: a positive safe integer; anything else is "absent". */
+/**
+ * A campaign id as the SDK accepts it: a positive safe integer, given as a
+ * number or as a string of decimal digits (an attribute). Anything else —
+ * `true`, `'0x10'`, `'1e3'`, an array, a float — is "absent".
+ */
 export function toCampaignId(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined
-  const n = Number(value)
+  let n: number
+  if (typeof value === 'number') n = value
+  else if (typeof value === 'string' && /^\s*\d+\s*$/.test(value)) n = Number(value)
+  else return undefined
   return Number.isSafeInteger(n) && n > 0 ? n : undefined
 }
 
@@ -333,12 +382,15 @@ export function normalizeScope(scope: string | null | undefined): string {
 
 /**
  * What the browser remembers per (platform, key): for each declared location
- * key (`id`, or `id\u001fdisplayName`, see `slotDeclarationKeys`) the epoch ms
- * it was declared. Per id — not per set — because a multi-page site (Vev: one
- * page per article, lazy blocks) makes a new set on every navigation; only
- * the ids not declared in the last 24 h go out. A failed attempt is stored as
- * if declared `SLOT_DECLARATION_TTL_MS − SLOT_DECLARATION_FAILURE_TTL_MS` ago,
- * so it is retried after an hour, not on every view.
+ * key — `id`, `\u001f<displayName>` when it has one, `\u001e<campaignId>` when
+ * it was declared with a campaign (its own, else the page's); see
+ * `slotDeclarationKey` — the epoch ms it was declared. Per id — not per set —
+ * because a multi-page site (Vev: one page per article, lazy blocks) makes a
+ * new set on every navigation; only the ids not declared in the last 24 h go
+ * out, and an id keeps ONE state (a new name or campaign forgets the old key).
+ * A failed attempt is stored as if declared
+ * `SLOT_DECLARATION_TTL_MS − SLOT_DECLARATION_FAILURE_TTL_MS` ago, so it is
+ * retried after an hour, not on every view.
  */
 export type SlotDeclarationMemory = Record<string, number>
 

@@ -22,6 +22,18 @@ describe('React wrappers', () => {
     expectTypeOf<DetailProps['vioSlot']>().toEqualTypeOf<string | undefined>()
   })
 
+  it('type the slot name, the scope and the content overrides too', () => {
+    expectTypeOf<ProductProps['vioSlotName']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<CarouselProps['vioSlotName']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<DetailProps['vioSlotName']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<ProductProps['vioScope']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<CarouselProps['vioScopeName']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<ProductProps['vioContentId']>().toEqualTypeOf<string | undefined>()
+    expectTypeOf<DetailProps['vioContentTitle']>().toEqualTypeOf<string | undefined>()
+    // The effective id is read-only on the element: not something React sets.
+    expectTypeOf<ProductProps['effectiveSlot']>().toEqualTypeOf<string | undefined>()
+  })
+
   it('keep the element identifiers reachable alongside it', () => {
     expectTypeOf<ProductProps['sponsorId']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<CarouselProps['productIds']>().toEqualTypeOf<string | undefined>()

@@ -21,18 +21,21 @@ import { createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
-import { AnalyticsManager } from './analytics/analytics-manager.js'
+import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
+import { resolveContent, type ContentRef } from './content.js'
 import {
   isSlotDeclarationFresh,
   normalizeSlotId,
   normalizeSlotLocations,
   readSlotDeclaration,
   resolveSlotCampaign,
+  slotDeclarationKeys,
   slotDeclarationStorageKey,
   writeSlotDeclaration,
   type SlotInput,
 } from './slots.js'
 import type {
+  Attribution,
   BootstrapCampaignEntry,
   BootstrapResponse,
   ManifestResult,
@@ -55,12 +58,14 @@ class VioFacade {
    * belongs to that configuration and must not land in this one. */
   private generation = 0
 
-  /** Slot names present on the page (`Vio.registerSlot`) → how many elements hold each. */
-  private slotRegistry = new Map<string, number>()
+  /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each + its display name. */
+  private slotRegistry = new Map<string, { count: number; displayName?: string }>()
   /** Pending debounced declaration of the registry. */
   private slotDeclareTimer: ReturnType<typeof setTimeout> | null = null
   /** A name appeared (or the key changed) since the registry was last declared. */
   private slotsDirty = false
+  /** `Vio.content()` resolved once per page; forgotten on every init(). */
+  private contentCache: ContentRef | null = null
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
@@ -86,8 +91,32 @@ class VioFacade {
       this.slotDeclareTimer = null
     }
     this.slotsDirty = this.slotRegistry.size > 0
+    // A re-init may carry another contentId/contentTitle.
+    this.contentCache = null
     // NOTE: cart / checkout managers are NOT reset — user cart state is
     // independent of SDK re-config.
+  }
+
+  /**
+   * The content (article, page) this SDK instance is rendered in — what every
+   * analytics event carries as `content_id` / `content_title` when the event
+   * has no explicit one. Resolved once per page (init option → URL query →
+   * `vio:content-*` metas → canonical/og:url → pathname; see
+   * `resolveContent`), forgotten on every `init()`. Never throws; `{}` without
+   * a document.
+   */
+  content(): ContentRef {
+    if (this.contentCache) return this.contentCache
+    let init: { contentId?: string | number; contentTitle?: string } | undefined
+    if (Configuration.isInitialized) {
+      const cfg = Configuration.get()
+      init = { contentId: cfg.contentId, contentTitle: cfg.contentTitle }
+    }
+    const resolved = resolveContent(init)
+    // Cache only once a document could be asked — SSR answers `{}` and must
+    // not freeze an empty answer for a later hydration on the same facade.
+    if (typeof document !== 'undefined') this.contentCache = resolved
+    return resolved
   }
 
   get isInitialized(): boolean { return Configuration.isInitialized }
@@ -226,9 +255,10 @@ class VioFacade {
       }
       const cfg = Configuration.get()
       const storageKey = slotDeclarationStorageKey(cfg.platform, cfg.apiKey)
-      const ids = locations.map((l) => l.id).sort()
+      // Display names are part of the key: a renamed block declares again.
+      const keys = slotDeclarationKeys(locations)
       const now = Date.now()
-      if (!opts.force && isSlotDeclarationFresh(readSlotDeclaration(storageKey), ids, now)) {
+      if (!opts.force && isSlotDeclarationFresh(readSlotDeclaration(storageKey), keys, now)) {
         return null
       }
       const result = await this.api.declareManifest({
@@ -241,7 +271,7 @@ class VioFacade {
       // the server confirms as merged is remembered — otherwise the next page
       // load tries again, and succeeds once the server is updated.
       if (result?.mode === 'merge') {
-        writeSlotDeclaration(storageKey, { ids, at: now })
+        writeSlotDeclaration(storageKey, { keys, at: now })
       } else {
         warn(
           'slots declared but the server ignored mode=merge (old server); not caching, will retry next load',
@@ -255,17 +285,31 @@ class VioFacade {
   }
 
   /**
-   * Register a slot name present on the page (the `<vio-*>` elements call it
-   * from `vio-slot`). The registry is declared ONCE, debounced, after the
-   * first successful bootstrap — and again whenever a new name appears. The
-   * returned function unregisters the name; removal never re-declares.
+   * Register a slot present on the page (the `<vio-*>` elements call it with
+   * their effective id — the host's `vio-slot` or the auto-generated one —
+   * and the optional display name). The registry is declared ONCE, debounced,
+   * after the first successful bootstrap — and again whenever a new id or a
+   * new display name appears. A `displayName` given later for an id already
+   * registered replaces the one kept; `undefined` leaves it alone. The
+   * returned function unregisters; removal never re-declares.
    */
-  registerSlot(name: string): () => void {
+  registerSlot(name: string, displayName?: string): () => void {
     const id = normalizeSlotId(name)
     if (!id) return () => {}
-    const count = this.slotRegistry.get(id) ?? 0
-    this.slotRegistry.set(id, count + 1)
-    if (count === 0) {
+    const label = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined
+    const entry = this.slotRegistry.get(id)
+    let changed = false
+    if (!entry) {
+      this.slotRegistry.set(id, { count: 1, displayName: label })
+      changed = true
+    } else {
+      entry.count++
+      if (label !== undefined && label !== entry.displayName) {
+        entry.displayName = label
+        changed = true
+      }
+    }
+    if (changed) {
       this.slotsDirty = true
       if (this.cachedBootstrap) this.scheduleSlotDeclaration()
     }
@@ -273,9 +317,10 @@ class VioFacade {
     return () => {
       if (released) return
       released = true
-      const current = this.slotRegistry.get(id) ?? 0
-      if (current <= 1) this.slotRegistry.delete(id)
-      else this.slotRegistry.set(id, current - 1)
+      const current = this.slotRegistry.get(id)
+      if (!current) return
+      if (current.count <= 1) this.slotRegistry.delete(id)
+      else current.count--
     }
   }
 
@@ -289,12 +334,60 @@ class VioFacade {
     return resolveSlotCampaign(this.cachedBootstrap, slot ?? null, Date.now(), platform)
   }
 
+  /**
+   * THE attribution helper — the SDK elements, Vev and Replit all use this
+   * one. For a place (`slot`): the campaign it shows right now
+   * (`campaignForSlot`: its assignment, else the surface's default) as
+   * `campaignId` + that campaign's primary sponsor as `sponsorId`, plus the
+   * page's content (`content()`). Pure, never throws; `{}` before the
+   * bootstrap, except the content.
+   *
+   * `hint.sponsorId` — when the caller already knows the sponsor (a card with
+   * `sponsor-id`) it is kept as `sponsorId`, and the campaign follows the same
+   * cascade analytics uses (slot assignment → the sponsor's active campaign →
+   * default), so what the cart remembers matches what the events say.
+   */
+  attribution(slot?: string | null, hint?: { sponsorId?: number | string }): Attribution {
+    const out: Attribution = {}
+    try {
+      const name = typeof slot === 'string' ? slot.trim() : ''
+      if (name) out.slot = name
+      const boot = this.cachedBootstrap
+      const hinted = toNumber(hint?.sponsorId)
+      if (boot) {
+        if (hinted !== undefined) {
+          const campaignId = resolveCampaignId({ slot: name || undefined, sponsorId: hinted }, boot)
+          if (campaignId !== undefined) out.campaignId = campaignId
+          out.sponsorId = hinted
+        } else {
+          const campaign = this.campaignForSlot(name || null)
+          const campaignId = toNumber(campaign?.id)
+          if (campaignId !== undefined) out.campaignId = campaignId
+          const sponsorId = toNumber(campaign?.primarySponsor?.id)
+          if (sponsorId !== undefined) out.sponsorId = sponsorId
+        }
+      } else if (hinted !== undefined) {
+        out.sponsorId = hinted
+      }
+      const content = this.content()
+      if (content.id) out.contentId = content.id
+      if (content.title) out.contentTitle = content.title
+    } catch {
+      /* attribution never breaks a render or a click */
+    }
+    return out
+  }
+
   private scheduleSlotDeclaration(): void {
     if (this.slotDeclareTimer) clearTimeout(this.slotDeclareTimer)
     this.slotDeclareTimer = setTimeout(() => {
       this.slotDeclareTimer = null
       this.slotsDirty = false
-      void this.declareSlots([...this.slotRegistry.keys()])
+      void this.declareSlots(
+        [...this.slotRegistry.entries()].map(([id, { displayName }]) =>
+          displayName ? { id, displayName } : id,
+        ),
+      )
     }, SLOT_DECLARATION_DEBOUNCE_MS)
   }
 
@@ -321,6 +414,12 @@ class VioFacade {
 
 function warn(...args: unknown[]): void {
   if (typeof console !== 'undefined') console.warn('[Vio]', ...args)
+}
+
+function toNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) ? n : undefined
 }
 
 // Cross-bundle singleton. Some hosts (e.g. Vev) bundle each component into its

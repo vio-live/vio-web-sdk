@@ -27,13 +27,63 @@ export class VioProduct extends LitElement {
   /** Vio sponsor id, propagated to click event. */
   @property({ type: String, attribute: 'sponsor-id' }) sponsorId = ''
   /**
-   * Slot this card sits in (ADR-0027): registered with the campaigns service
-   * on mount and carried by every event the card emits, so attribution goes
-   * to the campaign assigned to the slot. The attribute is `vio-slot`, not
-   * `slot` — that one is HTML's own (shadow DOM slotting).
+   * Slot this card sits in (ADR-0027). Optional: without it the card registers
+   * itself as `card-N` (its position among the cards on the page). Set it to
+   * name the place yourself or to make several elements share one slot. It is
+   * carried by every event the card emits, so attribution goes to the campaign
+   * assigned to the slot. The attribute is `vio-slot`, not `slot` — that one
+   * is HTML's own (shadow DOM slotting).
    */
   @property({ type: String, attribute: 'vio-slot' }) vioSlot = ''
-  private readonly slotRegistration = new SlotRegistration()
+  /** Human name of the slot for the dashboard (`vio-slot-name`). Optional. */
+  @property({ type: String, attribute: 'vio-slot-name' }) vioSlotName = ''
+  /**
+   * Scope of the auto id (`article-123-card-1`). Inherited: this attribute,
+   * else the nearest ancestor's `data-vio-scope` (a page sets it ONCE on
+   * `<body>` and every block gets a per-page slot). Optional.
+   */
+  @property({ type: String, attribute: 'vio-scope' }) vioScope = ''
+  /** Human label of the scope (` · Title` in the slot name); inherited from `data-vio-scope-name`. */
+  @property({ type: String, attribute: 'vio-scope-name' }) vioScopeName = ''
+  /** Per-element override of the content (article) id the events carry; see `Vio.content()`. */
+  @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
+  /** Per-element override of the content title. */
+  @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
+  private readonly slotRegistration = new SlotRegistration(this, 'card')
+
+  /** The slot id in effect: `vio-slot`, else the auto id (`card-N`). Read-only. */
+  get effectiveSlot(): string {
+    return this.slotRegistration.effective
+  }
+
+  /** The slot campaign's sponsor as the string the attributes use ('' when unknown). */
+  private sponsorFromAttribution(): string {
+    const id = Vio.attribution(this.effectiveSlot).sponsorId
+    return id !== undefined ? String(id) : ''
+  }
+
+  private slotAttributes() {
+    return {
+      vioSlot: this.vioSlot,
+      vioSlotName: this.vioSlotName,
+      vioScope: this.vioScope,
+      vioScopeName: this.vioScopeName,
+    }
+  }
+
+  /**
+   * What every event carries for attribution (`Vio.attribution`): the place,
+   * its campaign and sponsor, and the content — overridden here when the host
+   * set `vio-content-id` / `vio-content-title` on this card.
+   */
+  private attribution() {
+    const base = Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId || undefined })
+    return {
+      ...base,
+      ...(this.vioContentId ? { contentId: this.vioContentId } : {}),
+      ...(this.vioContentTitle ? { contentTitle: this.vioContentTitle } : {}),
+    }
+  }
   /** Whether the product has selectable variants — the quick-add button then
    * opens the detail to pick one instead of adding directly. */
   @property({ type: Boolean, attribute: 'has-variants' }) hasVariants = false
@@ -168,7 +218,7 @@ export class VioProduct extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback()
     this.updateInCart()
-    this.slotRegistration.sync(this.vioSlot)
+    this.slotRegistration.connect(this.slotAttributes())
     Vio.cart.addEventListener('change', this.boundCartChange)
   }
 
@@ -181,8 +231,10 @@ export class VioProduct extends LitElement {
   override updated(changed: Map<string, unknown>): void {
     // product-id / sponsor-id are set as attributes after construction.
     if (changed.has('productId') || changed.has('sponsorId')) this.updateInCart()
-    // vio-slot too (the React wrappers set properties after mount).
-    if (changed.has('vioSlot')) this.slotRegistration.sync(this.vioSlot)
+    // The slot attributes too (the React wrappers set properties after mount).
+    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName')) {
+      this.slotRegistration.sync(this.slotAttributes())
+    }
   }
 
   /** Reflect whether (and how many units of) this product sit in the cart. */
@@ -210,13 +262,14 @@ export class VioProduct extends LitElement {
         composed: true,
         detail: {
           productId: this.productId,
-          sponsorId: this.sponsorId,
           brand: this.brand,
           name: this.name,
           price: this.price,
           retailer: this.retailer,
           imageUrl: this.imageUrl,
-          slot: this.vioSlot || undefined,
+          ...this.attribution(),
+          // The host's sponsor-id wins; without one, the slot's campaign sponsor.
+          sponsorId: this.sponsorId || this.sponsorFromAttribution(),
         },
       }),
     )
@@ -248,13 +301,14 @@ export class VioProduct extends LitElement {
         composed: true,
         detail: {
           productId: this.productId,
-          sponsorId: this.sponsorId,
           brand: this.brand,
           name: this.name,
           price: this.price,
           retailer: this.retailer,
           imageUrl: this.imageUrl,
-          slot: this.vioSlot || undefined,
+          ...this.attribution(),
+          // The host's sponsor-id wins; without one, the slot's campaign sponsor.
+          sponsorId: this.sponsorId || this.sponsorFromAttribution(),
         },
       }),
     )

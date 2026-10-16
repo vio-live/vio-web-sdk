@@ -28,6 +28,15 @@ export interface VioConfig {
    * (the SDK integrated by code) or `vev`. Defaults to `web`.
    */
   platform?: VioPlatform
+  /**
+   * The host's own id for the content (article, page) this SDK instance is
+   * rendered in — the first choice of `Vio.content()`, ahead of the URL query,
+   * the `vio:content-id` meta, the canonical URL and the pathname. Goes on
+   * every analytics event as `content_id`.
+   */
+  contentId?: string | number
+  /** Human-readable title of that content (`content_title`); see `contentId`. */
+  contentTitle?: string
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -62,6 +71,8 @@ export interface ResolvedConfig {
   apiKey: string
   environment: Environment
   platform: VioPlatform
+  contentId?: string | number
+  contentTitle?: string
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -108,6 +119,8 @@ class ConfigurationSingleton {
       apiKey: input.apiKey,
       environment: env,
       platform: input.platform ?? 'web',
+      contentId: input.contentId,
+      contentTitle: input.contentTitle,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,

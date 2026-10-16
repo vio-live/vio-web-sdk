@@ -30,6 +30,7 @@
  */
 
 import { Configuration } from '../configuration.js'
+import { resolveContent, type ContentRef } from '../content.js'
 import { findSlotAssignment } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
@@ -431,6 +432,9 @@ export class AnalyticsManager extends EventTarget {
 
     const boot = vioBootstrapCache()
     const ctx = opts.context ?? {}
+    // The article/page this instance renders in — resolved by the SDK when the
+    // event brings no explicit content (see core/content.ts).
+    const content = ctx.contentId === undefined || ctx.contentTitle === undefined ? vioContent() : {}
     const context: Record<string, unknown> = compact({
       campaign_id: resolveCampaignId(ctx, boot),
       broadcast_id: ctx.broadcastId,
@@ -443,12 +447,14 @@ export class AnalyticsManager extends EventTarget {
       activation_id: ctx.activationId,
       content_url: ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined),
       // The host's own content id — its join key back onto its reporting.
-      content_id: ctx.contentId,
+      // Explicit on the event, else what the SDK resolved for the page.
+      content_id: ctx.contentId ?? content.id,
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
       error_code: ctx.errorCode,
       content_title:
         ctx.contentTitle ??
+        content.title ??
         (typeof document !== 'undefined' && document.title
           ? document.title.slice(0, 255)
           : undefined),
@@ -621,10 +627,10 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string; slot?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -653,10 +659,12 @@ export class AnalyticsManager extends EventTarget {
         currency?: string
         sponsorId?: number
         slot?: string
+        contentId?: string | number
+        contentTitle?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       this.track('remove_from_cart', {
-        context: { sponsorId: d.sponsorId, slot: slotOf(d) },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -692,11 +700,13 @@ export class AnalyticsManager extends EventTarget {
         brand?: string
         price?: number | string
         slot?: string
+        contentId?: string | number
+        contentTitle?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -716,10 +726,10 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:checkout-open', (ev) => {
-      const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ sponsorId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
-        context: { sponsorId: d.sponsorId, slot: slotOf(d) },
+        context: { sponsorId: d.sponsorId, slot: slotOf(d), ...contentOf(d) },
         ...(snap ? { commerce: snap } : {}),
       })
     })
@@ -729,7 +739,7 @@ export class AnalyticsManager extends EventTarget {
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const snap = this.cartCommerce(sponsorId) // falls back to pre-clear snapshot
       this.track('purchase', {
-        context: { sponsorId, slot: slotOf(d) },
+        context: { sponsorId, slot: slotOf(d), ...contentOf(d) },
         commerce: {
           // value / currency / items: the cart snapshot, on every path.
           ...(snap ?? {}),
@@ -846,6 +856,7 @@ function eventsBase(): string {
 interface FacadeLike {
   bootstrapCache: BootstrapResponse | null
   cart: CartManager
+  content?: () => ContentRef
 }
 function vioFacade(): FacadeLike | null {
   const g = globalThis as unknown as { __VIO_FACADE__?: FacadeLike }
@@ -853,6 +864,15 @@ function vioFacade(): FacadeLike | null {
 }
 function vioBootstrapCache(): BootstrapResponse | null {
   return vioFacade()?.bootstrapCache ?? null
+}
+/** The page's content (article) — the facade's per-page cache, else resolved here. */
+function vioContent(): ContentRef {
+  try {
+    const facade = vioFacade()
+    return typeof facade?.content === 'function' ? facade.content() : resolveContent()
+  } catch {
+    return {}
+  }
 }
 function vioCart(): CartManager | null {
   try {
@@ -914,6 +934,15 @@ function slotOf(detail: { slot?: unknown }): string | undefined {
   return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
 }
 
+/** The per-element content override a `vio:*` event detail carries (`vio-content-id` / `vio-content-title`). */
+function contentOf(detail: { contentId?: unknown; contentTitle?: unknown }): Pick<AnalyticsContext, 'contentId' | 'contentTitle'> {
+  const out: Pick<AnalyticsContext, 'contentId' | 'contentTitle'> = {}
+  if (typeof detail.contentId === 'number' && Number.isFinite(detail.contentId)) out.contentId = detail.contentId
+  else if (typeof detail.contentId === 'string' && detail.contentId.trim()) out.contentId = detail.contentId.trim()
+  if (typeof detail.contentTitle === 'string' && detail.contentTitle.trim()) out.contentTitle = detail.contentTitle.trim()
+  return out
+}
+
 function campaignSponsorIds(campaign: BootstrapCampaignEntry): number[] {
   const ids: number[] = []
   const primary = toNumber(campaign.primarySponsor?.id)
@@ -938,6 +967,9 @@ export interface PaymentSuccessDetail {
   sponsorId?: number | string
   /** The slot the purchase started from, when the emitter knows it. */
   slot?: string
+  /** Per-element content override (`vio-content-id` / `vio-content-title`), when the emitter carries one. */
+  contentId?: string | number
+  contentTitle?: string
   /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */

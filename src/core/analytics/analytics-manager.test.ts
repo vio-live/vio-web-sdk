@@ -831,3 +831,83 @@ describe('slot → campaign_id (ADR-0027): explícito → slot → sponsor → d
     m.stop()
   })
 })
+
+describe('content_id / content_title automáticos (el artículo va a analytics, no al slot)', () => {
+  afterEach(removeFacade)
+
+  const facadeWithContent = (content: { id?: string; title?: string }) => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => content,
+    }
+  }
+
+  const contextOf = async (context: Record<string, unknown> = {}) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('toma el contenido del facade (Vio.content()) cuando el evento no trae uno', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBe('article-123')
+    expect(ctx.content_title).toBe('Título del artículo')
+  })
+
+  it('el contentId / contentTitle explícitos del evento ganan', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({ contentId: 999, contentTitle: 'Mío' })
+    expect(ctx.content_id).toBe(999)
+    expect(ctx.content_title).toBe('Mío')
+  })
+
+  it('sin facade con content() sigue como antes: document.title y sin content_id', async () => {
+    installFacade({ campaign: { id: 1, name: 'x' } })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBeUndefined()
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('un content() que lanza no rompe track()', async () => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => {
+        throw new Error('boom')
+      },
+    }
+    const ctx = await contextOf({})
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('los eventos vio:* llevan el override por elemento (vio-content-id / vio-content-title)', async () => {
+    facadeWithContent({ id: 'page', title: 'Page' })
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 1, sponsorId: 4, slot: 'card-1', contentId: 'art-9', contentTitle: ' Nine ' },
+      }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 1, sponsorId: 4, slot: 'card-1' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, contentId: 7 } }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches.flatMap((b) => b.events)
+    const ctxOf = (name: string) => events.find((e) => e.name === name)!.context as Record<string, unknown>
+    expect(ctxOf('select_item')).toMatchObject({ location_id: 'card-1', content_id: 'art-9', content_title: 'Nine' })
+    // Without an override the page's content applies.
+    expect(ctxOf('add_to_cart')).toMatchObject({ location_id: 'card-1', content_id: 'page', content_title: 'Page' })
+    expect(ctxOf('begin_checkout')).toMatchObject({ content_id: 7, content_title: 'Page' })
+    m.stop()
+  })
+})

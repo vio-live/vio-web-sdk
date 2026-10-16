@@ -8,13 +8,17 @@ import { describe, expect, it } from 'vitest'
 import type { BootstrapResponse } from './types.js'
 import {
   SLOT_DECLARATION_TTL_MS,
+  autoSlotDisplayName,
+  autoSlotId,
   defaultCampaignEntry,
   findSlotAssignment,
   fnv1a,
   isSlotDeclarationFresh,
+  normalizeScope,
   normalizeSlotId,
   normalizeSlotLocations,
   resolveSlotCampaign,
+  slotDeclarationKeys,
   slotDeclarationStorageKey,
 } from './slots.js'
 
@@ -213,7 +217,7 @@ describe('normalizeSlotLocations', () => {
 describe('declaration memory', () => {
   it('is fresh only for the same set (any order) within 24 h', () => {
     const at = OCT_15
-    const memory = { ids: ['footer', 'hero'], at }
+    const memory = { keys: ['footer', 'hero'], at }
     expect(isSlotDeclarationFresh(memory, ['hero', 'footer'], at + 1_000)).toBe(true)
     expect(isSlotDeclarationFresh(memory, ['hero'], at + 1_000)).toBe(false)
     expect(isSlotDeclarationFresh(memory, ['hero', 'footer', 'x'], at + 1_000)).toBe(false)
@@ -224,6 +228,16 @@ describe('declaration memory', () => {
     expect(isSlotDeclarationFresh(null, ['hero'], at)).toBe(false)
   })
 
+  it('keys include the display name, so a renamed block is a different set', () => {
+    const keys = slotDeclarationKeys([{ id: 'hero', displayName: 'Hero' }, { id: 'carousel-1' }])
+    expect(keys).toEqual(['carousel-1', 'hero\u001fHero'])
+    expect(slotDeclarationKeys([{ id: 'carousel-1' }, { id: 'hero', displayName: 'Hero' }])).toEqual(keys)
+    expect(slotDeclarationKeys([{ id: 'hero', displayName: 'Hero banner' }, { id: 'carousel-1' }])).not.toEqual(keys)
+    const at = OCT_15
+    expect(isSlotDeclarationFresh({ keys, at }, slotDeclarationKeys([{ id: 'hero', displayName: 'Hero' }, { id: 'carousel-1' }]), at + 1)).toBe(true)
+    expect(isSlotDeclarationFresh({ keys, at }, slotDeclarationKeys([{ id: 'hero' }, { id: 'carousel-1' }]), at + 1)).toBe(false)
+  })
+
   it('keys storage by platform and a hash of the key — never the key itself', () => {
     const key = slotDeclarationStorageKey('vev', 'sk_live_SECRET_123')
     expect(key).not.toContain('SECRET')
@@ -232,5 +246,38 @@ describe('declaration memory', () => {
     expect(slotDeclarationStorageKey('web', 'sk_live_SECRET_123')).not.toBe(key)
     expect(slotDeclarationStorageKey('vev', 'another-key')).not.toBe(key)
     expect(fnv1a('')).toBe('811c9dc5')
+  })
+})
+
+describe('auto identity (no page path: one template, thousands of articles, one place)', () => {
+  it('builds `${kind}-${ordinal + 1}`, prefixed by the scope when there is one', () => {
+    expect(autoSlotId('carousel', 0)).toBe('carousel-1')
+    expect(autoSlotId('card', 2)).toBe('card-3')
+    expect(autoSlotId('detail', 0, '')).toBe('detail-1')
+    expect(autoSlotId('carousel', 0, 'article-123')).toBe('article-123-carousel-1')
+    expect(autoSlotId('card', 1, '  Sport front ')).toBe('Sport-front-card-2')
+    expect(autoSlotId('card', 1, null)).toBe('card-2')
+  })
+
+  it('is stable: the same kind, ordinal and scope always give the same id', () => {
+    expect(autoSlotId('carousel', 3, 'a')).toBe(autoSlotId('carousel', 3, 'a'))
+    expect(autoSlotId('carousel', 3, 'a')).not.toBe(autoSlotId('carousel', 4, 'a'))
+    expect(autoSlotId('carousel', 3, 'a')).not.toBe(autoSlotId('carousel', 3, 'b'))
+    expect(autoSlotId('carousel', 3)).not.toBe(autoSlotId('card', 3))
+  })
+
+  it('names it `Kind N`, with the scope label when the scope has one', () => {
+    expect(autoSlotDisplayName('carousel', 0)).toBe('Carousel 1')
+    expect(autoSlotDisplayName('card', 2, '')).toBe('Card 3')
+    expect(autoSlotDisplayName('detail', 0, ' Título del artículo ')).toBe('Detail 1 · Título del artículo')
+    // The scope id alone is not a label.
+    expect(autoSlotDisplayName('carousel', 0, undefined)).toBe('Carousel 1')
+  })
+
+  it('normalizeScope trims and joins inner whitespace', () => {
+    expect(normalizeScope(' article 123 ')).toBe('article-123')
+    expect(normalizeScope('')).toBe('')
+    expect(normalizeScope(undefined)).toBe('')
+    expect(normalizeScope(42 as unknown as string)).toBe('')
   })
 })

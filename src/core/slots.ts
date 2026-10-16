@@ -175,12 +175,61 @@ export function normalizeSlotLocations(slots: ReadonlyArray<SlotInput> | null | 
   return out
 }
 
+// ── Auto identity (ADR-0034 refinement: the editor types nothing) ───────────
+
+/** The kinds of Vio element that register themselves. */
+export type SlotKind = 'card' | 'carousel' | 'detail'
+
+/**
+ * The id an element gets when the host set no `vio-slot`:
+ * `${scope ? scope + '-' : ''}${kind}-${ordinal + 1}` (`carousel-1`, `card-3`,
+ * `article-123-carousel-1`), `ordinal` being the element's index among the
+ * same-kind Vio elements WITH THE SAME SCOPE, in document order at connect
+ * time. The scope is inherited from the DOM (`vio-scope` on the element, else
+ * the nearest `data-vio-scope` ancestor): a Vev page or a Replit article
+ * (`<body data-vio-scope="article-123">`) gets per-page slots with one line
+ * and no per-element naming; a template that wants slots shared across
+ * articles simply sets no scope. On purpose there is NO page path in the id:
+ * the article goes to analytics as `content_id`, not into the slot. Stable
+ * across reloads while the layout is; a layout change leaves a stale entry,
+ * which ADR-0034 accepts.
+ */
+export function autoSlotId(kind: SlotKind, ordinal: number, scope?: string | null): string {
+  const prefix = normalizeScope(scope)
+  return `${prefix ? `${prefix}-` : ''}${kind}-${ordinal + 1}`
+}
+
+/** `"Carousel 1"`, `"Card 3"` — with ` · ${scopeName}` when the scope has a human label. */
+export function autoSlotDisplayName(kind: SlotKind, ordinal: number, scopeName?: string | null): string {
+  const label = `${kind.charAt(0).toUpperCase()}${kind.slice(1)} ${ordinal + 1}`
+  const name = typeof scopeName === 'string' ? scopeName.trim() : ''
+  return name ? `${label} · ${name}` : label
+}
+
+/** A scope value fit for an id: trimmed, inner whitespace → `-`. */
+export function normalizeScope(scope: string | null | undefined): string {
+  if (typeof scope !== 'string') return ''
+  return scope.trim().replace(/\s+/g, '-')
+}
+
+// ── Declaration memory ──────────────────────────────────────────────────────
+
 /** What the browser remembers about the last declaration of a (platform, key). */
 export interface SlotDeclarationMemory {
-  /** Sorted, normalized slot ids. */
-  ids: string[]
+  /** Sorted keys of the declared locations (see `slotDeclarationKeys`). */
+  keys: string[]
   /** Epoch ms of the declaration. */
   at: number
+}
+
+/**
+ * One sortable key per location, display name included — a renamed block
+ * must declare again even when the set of ids is the same.
+ */
+export function slotDeclarationKeys(locations: ReadonlyArray<ManifestLocation>): string[] {
+  return locations
+    .map((l) => (l.displayName ? `${l.id}\u001f${l.displayName}` : l.id))
+    .sort()
 }
 
 /**
@@ -209,8 +258,8 @@ export function readSlotDeclaration(storageKey: string): SlotDeclarationMemory |
     const raw = localStorage.getItem(storageKey)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<SlotDeclarationMemory> | null
-    if (!parsed || !Array.isArray(parsed.ids) || typeof parsed.at !== 'number') return null
-    return { ids: parsed.ids.filter((x): x is string => typeof x === 'string'), at: parsed.at }
+    if (!parsed || !Array.isArray(parsed.keys) || typeof parsed.at !== 'number') return null
+    return { keys: parsed.keys.filter((x): x is string => typeof x === 'string'), at: parsed.at }
   } catch {
     return null // private mode, quota, corrupted JSON — all "nothing remembered"
   }
@@ -227,18 +276,19 @@ export function writeSlotDeclaration(storageKey: string, memory: SlotDeclaration
 }
 
 /**
- * True when exactly `ids` (sorted) was declared from this browser less than
- * `SLOT_DECLARATION_TTL_MS` ago — the POST can be skipped.
+ * True when exactly `keys` (ids + display names, see `slotDeclarationKeys`)
+ * was declared from this browser less than `SLOT_DECLARATION_TTL_MS` ago —
+ * the POST can be skipped.
  */
 export function isSlotDeclarationFresh(
   memory: SlotDeclarationMemory | null,
-  ids: ReadonlyArray<string>,
+  keys: ReadonlyArray<string>,
   now: number = Date.now(),
 ): boolean {
   if (!memory) return false
   if (now - memory.at >= SLOT_DECLARATION_TTL_MS || now < memory.at) return false
-  if (memory.ids.length !== ids.length) return false
-  const remembered = [...memory.ids].sort()
-  const wanted = [...ids].sort()
-  return remembered.every((id, i) => id === wanted[i])
+  if (memory.keys.length !== keys.length) return false
+  const remembered = [...memory.keys].sort()
+  const wanted = [...keys].sort()
+  return remembered.every((key, i) => key === wanted[i])
 }

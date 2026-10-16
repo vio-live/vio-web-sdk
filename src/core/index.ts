@@ -11,8 +11,19 @@ export {
   type ResolvedConfig,
 } from './configuration.js'
 
-// Slots (ADR-0027): which campaign a slot shows, from a bootstrap response.
-export { resolveSlotCampaign, type SlotInput } from './slots.js'
+// Slots (ADR-0027): which campaign a slot shows, from a bootstrap response;
+// the auto identity of an element (`carousel-1`, `article-123-card-2`).
+export {
+  resolveSlotCampaign,
+  autoSlotId,
+  autoSlotDisplayName,
+  normalizeScope,
+  type SlotInput,
+  type SlotKind,
+} from './slots.js'
+
+// Content (article) attribution: what `content_id` / `content_title` carry.
+export { resolveContent, type ContentRef } from './content.js'
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
@@ -127,6 +138,7 @@ export type {
   BootstrapCampaignEntry,
   BootstrapCampaignStatus,
   BootstrapSlot,
+  Attribution,
   ManifestLocation,
   ManifestRequest,
   ManifestResult,

@@ -156,6 +156,21 @@ export interface ManifestLocation {
   displayName?: string
 }
 
+/**
+ * Where something happened, as `Vio.attribution(slot)` answers it — the ONE
+ * attribution shape the SDK elements, Vev and Replit all use: the place
+ * (`slot`), the campaign that place shows right now and its primary sponsor,
+ * and the content (article) the page is. Everything optional: `{}` before the
+ * bootstrap, except the content.
+ */
+export interface Attribution {
+  slot?: string
+  campaignId?: number
+  sponsorId?: number
+  contentId?: string
+  contentTitle?: string
+}
+
 /** Body of `POST /v2/mobile/components/manifest`. */
 export interface ManifestRequest {
   platform: string

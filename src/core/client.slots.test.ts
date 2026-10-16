@@ -178,7 +178,7 @@ describe('Vio.declareSlots()', () => {
     expect(keys).toHaveLength(1)
     expect(keys[0]).toMatch(/^vio\.slots\.web\.[0-9a-f]{8}$/)
     expect(JSON.stringify([...store.entries()])).not.toContain('SECRET')
-    expect(JSON.parse(store.get(keys[0]!)!)).toEqual({ ids: ['hero'], at: expect.any(Number) })
+    expect(JSON.parse(store.get(keys[0]!)!)).toEqual({ keys: ['hero'], at: expect.any(Number) })
 
     // Another key on the same origin (Vev's remembered key → the page's own).
     init('web', 'another-key')
@@ -358,5 +358,115 @@ describe('Vio.campaignForSlot()', () => {
     expect(() => Vio.commerceFor(sponsorId)).not.toThrow()
     expect(() => Vio.commerceFor(8)).not.toThrow() // a secondary of that campaign
     expect(() => Vio.commerceFor(99)).toThrow(/Sponsor 99 not found/)
+  })
+})
+
+describe('Vio.registerSlot(name, displayName) and Vio.declareSlots with names', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  it('sends the display name in the manifest; a later name for the same id replaces it and re-declares', async () => {
+    init()
+    await Vio.bootstrap()
+    const offs = [Vio.registerSlot('hero', 'Hero banner'), Vio.registerSlot('carousel-1', 'Carousel 1')]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+    expect(manifestRequests()[0]!.body).toMatchObject({
+      locations: [{ id: 'hero', displayName: 'Hero banner' }, { id: 'carousel-1', displayName: 'Carousel 1' }],
+    })
+
+    // The same id again without a name (a card inheriting the carousel's slot): nothing new.
+    offs.push(Vio.registerSlot('hero'))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+
+    // Renamed in the editor: declared again, with the new name.
+    offs.push(Vio.registerSlot('hero', 'Hero (top)'))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(2)
+    expect(manifestRequests()[1]!.body).toMatchObject({
+      locations: [{ id: 'hero', displayName: 'Hero (top)' }, { id: 'carousel-1', displayName: 'Carousel 1' }],
+    })
+    offs.forEach((off) => off())
+  })
+
+  it('the 24 h memory keys on the names too: the same ids with another name POST again', async () => {
+    init()
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero' }])).toBeNull()
+    expect(await Vio.declareSlots([{ id: 'hero', displayName: 'Hero banner' }])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()).toHaveLength(3)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero', displayName: 'Hero banner' }] })
+    expect(manifestRequests()[2]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'hero' }] })
+  })
+
+  it('stays backwards compatible: registerSlot(name) alone', async () => {
+    init()
+    await Vio.bootstrap()
+    const off = Vio.registerSlot('footer')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()[0]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'footer' }] })
+    off()
+  })
+})
+
+describe('Vio.attribution()', () => {
+  it('is {} before the bootstrap (plus the content when there is a document)', () => {
+    init()
+    expect(Vio.attribution('hero')).toEqual({ slot: 'hero' })
+    expect(Vio.attribution()).toEqual({})
+    expect(Vio.attribution(null, { sponsorId: '3' })).toEqual({ sponsorId: 3 })
+  })
+
+  it("after the bootstrap: the slot's campaign and its primary sponsor; the default without a slot or assignment", async () => {
+    init('web')
+    await Vio.bootstrap()
+    expect(Vio.attribution('hero')).toEqual({ slot: 'hero', campaignId: 12, sponsorId: 7 })
+    expect(Vio.attribution('carousel-1')).toEqual({ slot: 'carousel-1', campaignId: 10, sponsorId: 4 })
+    expect(Vio.attribution()).toEqual({ campaignId: 10, sponsorId: 4 })
+    expect(Vio.attribution('  ')).toEqual({ campaignId: 10, sponsorId: 4 })
+  })
+
+  it('keeps a known sponsor and attributes its campaign the way analytics does', async () => {
+    init('web')
+    await Vio.bootstrap()
+    // Sponsor 8 is only a secondary of campaign 12: no slot assignment → the sponsor's campaign.
+    expect(Vio.attribution('carousel-1', { sponsorId: 8 })).toEqual({ slot: 'carousel-1', campaignId: 12, sponsorId: 8 })
+    // A slot assignment still wins over the sponsor rule.
+    expect(Vio.attribution('hero', { sponsorId: 4 })).toEqual({ slot: 'hero', campaignId: 12, sponsorId: 4 })
+    expect(Vio.attribution('x', { sponsorId: 'nope' })).toEqual({ slot: 'x', campaignId: 10, sponsorId: 4 })
+  })
+
+  it('never throws on a broken bootstrap', async () => {
+    init('web')
+    await Vio.bootstrap()
+    const g = globalThis as { __VIO_FACADE__?: { cachedBootstrap?: unknown } }
+    g.__VIO_FACADE__!.cachedBootstrap = { campaign: 'what', campaigns: 'nope' }
+    expect(() => Vio.attribution('hero')).not.toThrow()
+  })
+})
+
+describe('Vio.content()', () => {
+  it('answers {} without a document (SSR) and does not cache that', () => {
+    init()
+    expect(Vio.content()).toEqual({})
+    vi.stubGlobal('document', { title: 'Later hydrated', querySelector: () => null })
+    vi.stubGlobal('location', { pathname: '/sport/42', search: '' })
+    expect(Vio.content()).toEqual({ id: '/sport/42', title: 'Later hydrated' })
+  })
+
+  it('caches per page and recomputes after init() — which may carry its own content', () => {
+    vi.stubGlobal('document', { title: 'Article A', querySelector: () => null })
+    vi.stubGlobal('location', { pathname: '/a', search: '' })
+    init()
+    expect(Vio.content()).toEqual({ id: '/a', title: 'Article A' })
+    ;(globalThis as { document: { title: string } }).document.title = 'Changed'
+    expect(Vio.content()).toEqual({ id: '/a', title: 'Article A' }) // cached
+
+    Vio.init({ apiKey: 'key-A', environment: 'testing', contentId: 123, contentTitle: 'From init' })
+    expect(Vio.content()).toEqual({ id: '123', title: 'From init' })
+    expect(Vio.attribution('hero')).toMatchObject({ slot: 'hero', contentId: '123', contentTitle: 'From init' })
   })
 })

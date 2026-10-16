@@ -77,6 +77,13 @@ export class VioProductCarousel extends LitElement {
   @property({ type: String, attribute: 'vio-scope' }) vioScope = ''
   /** Human label of the scope (` · Title` in the slot name); inherited from `data-vio-scope-name`. */
   @property({ type: String, attribute: 'vio-scope-name' }) vioScopeName = ''
+  /**
+   * The campaign this element's PAGE belongs to (ADR-0034, amendment 3).
+   * Inherited: this attribute, else the nearest ancestor's `data-vio-campaign`,
+   * else `Vio.init({ campaignId })`. A dashboard assignment of the slot wins
+   * over it. Optional.
+   */
+  @property({ type: String, attribute: 'vio-campaign' }) vioCampaign = ''
   /** Per-element override of the content (article) id the events carry; see `Vio.content()`. */
   @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
   /** Per-element override of the content title. */
@@ -88,12 +95,18 @@ export class VioProductCarousel extends LitElement {
     return this.slotRegistration.effective
   }
 
+  /** The element's own page campaign (`vio-campaign` / ancestor), if any; `Vio.init`'s applies otherwise. */
+  get effectiveCampaignId(): number | undefined {
+    return this.slotRegistration.campaignId
+  }
+
   private slotAttributes() {
     return {
       vioSlot: this.vioSlot,
       vioSlotName: this.vioSlotName,
       vioScope: this.vioScope,
       vioScopeName: this.vioScopeName,
+      vioCampaign: this.vioCampaign,
     }
   }
 
@@ -101,7 +114,10 @@ export class VioProductCarousel extends LitElement {
   private attribution() {
     const base =
       typeof Vio.attribution === 'function'
-        ? Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+        ? Vio.attribution(this.effectiveSlot, {
+            sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+            campaignId: this.effectiveCampaignId,
+          })
         : { slot: this.effectiveSlot || undefined }
     return {
       ...base,
@@ -277,7 +293,7 @@ export class VioProductCarousel extends LitElement {
 
   override updated(changed: Map<string, unknown>): void {
     // The React wrappers set properties after mount; the Vev editor changes them live.
-    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName')) {
+    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
       this.slotRegistration.sync(this.slotAttributes())
     }
     const propChanged =
@@ -300,7 +316,7 @@ export class VioProductCarousel extends LitElement {
     if (this.sponsorId > 0) return this.sponsorId
     const fromSlot =
       typeof Vio.campaignForSlot === 'function'
-        ? Number(Vio.campaignForSlot(this.effectiveSlot || null)?.primarySponsor?.id)
+        ? Number(Vio.campaignForSlot(this.effectiveSlot || null, { campaignId: this.effectiveCampaignId })?.primarySponsor?.id)
         : NaN
     return Number.isFinite(fromSlot) && fromSlot > 0 ? fromSlot : 0
   }
@@ -493,6 +509,7 @@ export class VioProductCarousel extends LitElement {
             image-url=${img}
             ?has-variants=${(p.variants?.length ?? 0) > 1}
             .vioSlot=${this.effectiveSlot}
+            .vioCampaign=${this.effectiveCampaignId !== undefined ? String(this.effectiveCampaignId) : ''}
             .vioContentId=${this.vioContentId}
             .vioContentTitle=${this.vioContentTitle}
           ></vio-product>

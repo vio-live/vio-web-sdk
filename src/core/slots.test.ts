@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BootstrapResponse } from './types.js'
 import {
+  activeCampaignEntry,
   SLOT_DECLARATION_MEMORY_CAP,
   SLOT_DECLARATION_TTL_MS,
   SLOT_ID_MAX_LENGTH,
@@ -307,5 +308,41 @@ describe('auto identity (no page path: one template, thousands of articles, one 
     expect(normalizeScope('')).toBe('')
     expect(normalizeScope(undefined)).toBe('')
     expect(normalizeScope(42 as unknown as string)).toBe('')
+  })
+})
+
+describe('page campaign (ADR-0034, amendment 3): assignment > page > default', () => {
+  it('without an assignment the page campaign applies, when listed and active', () => {
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 12)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, null, OCT_15, 'web', 12)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'nope', OCT_15, 'web', '12' as unknown as number)?.id).toBe(12)
+  })
+
+  it('a dashboard/page assignment of the slot still wins over the page campaign', () => {
+    expect(resolveSlotCampaign(BOOT, 'hero', OCT_15, 'web', 10)?.id).toBe(12)
+    expect(resolveSlotCampaign(BOOT, 'sidebar', OCT_15, 'web', 12)?.id).toBe(12)
+  })
+
+  it('an inactive or unknown page campaign is ignored: the default applies', () => {
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 13)?.id).toBe(10) // paused
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', 99)?.id).toBe(10) // unknown
+    expect(resolveSlotCampaign(BOOT, 'carousel-1', OCT_15, 'web', null)?.id).toBe(10)
+    expect(activeCampaignEntry(BOOT, 13)).toBeNull()
+    expect(activeCampaignEntry(BOOT, 12)?.id).toBe(12)
+    expect(activeCampaignEntry(null, 12)).toBeNull()
+    expect(activeCampaignEntry({ campaigns: 'nope' } as never, 12)).toBeNull()
+  })
+
+  it('locations keep their own campaign; the memory key carries the campaign they are declared with', () => {
+    expect(normalizeSlotLocations([{ id: 'hero', campaignId: 12 }, { id: 'x', campaignId: 0 }, { id: 'y', campaignId: 'nope' as never }])).toEqual([
+      { id: 'hero', campaignId: 12 },
+      { id: 'x' },
+      { id: 'y' },
+    ])
+    expect(slotDeclarationKey({ id: 'hero' })).toBe('hero')
+    expect(slotDeclarationKey({ id: 'hero' }, 12)).toBe('hero\u001e12')
+    expect(slotDeclarationKey({ id: 'hero', campaignId: 7 }, 12)).toBe('hero\u001e7')
+    expect(slotDeclarationKey({ id: 'hero', displayName: 'Hero' }, 12)).toBe('hero\u001fHero\u001e12')
+    expect(slotDeclarationKeys([{ id: 'b' }, { id: 'a' }], 12)).toEqual(['a\u001e12', 'b\u001e12'])
   })
 })

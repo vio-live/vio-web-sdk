@@ -31,7 +31,7 @@
 
 import { Configuration } from '../configuration.js'
 import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, resolveContent, type ContentRef } from '../content.js'
-import { findSlotAssignment, toNumber } from '../slots.js'
+import { activeCampaignEntry, findSlotAssignment, toNumber } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
@@ -1002,6 +1002,8 @@ function vioCart(): CartManager | null {
  * The `campaign_id` of an event. In order: the context's explicit id; the
  * campaign assigned to the context's `slot` right now (ADR-0027 — only an
  * open assignment for the init platform counts, see `findSlotAssignment`);
+ * the PAGE's campaign (`opts.pageCampaignId`, else `Vio.init({ campaignId })`)
+ * when `campaigns[]` lists it as active (ADR-0034, amendment 3);
  * the active campaign of `campaigns[]` the event's sponsor takes part in, as
  * its primary or one of its secondaries — when it is in several, the
  * surface's default campaign if it is one of them, else the first one the
@@ -1015,14 +1017,19 @@ function vioCart(): CartManager | null {
 export function resolveCampaignId(
   ctx: Pick<AnalyticsContext, 'campaignId' | 'sponsorId' | 'slot'>,
   boot: Pick<BootstrapResponse, 'campaign' | 'campaigns'> | null | undefined,
+  opts: { pageCampaignId?: number | null } = {},
 ): number | undefined {
   if (ctx.campaignId !== undefined) return ctx.campaignId
   const defaultId = boot?.campaign?.id
+  const config = Configuration.isInitialized ? Configuration.get() : undefined
   if (ctx.slot) {
-    const platform = Configuration.isInitialized ? Configuration.get().platform : undefined
-    const assigned = toNumber(findSlotAssignment(boot, ctx.slot, Date.now(), platform)?.id)
+    const assigned = toNumber(findSlotAssignment(boot, ctx.slot, Date.now(), config?.platform)?.id)
     if (assigned !== undefined) return assigned
   }
+  // The page's campaign (ADR-0034, amendment 3) — an editorial page that
+  // belongs to one campaign — beats the sponsor heuristic, after the dashboard.
+  const page = toNumber(activeCampaignEntry(boot, opts.pageCampaignId ?? config?.campaignId)?.id)
+  if (page !== undefined) return page
   const sponsorId = toNumber(ctx.sponsorId)
   if (sponsorId === undefined) return defaultId
   try {

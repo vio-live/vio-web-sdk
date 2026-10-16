@@ -66,7 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   unmountAll()
-  for (const attr of ['data-vio-scope', 'data-vio-scope-name']) document.body.removeAttribute(attr)
+  for (const attr of ['data-vio-scope', 'data-vio-scope-name', 'data-vio-campaign']) document.body.removeAttribute(attr)
   vi.restoreAllMocks()
 })
 
@@ -480,5 +480,56 @@ describe('<vio-product-detail> and the card that opened it', () => {
     for (let i = 0; i < 3; i++) await settle(el)
     const again = (track.mock.calls.find((c) => c[0] === 'view_item')![1] as { context: Record<string, unknown> }).context
     expect(again.slot).toBe('hero')
+  })
+})
+
+describe('page campaign on the elements (ADR-0034, amendment 3)', () => {
+  it('precedence: `vio-campaign` on the element > ancestor `data-vio-campaign` > nothing (Vio.init applies)', async () => {
+    const attribution = vi.spyOn(Vio, 'attribution').mockReturnValue({})
+    const none = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'a' })
+    expect(none.effectiveCampaignId).toBeUndefined()
+    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined)
+
+    document.body.setAttribute('data-vio-campaign', '12')
+    const inherited = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'b' })
+    expect(inherited.effectiveCampaignId).toBe(12)
+    expect(registerSlot).toHaveBeenLastCalledWith('b', undefined, 12)
+
+    const own = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'c', 'vio-campaign': '10' })
+    expect(own.effectiveCampaignId).toBe(10)
+    expect(registerSlot).toHaveBeenLastCalledWith('c', undefined, 10)
+
+    const bad = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'd', 'vio-campaign': 'nope' })
+    expect(bad.effectiveCampaignId).toBe(12) // not a number → the ancestor's
+
+    // The hint reaches Vio.attribution on every event.
+    own.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+    expect(attribution).toHaveBeenLastCalledWith('c', expect.objectContaining({ campaignId: 10 }))
+    inherited.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+    expect(attribution).toHaveBeenLastCalledWith('b', expect.objectContaining({ campaignId: 12 }))
+  })
+
+  it('a campaign set after mount (React / the Vev editor) re-registers with it', async () => {
+    const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'a' })
+    el.vioCampaign = '12'
+    await settle(el)
+    expect(el.effectiveCampaignId).toBe(12)
+    expect(releases[0]).toHaveBeenCalledTimes(1)
+    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, 12)
+  })
+
+  it('the carousel hands its campaign to its cards and uses it to pick the sponsor', async () => {
+    Vio.init({ apiKey: 'test-key', environment: 'testing' })
+    vi.spyOn(Vio, 'bootstrap').mockResolvedValue({} as never)
+    const campaignForSlot = vi.spyOn(Vio, 'campaignForSlot').mockReturnValue(CAMPAIGN_12)
+    vi.spyOn(Vio, 'commerceFor').mockReturnValue({
+      channel: { product: { getByIds: vi.fn().mockResolvedValue([product]) } },
+    } as never)
+    const el = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', { 'product-ids': '9', 'vio-campaign': '12' })
+    for (let i = 0; i < 5; i++) await settle(el)
+    expect(campaignForSlot).toHaveBeenCalledWith('carousel-1', { campaignId: 12 })
+    const card = el.shadowRoot!.querySelector<VioProduct>('vio-product')!
+    expect(card.vioCampaign).toBe('12')
+    expect(card.effectiveCampaignId).toBe(12)
   })
 })

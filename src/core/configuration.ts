@@ -37,6 +37,15 @@ export interface VioConfig {
   contentId?: string | number
   /** Human-readable title of that content (`content_title`); see `contentId`. */
   contentTitle?: string
+  /**
+   * The campaign this PAGE belongs to (ADR-0034, amendment 3) — an editorial
+   * page (a Vev article, a Replit article) that is part of one campaign. Its
+   * slots are declared with it (the micro assigns them unless the dashboard
+   * already did) and, until that round-trips, the elements already resolve to
+   * it: assignment → page campaign → default. DOM alternative, inheritable:
+   * `data-vio-campaign` on any ancestor, or `vio-campaign` on the element.
+   */
+  campaignId?: number
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -73,6 +82,7 @@ export interface ResolvedConfig {
   platform: VioPlatform
   contentId?: string | number
   contentTitle?: string
+  campaignId?: number
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -121,6 +131,7 @@ class ConfigurationSingleton {
       platform: input.platform ?? 'web',
       contentId: input.contentId,
       contentTitle: input.contentTitle,
+      campaignId: toCampaignId(input.campaignId),
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,
@@ -187,6 +198,13 @@ class ConfigurationSingleton {
     this.resolved = null
     this.readyWaiters = []
   }
+}
+
+/** A positive finite campaign id, or undefined (a page without one). */
+function toCampaignId(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : undefined
 }
 
 export const Configuration = /* @__PURE__ */ new ConfigurationSingleton()

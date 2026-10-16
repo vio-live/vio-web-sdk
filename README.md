@@ -209,6 +209,37 @@ of its slot's campaign (the default campaign's when the slot has none), and the
 detail opened by such a card does the same — before 0.23 a sponsorless card did
 nothing. An explicit `sponsor-id` still wins.
 
+### Page campaign — an editorial page that belongs to one campaign
+
+Native-SDK style placements stay the primary model: the **dashboard assigns**
+a campaign to a slot. But an editorial page — a Vev article, a Replit article —
+often *is* part of one campaign, and the page can say so:
+
+```ts
+Vio.init({ apiKey: '…', campaignId: 12 })          // the whole page
+```
+
+```html
+<body data-vio-campaign="12">                        <!-- inheritable, like the scope -->
+<vio-product-carousel vio-campaign="10" …>          <!-- one element of another campaign -->
+```
+
+Precedence per element: `vio-campaign` on the element → the nearest ancestor's
+`data-vio-campaign` → `Vio.init({ campaignId })`. What it does:
+
+- **Declaration.** The manifest carries the page's campaign (top-level) and an
+  element's own campaign per location when it differs. The campaigns service
+  turns that into assignments of the page's slots (`source: 'page'`) — **unless
+  the dashboard already assigned the slot: the dashboard wins**, and the SDK warns
+  once per such slot. A page that changes campaign declares again.
+- **Resolution, immediately.** `Vio.campaignForSlot()` / `Vio.attribution()` (and
+  so the elements, the cart origins and the events) resolve as: the slot's
+  assignment → the page's campaign, when the bootstrap lists it as active → the
+  default. An editor sees the effect in the Vev editor before the manifest
+  round-trips; a paused or unknown page campaign is simply ignored.
+- `Vio.pageCampaign()` returns the init-level campaign as the bootstrap lists it
+  (active), else `null`.
+
 ## Attribution — the slot, the campaign, the article
 
 `Vio.attribution(slot?)` is **the** attribution helper — the SDK elements use it,

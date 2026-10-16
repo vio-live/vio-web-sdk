@@ -63,6 +63,13 @@ export class VioProductDetail extends LitElement {
   @property({ type: String, attribute: 'vio-scope' }) vioScope = ''
   /** Human label of the scope (` · Title` in the slot name); inherited from `data-vio-scope-name`. */
   @property({ type: String, attribute: 'vio-scope-name' }) vioScopeName = ''
+  /**
+   * The campaign this element's PAGE belongs to (ADR-0034, amendment 3).
+   * Inherited: this attribute, else the nearest ancestor's `data-vio-campaign`,
+   * else `Vio.init({ campaignId })`. A dashboard assignment of the slot wins
+   * over it. Optional.
+   */
+  @property({ type: String, attribute: 'vio-campaign' }) vioCampaign = ''
   /** Per-element override of the content (article) id the events carry; see `Vio.content()`. */
   @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
   /** Per-element override of the content title. */
@@ -72,6 +79,7 @@ export class VioProductDetail extends LitElement {
   private eventSlot = ''
   private eventContentId = ''
   private eventContentTitle = ''
+  private eventCampaignId: number | undefined = undefined
   private eventProductId = ''
 
   /** The card's context applies to the product it opened — not to one the host opened by hand later. */
@@ -84,9 +92,19 @@ export class VioProductDetail extends LitElement {
     return this.slotRegistration.effective
   }
 
+  /** The element's own page campaign (`vio-campaign` / ancestor), if any; `Vio.init`'s applies otherwise. */
+  get effectiveCampaignId(): number | undefined {
+    return this.slotRegistration.campaignId
+  }
+
   /** The slot the open product is attributed to: the opening card's, else this element's. */
   private get activeSlot(): string {
     return (this.fromCard && this.eventSlot) || this.effectiveSlot
+  }
+
+  /** The page campaign the open product is attributed to: the opening card's, else this element's. */
+  private get activeCampaignId(): number | undefined {
+    return (this.fromCard ? this.eventCampaignId : undefined) ?? this.effectiveCampaignId
   }
 
   private slotAttributes() {
@@ -95,6 +113,7 @@ export class VioProductDetail extends LitElement {
       vioSlotName: this.vioSlotName,
       vioScope: this.vioScope,
       vioScopeName: this.vioScopeName,
+      vioCampaign: this.vioCampaign,
     }
   }
 
@@ -102,7 +121,10 @@ export class VioProductDetail extends LitElement {
   private attribution() {
     const base =
       typeof Vio.attribution === 'function'
-        ? Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+        ? Vio.attribution(this.activeSlot, {
+            sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+            campaignId: this.activeCampaignId,
+          })
         : { slot: this.activeSlot || undefined }
     const contentId = (this.fromCard && this.eventContentId) || this.vioContentId
     const contentTitle = (this.fromCard && this.eventContentTitle) || this.vioContentTitle
@@ -155,6 +177,7 @@ export class VioProductDetail extends LitElement {
       sponsorId: string
       currency?: string
       slot?: string
+      campaignId?: number | string
       contentId?: string | number
       contentTitle?: string
     }>
@@ -167,12 +190,20 @@ export class VioProductDetail extends LitElement {
       // A card without a sponsor: the primary of the campaign its slot shows.
       const fromSlot =
         typeof Vio.campaignForSlot === 'function'
-          ? Number(Vio.campaignForSlot(slot || this.effectiveSlot || null)?.primarySponsor?.id)
+          ? Number(
+              Vio.campaignForSlot(slot || this.effectiveSlot || null, {
+                campaignId: ev.detail.campaignId ?? this.effectiveCampaignId,
+              })?.primarySponsor?.id,
+            )
           : NaN
       if (!Number.isFinite(fromSlot) || fromSlot <= 0) return
       sponsorIdNum = fromSlot
     }
     this.eventSlot = slot
+    this.eventCampaignId =
+      ev.detail.campaignId !== undefined && Number.isFinite(Number(ev.detail.campaignId)) && Number(ev.detail.campaignId) > 0
+        ? Number(ev.detail.campaignId)
+        : undefined
     this.eventProductId = String(ev.detail.productId)
     this.eventContentId =
       ev.detail.contentId !== undefined && ev.detail.contentId !== null ? String(ev.detail.contentId).trim() : ''
@@ -645,7 +676,7 @@ export class VioProductDetail extends LitElement {
   override updated(changed: Map<string, unknown>): void {
     if (changed.has('open')) this.dialogFocus.update(this.open)
     // The React wrappers set properties after mount.
-    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName')) {
+    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
       this.slotRegistration.sync(this.slotAttributes())
     }
   }
@@ -660,6 +691,7 @@ export class VioProductDetail extends LitElement {
         this.eventSlot = ''
         this.eventContentId = ''
         this.eventContentTitle = ''
+        this.eventCampaignId = undefined
         this.eventProductId = ''
         this.product = null
         this.sellerName = null
@@ -789,7 +821,7 @@ export class VioProductDetail extends LitElement {
     const spId =
       this.sponsorId ||
       (typeof Vio.campaignForSlot === 'function'
-        ? Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id)
+        ? Number(Vio.campaignForSlot(this.activeSlot || null, { campaignId: this.activeCampaignId })?.primarySponsor?.id)
         : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return

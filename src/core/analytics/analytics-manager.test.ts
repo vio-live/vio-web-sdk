@@ -1177,3 +1177,37 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
     expect(purchases.map((p) => (p.commerce as { value: number }).value).sort()).toEqual([100, 50])
   })
 })
+
+describe('campaign_id y la campaña de la PÁGINA (ADR-0034, enmienda 3)', () => {
+  afterEach(removeFacade)
+
+  it('resolveCampaignId: asignación > campaña de la página > regla del sponsor > default; una inactiva se ignora', () => {
+    // sponsor 4 es primario de la default (10); la página dice 12.
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ campaignId: 1 }, BOOT, { pageCampaignId: 12 })).toBe(1)
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 13 })).toBe(10) // pausada
+    expect(resolveCampaignId({ sponsorId: 8 }, BOOT, { pageCampaignId: 99 })).toBe(12) // desconocida → regla del sponsor
+    const withSlot: BootstrapResponse = {
+      ...BOOT,
+      campaigns: [
+        ...BOOT.campaigns!.slice(0, 1),
+        { ...BOOT.campaigns![1]!, slots: [{ name: 'hero' }] }, // hero asignado a la default 10
+        ...BOOT.campaigns!.slice(2),
+      ],
+    }
+    expect(resolveCampaignId({ slot: 'hero' }, withSlot, { pageCampaignId: 12 })).toBe(10)
+  })
+
+  it('en los eventos sale la campaña de Vio.init({ campaignId }) cuando no hay asignación ni campaignId explícito', async () => {
+    installFacade(BOOT)
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', campaignId: 12 })
+    const m = new AnalyticsManager()
+    m.track('view_item', { context: { sponsorId: 4, slot: 'carousel-1' } })
+    m.track('view_item', { context: { sponsorId: 4, slot: 'carousel-1', campaignId: 10 } })
+    await m.flush()
+    const ctxs = flushedBatches.at(-1)!.events.filter((e) => e.name === 'view_item').map((e) => e.context as Record<string, unknown>)
+    expect(ctxs[0]!.campaign_id).toBe(12)
+    expect(ctxs[1]!.campaign_id).toBe(10)
+  })
+})

@@ -33,7 +33,7 @@ export const MAX_LOCATIONS_PER_DECLARATION = 100
 export const MAX_DECLARATIONS_PER_LOAD = 3
 
 /** What `Vio.declareSlots()` accepts per slot. */
-export type SlotInput = string | { id: string; displayName?: string }
+export type SlotInput = string | { id: string; displayName?: string; campaignId?: number }
 
 type BootLike = Pick<
   BootstrapResponse,
@@ -50,18 +50,45 @@ type BootLike = Pick<
  * several qualify, the surface's default campaign wins, else the first the
  * backend lists.
  *
- * No slot, or no assignment → the default campaign: the `campaigns[]` entry
- * whose id is `campaign.id`, or a minimal entry built from `campaign` (+ the
- * top-level sponsors) when the list does not carry it. No bootstrap → null.
+ * No assignment → the PAGE's campaign (`pageCampaignId`: the element's own
+ * `vio-campaign`, an ancestor's `data-vio-campaign`, or `Vio.init({ campaignId })`)
+ * when `campaigns[]` lists it as active — an editorial page resolves to its
+ * campaign before (and regardless of) the manifest round-trip. Else the
+ * default campaign: the `campaigns[]` entry whose id is `campaign.id`, or a
+ * minimal entry built from `campaign` (+ the top-level sponsors) when the
+ * list does not carry it. No bootstrap → null.
  */
 export function resolveSlotCampaign(
   boot: BootLike | null | undefined,
   slot: string | null | undefined,
   now: number = Date.now(),
   platform?: string | null,
+  pageCampaignId?: number | null,
 ): BootstrapCampaignEntry | null {
   if (!boot) return null
-  return findSlotAssignment(boot, slot, now, platform) ?? defaultCampaignEntry(boot)
+  return (
+    findSlotAssignment(boot, slot, now, platform) ??
+    activeCampaignEntry(boot, pageCampaignId) ??
+    defaultCampaignEntry(boot)
+  )
+}
+
+/**
+ * The `campaigns[]` entry with this id when it is listed and ACTIVE; null
+ * otherwise — a paused, ended or unknown page campaign is ignored and the
+ * resolution moves on to the default.
+ */
+export function activeCampaignEntry(
+  boot: BootLike | null | undefined,
+  campaignId: number | null | undefined,
+): BootstrapCampaignEntry | null {
+  const id = toNumber(campaignId)
+  if (!boot || id === undefined) return null
+  try {
+    return activeCampaigns(boot).find((c) => toNumber(c.id) === id) ?? null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -182,7 +209,11 @@ export function normalizeSlotLocations(slots: ReadonlyArray<SlotInput> | null | 
       raw && typeof raw === 'object' && typeof raw.displayName === 'string'
         ? raw.displayName.trim()
         : ''
-    out.push(displayName ? { id, displayName } : { id })
+    const campaignId = raw && typeof raw === 'object' ? toNumber(raw.campaignId) : undefined
+    const location: ManifestLocation = { id }
+    if (displayName) location.displayName = displayName
+    if (campaignId !== undefined && campaignId > 0) location.campaignId = campaignId
+    out.push(location)
   }
   return out
 }
@@ -245,14 +276,26 @@ export type SlotDeclarationMemory = Record<string, number>
 /** The memory keeps at most this many ids (oldest dropped). */
 export const SLOT_DECLARATION_MEMORY_CAP = 500
 
-/** The sortable key of one location, display name included — a renamed block is a new key. */
-export function slotDeclarationKey(location: ManifestLocation): string {
-  return location.displayName ? `${location.id}\u001f${location.displayName}` : location.id
+/**
+ * The sortable key of one location: id, display name and the campaign it is
+ * declared with (its own, else the page's) — a renamed block, or a page that
+ * changed campaign, is a new key and declares again.
+ */
+export function slotDeclarationKey(location: ManifestLocation, pageCampaignId?: number | null): string {
+  const campaignId = location.campaignId ?? toNumber(pageCampaignId)
+  return (
+    location.id +
+    (location.displayName ? `\u001f${location.displayName}` : '') +
+    (campaignId !== undefined ? `\u001e${campaignId}` : '')
+  )
 }
 
 /** Sorted keys of a set of locations (see `slotDeclarationKey`). */
-export function slotDeclarationKeys(locations: ReadonlyArray<ManifestLocation>): string[] {
-  return locations.map(slotDeclarationKey).sort()
+export function slotDeclarationKeys(
+  locations: ReadonlyArray<ManifestLocation>,
+  pageCampaignId?: number | null,
+): string[] {
+  return locations.map((l) => slotDeclarationKey(l, pageCampaignId)).sort()
 }
 
 /** The keys not remembered within `ttl` (or remembered in the future — a clock that went back). */

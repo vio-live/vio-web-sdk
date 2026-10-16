@@ -632,3 +632,118 @@ describe('Vio.cartSlices() — the split rule as public API', () => {
     expect(Vio.cartSlices(undefined, { items: [null as unknown as CartLineItem, line({ quantity: NaN, origins: 'x' as never })] })).toEqual([])
   })
 })
+
+describe('page campaign (ADR-0034, amendment 3)', () => {
+  const initWithCampaign = (campaignId: number | undefined) =>
+    Vio.init({ apiKey: 'key-A', environment: 'testing', platform: 'web', campaignId })
+
+  it('Vio.pageCampaign(): the init campaign when the bootstrap lists it as active; null otherwise', async () => {
+    initWithCampaign(12)
+    expect(Vio.pageCampaign()).toBeNull() // before the bootstrap
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()?.id).toBe(12)
+    initWithCampaign(99)
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()).toBeNull()
+    initWithCampaign(undefined)
+    await Vio.bootstrap()
+    expect(Vio.pageCampaign()).toBeNull()
+    Vio.init({ apiKey: 'key-A', environment: 'testing', campaignId: -3 })
+    expect(Vio.config.campaignId).toBeUndefined()
+  })
+
+  it('campaignForSlot / attribution: assignment > page campaign > default; the hint overrides the init page campaign', async () => {
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    // hero is assigned (to 12 anyway); carousel-1 has no assignment → the page's 12, not the default 10.
+    expect(Vio.campaignForSlot('carousel-1')?.id).toBe(12)
+    expect(Vio.campaignForSlot()?.id).toBe(12)
+    expect(Vio.attribution('carousel-1')).toEqual({ slot: 'carousel-1', campaignId: 12, sponsorId: 7 })
+    // An element's own campaign (vio-campaign / data-vio-campaign) over the page's.
+    expect(Vio.campaignForSlot('carousel-1', { campaignId: 10 })?.id).toBe(10)
+    expect(Vio.attribution('carousel-1', { campaignId: 10 })).toEqual({ slot: 'carousel-1', campaignId: 10, sponsorId: 4 })
+    // With a known sponsor the page campaign still beats the sponsor rule (4 is the default's primary).
+    expect(Vio.attribution('carousel-1', { sponsorId: 4 })).toEqual({ slot: 'carousel-1', campaignId: 12, sponsorId: 4 })
+    // An assignment beats everything.
+    expect(Vio.campaignForSlot('hero', { campaignId: 10 })?.id).toBe(12)
+    // attribution and campaignForSlot agree.
+    for (const slot of ['hero', 'carousel-1', 'sidebar', undefined]) {
+      expect(Vio.attribution(slot).campaignId).toBe(Vio.campaignForSlot(slot)?.id)
+    }
+  })
+
+  it('an inactive page campaign falls through to the default', async () => {
+    initWithCampaign(99)
+    await Vio.bootstrap()
+    expect(Vio.campaignForSlot('carousel-1')?.id).toBe(10)
+    expect(Vio.attribution('carousel-1').campaignId).toBe(10)
+  })
+
+  it('the manifest carries the page campaign top-level, and a location its own only when it differs', async () => {
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero', { id: 'side', campaignId: 12 }, { id: 'other', campaignId: 10 }])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [{ id: 'hero' }, { id: 'side' }, { id: 'other', campaignId: 10 }],
+      campaignId: 12,
+    })
+    // Without a page campaign: no top-level field, locations keep their own.
+    initWithCampaign(undefined)
+    expect(await Vio.declareSlots([{ id: 'solo', campaignId: 10 }])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[1]!.body).toEqual({ platform: 'web', mode: 'merge', locations: [{ id: 'solo', campaignId: 10 }] })
+  })
+
+  it('the memory key includes the campaign: a page that changes campaign declares again (and only then)', async () => {
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(await Vio.declareSlots(['hero'])).toBeNull()
+    initWithCampaign(10)
+    expect(await Vio.declareSlots(['hero'])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[1]!.body).toMatchObject({ campaignId: 10 })
+    initWithCampaign(12)
+    expect(await Vio.declareSlots(['hero'])).toBeNull() // still remembered under 12
+    expect(await Vio.declareSlots([{ id: 'hero', campaignId: 7 }])).toEqual(MANIFEST_OK) // its own campaign is another key
+    expect(manifestRequests()).toHaveLength(3)
+  })
+
+  it('registerSlot(name, displayName, campaignId) reaches the manifest; a later campaign for the id re-declares', async () => {
+    vi.useFakeTimers()
+    initWithCampaign(12)
+    await Vio.bootstrap()
+    const offs = [Vio.registerSlot('carousel-1', 'Carousel 1'), Vio.registerSlot('hero', undefined, 10)]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [{ id: 'carousel-1', displayName: 'Carousel 1' }, { id: 'hero', campaignId: 10 }],
+      campaignId: 12,
+    })
+    offs.push(Vio.registerSlot('hero', undefined, 7))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(2)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero', campaignId: 7 }] })
+    offs.forEach((off) => off())
+  })
+
+  it("logs the micro's assignment per slot and warns ONCE per slot when the dashboard's assignment stands", async () => {
+    vi.spyOn(console, 'debug').mockImplementation(() => {})
+    initWithCampaign(12)
+    manifestAnswer = () =>
+      jsonResponse({
+        ...MANIFEST_OK,
+        locations: [
+          { id: 1, locationId: 'hero', assignment: 'dashboard' },
+          { id: 2, locationId: 'carousel-1', assignment: 'created' },
+        ],
+      })
+    await Vio.declareSlots(['hero', 'carousel-1'], { force: true })
+    await Vio.declareSlots(['hero', 'carousel-1'], { force: true })
+    expect(console.debug).toHaveBeenCalledWith('[Vio] slot', 'carousel-1', 'assignment:', 'created')
+    const dashboardWarnings = (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((c) =>
+      String(c[1]).includes('assigned from the dashboard'),
+    )
+    expect(dashboardWarnings).toHaveLength(1)
+    expect(dashboardWarnings[0]![1]).toContain('slot hero is assigned from the dashboard')
+  })
+})

@@ -18,6 +18,7 @@ import {
   lineOrigins,
   normalizeOrigin,
   reconciledOrigins,
+  removeFromOrigin,
   removeOriginQuantity,
   sameOrigin,
 } from './cart-manager.js'
@@ -196,10 +197,11 @@ describe('a quantity the server answers squares the origins', () => {
     expect(origins[1]!.quantity).toBe(1)
   })
 
-  it('updateFromBackendCart keeps the local origins of a matched line, clamped to the server quantity', () => {
+  it('updateFromBackendCart keeps the local origins of a matched line, clamped to the server quantity', async () => {
     const cart = new CartManager()
     lamp(cart, 2, HERO)
     lamp(cart, 2, SIDEBAR)
+    await cart.waitForCartMutations(SPONSOR) // nothing in flight: the server's quantity is current
     cart.updateFromBackendCart(SPONSOR, {
       cart_id: 'cart-1',
       currency: 'NOK',
@@ -212,5 +214,31 @@ describe('a quantity the server answers squares the origins', () => {
       { ...HERO, quantity: 2 },
       { ...SIDEBAR, quantity: 1 },
     ])
+  })
+})
+
+describe('removeFromOrigin — a rejected add is reverted from the origin that failed', () => {
+  it('takes from the matching origin first, then from the most recent', () => {
+    const line: Pick<CartLineItem, 'origins'> = {
+      origins: [
+        { ...HERO, quantity: 1 },
+        { ...SIDEBAR, quantity: 2 },
+      ],
+    }
+    removeFromOrigin(line, HERO, 1)
+    expect(line.origins).toEqual([{ ...SIDEBAR, quantity: 2 }])
+    removeFromOrigin(line, HERO, 1) // hero is gone: off the most recent
+    expect(line.origins).toEqual([{ ...SIDEBAR, quantity: 1 }])
+    removeFromOrigin(line, undefined, 1)
+    expect(line.origins).toEqual([])
+  })
+})
+
+describe('lineOrigins clamps for reporting when more units are remembered than the line has', () => {
+  it('trims the most recent first, on a copy', () => {
+    const line = { quantity: 2, origins: [{ ...HERO, quantity: 2 }, { ...SIDEBAR, quantity: 1 }] }
+    expect(lineOrigins(line)).toEqual([{ ...HERO, quantity: 2 }])
+    expect(line.origins).toHaveLength(2)
+    expect(lineOrigins({ quantity: 0, origins: line.origins })).toEqual([])
   })
 })

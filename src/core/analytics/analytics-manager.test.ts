@@ -872,6 +872,19 @@ describe('content_id / content_title automáticos (el artículo va a analytics, 
     expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
   })
 
+  it('B3: se lee en vivo en cada evento — un cambio de ruta/título en una SPA sale en el siguiente evento', async () => {
+    let current = { id: '/a', title: 'Article A' }
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = { bootstrapCache: null, cart: fakeCart(), content: () => current }
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    current = { id: '/b', title: 'Article B' }
+    m.track('view_item')
+    await m.flush()
+    const ctxs = flushedBatches.at(-1)!.events.filter((e) => e.name === 'view_item').map((e) => e.context as Record<string, unknown>)
+    expect(ctxs.map((c) => [c.content_id, c.content_title])).toEqual([['/a', 'Article A'], ['/b', 'Article B']])
+  })
+
   it('un content() que lanza no rompe track()', async () => {
     ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
       bootstrapCache: null,
@@ -1000,9 +1013,115 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
     expect(checkouts).toHaveLength(1)
     expect(purchases[0]!.commerce).toMatchObject({ value: 250, order_id: 'chk-77' })
     expect((purchases[0]!.commerce as { items: unknown[] }).items).toHaveLength(2)
-    // Sin slot en el detail ni campaignId explícito: la regla de siempre (sponsor 4 → default 10).
+    // Un solo slice cuyos orígenes nombran la campaña: el evento la lleva, y el slot único del slice.
+    expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4, location_id: 'carousel-1' })
+    expect((purchases[0]!).props).toBeUndefined()
+  })
+
+  it('un carrito SIN orígenes (0.22) sigue idéntico: un purchase, campaign_id por la regla del sponsor, sin location_id', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2 }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }),
+    ])
+    expect(purchases).toHaveLength(1)
+    expect(checkouts).toHaveLength(1)
+    expect(purchases[0]!.commerce).toMatchObject({ value: 250, order_id: 'chk-77' })
     expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4 })
     expect((purchases[0]!.context as Record<string, unknown>).location_id).toBeUndefined()
+    expect((purchases[0]!.context as Record<string, unknown>).content_id).toBeUndefined()
+  })
+
+  it('B2: un slice único con campaña explícita distinta de la del sponsor (hero → 12, sponsor 4 secundario de 12)', async () => {
+    installFacade(
+      {
+        campaign: { id: 10, name: 'Default' },
+        primarySponsor: sponsor(4),
+        campaigns: [
+          { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+          { id: 12, name: 'Hero', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(4)], slots: [{ name: 'hero' }] },
+        ],
+      },
+      fakeCart({ 4: [line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] })] }),
+    )
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4 } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:payment-success', { detail: { sponsorId: 4, orderId: 'o-1' } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    for (const name of ['begin_checkout', 'purchase']) {
+      const ev = events.find((e) => e.name === name)!
+      expect(ev.context).toMatchObject({ campaign_id: 12, location_id: 'hero', sponsor_id: 4 })
+      expect(ev.commerce).toMatchObject({ value: 100 })
+    }
+  })
+
+  it('W5: cada evento partido lleva props.slice / props.slices para que el colector cuente el pedido una vez', async () => {
+    const { purchases, checkouts } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, quantity: 1 }] }),
+    ])
+    expect(purchases.map((p) => p.props)).toEqual([{ slice: 1, slices: 2 }, { slice: 2, slices: 2 }])
+    expect(checkouts.map((p) => p.props)).toEqual([{ slice: 1, slices: 2 }, { slice: 2, slices: 2 }])
+  })
+
+  it('W4: un slice sin slot/contenido únicos no hereda los del evento (el click que abrió el checkout)', async () => {
+    const { purchases } = await paid(
+      [
+        line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [
+          { campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 },
+          { campaignId: 10, slot: 'carousel-2', contentId: 'art-2', quantity: 1 },
+        ] }),
+        line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-1', quantity: 1 }] }),
+      ],
+      { slot: 'carousel-1', contentId: 'art-1' },
+    )
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!.context as Record<string, unknown>
+    expect(def.location_id).toBeUndefined()
+    // content_id falls back to the page's content (none in this fake facade), not to the click's.
+    expect(def.content_id).toBeUndefined()
+    const hero = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 12)!.context as Record<string, unknown>
+    expect(hero).toMatchObject({ location_id: 'hero', content_id: 'art-1' })
+  })
+
+  it("W-3: the click's content_title travels only with the click's content_id", async () => {
+    const { purchases } = await paid(
+      [
+        line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-9', quantity: 1 }] }),
+        line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 }] }),
+        line({ id: 'c', productId: 3, unitPrice: 10, quantity: 2, origins: [
+          { campaignId: 13, contentId: 'art-1', quantity: 1 },
+          { campaignId: 13, contentId: 'art-2', quantity: 1 },
+        ] }),
+      ],
+      { contentId: 'art-9', contentTitle: 'Nine' },
+    )
+    const ctxOf = (id: number) => purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!.context as Record<string, unknown>
+    expect(ctxOf(12)).toMatchObject({ content_id: 'art-9', content_title: 'Nine' })
+    expect(ctxOf(10).content_id).toBe('art-1')
+    expect(ctxOf(10).content_title).not.toBe('Nine')
+    expect(ctxOf(13).content_id).toBeUndefined()
+    expect(ctxOf(13).content_title).not.toBe('Nine')
+  })
+
+  it('W7: el campaignId explícito del detail de un elemento es la campaña del evento', async () => {
+    installFacade(TWO, fakeCart({ 4: [line({ id: 'a' })] }))
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:product-click', { detail: { productId: 1, sponsorId: 4, campaignId: 12, slot: 'carousel-9' } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:added-to-cart', { detail: { productId: 1, sponsorId: 4, campaignId: '12' } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, campaignId: 12 } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    for (const name of ['select_item', 'add_to_cart', 'begin_checkout']) {
+      expect((events.find((e) => e.name === name)!.context as Record<string, unknown>).campaign_id).toBe(12)
+    }
   })
 
   it('las unidades sin origen caen en la campaña que resuelve la regla actual para el sponsor', async () => {

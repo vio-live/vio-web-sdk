@@ -99,7 +99,10 @@ export class VioProductCarousel extends LitElement {
 
   /** Attribution every analytics event of this carousel carries (`Vio.attribution` + the content overrides). */
   private attribution() {
-    const base = Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.effectiveSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+        : { slot: this.effectiveSlot || undefined }
     return {
       ...base,
       ...(this.vioContentId ? { contentId: this.vioContentId } : {}),
@@ -295,7 +298,10 @@ export class VioProductCarousel extends LitElement {
    */
   private effectiveSponsorId(): number {
     if (this.sponsorId > 0) return this.sponsorId
-    const fromSlot = Number(Vio.campaignForSlot(this.effectiveSlot || null)?.primarySponsor?.id)
+    const fromSlot =
+      typeof Vio.campaignForSlot === 'function'
+        ? Number(Vio.campaignForSlot(this.effectiveSlot || null)?.primarySponsor?.id)
+        : NaN
     return Number.isFinite(fromSlot) && fromSlot > 0 ? fromSlot : 0
   }
 

@@ -133,6 +133,19 @@ export class CartManager extends EventTarget {
     }
   }
 
+  /**
+   * True while an AddItem/UpdateItem/DeleteItem of this sponsor OTHER than
+   * `except` has not settled. A mutation applying its own answer passes
+   * itself: its response is current for what IT sent — only the others make
+   * it stale.
+   */
+  private hasMutationsInFlight(sponsorId: number, except?: Promise<unknown>): boolean {
+    const set = this.inFlightMutations.get(sponsorId)
+    if (!set || set.size === 0) return false
+    for (const m of set) if (m !== except) return true
+    return false
+  }
+
   /** Register a backend mutation so `waitForCartMutations` can await it. */
   private trackMutation(sponsorId: number, mutation: Promise<unknown>): void {
     let set = this.inFlightMutations.get(sponsorId)
@@ -164,11 +177,16 @@ export class CartManager extends EventTarget {
 
   /** Apply a backend response only if no newer response was applied already.
    * Returns false when it was discarded as stale. */
-  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): boolean {
+  private applyBackendCart(
+    sponsorId: number,
+    backendCart: unknown,
+    seq: number,
+    settling?: Promise<unknown>,
+  ): boolean {
     if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return false
     this.appliedSeq.set(sponsorId, seq)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.updateFromBackendCart(sponsorId, backendCart as any)
+    this.updateFromBackendCart(sponsorId, backendCart as any, { settling })
     return true
   }
 
@@ -187,6 +205,7 @@ export class CartManager extends EventTarget {
         price?: { amount?: number; amount_incl_taxes?: number | null } | null
       }>
     },
+    settling?: Promise<unknown>,
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     const line = cart?.items.find((i) => i.cartItemId === cartItemId || i.id === cartItemId)
@@ -196,7 +215,9 @@ export class CartManager extends EventTarget {
     let changed = false
     if (server.quantity !== line.quantity) {
       line.quantity = server.quantity
-      line.origins = reconciledOrigins(line.origins, server.quantity)
+      if (!this.hasMutationsInFlight(sponsorId, settling)) {
+        line.origins = reconciledOrigins(line.origins, server.quantity)
+      }
       changed = true
     }
     if (price != null && price !== line.unitPrice) {
@@ -288,7 +309,11 @@ export class CartManager extends EventTarget {
     return creation
   }
 
-  /** Overwrite local cart state with the backend cart response (source of truth). */
+  /**
+   * Overwrite local cart state with the backend cart response (source of
+   * truth). `opts.settling` is the mutation whose answer this is: it does not
+   * count as "in flight" for the origins (see `hasMutationsInFlight`).
+   */
   updateFromBackendCart(
     sponsorId: number,
     backendCart: {
@@ -318,6 +343,7 @@ export class CartManager extends EventTarget {
         available_shippings?: unknown[]
       }>
     },
+    opts: { settling?: Promise<unknown> } = {},
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
@@ -397,10 +423,15 @@ export class CartManager extends EventTarget {
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
-          // The server knows nothing about origins: keep the local ones,
-          // squared with the quantity it answered.
+          // The server knows nothing about origins: keep the local ones. They
+          // are squared with its quantity (a stock clamp) only when no OTHER
+          // mutation is in flight for this sponsor — an AddItem answering
+          // while another is pending reports a quantity that is already old
+          // (see `lineOrigins`).
           origins: matchedLocal
-            ? reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
+            ? this.hasMutationsInFlight(sponsorId, opts.settling)
+              ? matchedLocal.origins
+              : reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
             : undefined,
           shipping: li.shipping,
           availableShippings: li.available_shippings,
@@ -525,6 +556,8 @@ export class CartManager extends EventTarget {
     // reverts the local line (a ghost line means the UI total and the charged
     // total diverge silently).
     const seq = this.nextSeq(opts.sponsorId)
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
     const mutation = (async () => {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
@@ -539,7 +572,7 @@ export class CartManager extends EventTarget {
           ]
           const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
           if (resCart && Array.isArray(resCart.line_items)) {
-            this.applyBackendCart(opts.sponsorId, resCart, seq)
+            this.applyBackendCart(opts.sponsorId, resCart, seq, settling)
           }
         }
         // No cartId (no commerce key): the cart stays local-only; checkout is
@@ -550,7 +583,8 @@ export class CartManager extends EventTarget {
         const line = c?.items.find((i) => i.id === addedLineId)
         if (c && line) {
           line.quantity -= qty
-          removeOriginQuantity(line, qty)
+          // Off the origin whose add failed — not whatever was added last.
+          removeFromOrigin(line, opts.origin, qty)
           if (line.quantity <= 0) c.items = c.items.filter((i) => i !== line)
           if (c.items.length === 0) this.cartsBySponsor.delete(opts.sponsorId)
           this.persist()
@@ -559,6 +593,7 @@ export class CartManager extends EventTarget {
         this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
+    settling = mutation
     this.trackMutation(opts.sponsorId, mutation)
 
     return addedItem
@@ -682,6 +717,8 @@ export class CartManager extends EventTarget {
     const sync: QtySync = { sent: target }
     this.qtySyncs.set(key, sync)
 
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
     const run = (async () => {
       let next: number | undefined = target
       let removalRetried = false
@@ -704,9 +741,9 @@ export class CartManager extends EventTarget {
           // stale) response cannot roll the line back.
           if (next === undefined) this.qtySyncs.delete(key)
           if (resCart && Array.isArray(resCart.line_items)) {
-            const applied = this.applyBackendCart(sponsorId, resCart, seq)
+            const applied = this.applyBackendCart(sponsorId, resCart, seq, settling)
             if (!applied && next === undefined) {
-              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart)
+              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart, settling)
             }
           }
         } catch (err) {
@@ -736,6 +773,7 @@ export class CartManager extends EventTarget {
         }
       }
     })()
+    settling = run
     this.trackMutation(sponsorId, run)
   }
 
@@ -922,6 +960,31 @@ export function addOriginQuantity(
   line.origins = origins
 }
 
+/**
+ * `qty` fewer units off a given origin first (a rejected add is reverted from
+ * the origin that failed), then off the most recent ones.
+ */
+export function removeFromOrigin(
+  line: Pick<CartLineItem, 'origins'>,
+  origin: CartOrigin | null | undefined,
+  qty: number,
+): void {
+  if (!(qty > 0) || !Array.isArray(line.origins)) return
+  let left = qty
+  if (origin) {
+    const target = normalizeOrigin(origin)
+    const index = line.origins.findIndex((o) => sameOrigin(o, target))
+    if (index >= 0) {
+      const found = line.origins[index]!
+      const take = Math.min(found.quantity, left)
+      found.quantity -= take
+      left -= take
+      if (found.quantity <= 0) line.origins.splice(index, 1)
+    }
+  }
+  if (left > 0) removeOriginQuantity(line, left)
+}
+
 /** `qty` fewer units: off the most recent origins first. */
 export function removeOriginQuantity(line: Pick<CartLineItem, 'origins'>, qty: number): void {
   if (!(qty > 0) || !Array.isArray(line.origins)) return
@@ -959,6 +1022,12 @@ export function lineOrigins(line: Pick<CartLineItem, 'origins' | 'quantity'>): C
   const known = (Array.isArray(line.origins) ? line.origins : []).filter((o) => o && o.quantity > 0)
   const total = known.reduce((sum, o) => sum + o.quantity, 0)
   const quantity = line.quantity > 0 ? line.quantity : 0
-  if (total >= quantity) return known.map((o) => ({ ...o }))
-  return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
+  if (total === quantity) return known.map((o) => ({ ...o }))
+  if (total < quantity) return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
+  // More units remembered than the line has (a server clamp while an add was
+  // in flight): report the line's quantity, trimming the most recent first —
+  // on a copy, the line's own origins are not touched.
+  const copy = { origins: known.map((o) => ({ ...o })) }
+  removeOriginQuantity(copy, total - quantity)
+  return copy.origins
 }

@@ -7,17 +7,21 @@
 import { describe, expect, it } from 'vitest'
 import type { BootstrapResponse } from './types.js'
 import {
+  SLOT_DECLARATION_MEMORY_CAP,
   SLOT_DECLARATION_TTL_MS,
+  SLOT_ID_MAX_LENGTH,
   autoSlotDisplayName,
   autoSlotId,
   defaultCampaignEntry,
   findSlotAssignment,
   fnv1a,
-  isSlotDeclarationFresh,
   normalizeScope,
   normalizeSlotId,
   normalizeSlotLocations,
+  pendingSlotKeys,
+  rememberSlotKeys,
   resolveSlotCampaign,
+  slotDeclarationKey,
   slotDeclarationKeys,
   slotDeclarationStorageKey,
 } from './slots.js'
@@ -214,28 +218,39 @@ describe('normalizeSlotLocations', () => {
   })
 })
 
-describe('declaration memory', () => {
-  it('is fresh only for the same set (any order) within 24 h', () => {
-    const at = OCT_15
-    const memory = { keys: ['footer', 'hero'], at }
-    expect(isSlotDeclarationFresh(memory, ['hero', 'footer'], at + 1_000)).toBe(true)
-    expect(isSlotDeclarationFresh(memory, ['hero'], at + 1_000)).toBe(false)
-    expect(isSlotDeclarationFresh(memory, ['hero', 'footer', 'x'], at + 1_000)).toBe(false)
-    expect(isSlotDeclarationFresh(memory, ['hero', 'footer'], at + SLOT_DECLARATION_TTL_MS - 1)).toBe(true)
-    expect(isSlotDeclarationFresh(memory, ['hero', 'footer'], at + SLOT_DECLARATION_TTL_MS)).toBe(false)
-    // The clock went backwards (another device's time, a reset): not fresh.
-    expect(isSlotDeclarationFresh(memory, ['hero', 'footer'], at - 1)).toBe(false)
-    expect(isSlotDeclarationFresh(null, ['hero'], at)).toBe(false)
+describe('declaration memory (per id, 24 h)', () => {
+  const at = OCT_15
+
+  it('pendingSlotKeys: an id not remembered, or remembered ≥ 24 h ago (or in the future), is pending', () => {
+    const memory = { hero: at, footer: at - SLOT_DECLARATION_TTL_MS, future: at + 60_000 }
+    expect(pendingSlotKeys(memory, ['hero', 'footer', 'future', 'new'], at + 1_000)).toEqual(['footer', 'future', 'new'])
+    expect(pendingSlotKeys(memory, ['hero'], at + SLOT_DECLARATION_TTL_MS - 1)).toEqual([])
+    expect(pendingSlotKeys(memory, ['hero'], at + SLOT_DECLARATION_TTL_MS)).toEqual(['hero'])
+    expect(pendingSlotKeys(null, ['hero'], at)).toEqual(['hero'])
+    expect(pendingSlotKeys({ hero: 'x' as unknown as number }, ['hero'], at)).toEqual(['hero'])
   })
 
-  it('keys include the display name, so a renamed block is a different set', () => {
-    const keys = slotDeclarationKeys([{ id: 'hero', displayName: 'Hero' }, { id: 'carousel-1' }])
-    expect(keys).toEqual(['carousel-1', 'hero\u001fHero'])
-    expect(slotDeclarationKeys([{ id: 'carousel-1' }, { id: 'hero', displayName: 'Hero' }])).toEqual(keys)
-    expect(slotDeclarationKeys([{ id: 'hero', displayName: 'Hero banner' }, { id: 'carousel-1' }])).not.toEqual(keys)
-    const at = OCT_15
-    expect(isSlotDeclarationFresh({ keys, at }, slotDeclarationKeys([{ id: 'hero', displayName: 'Hero' }, { id: 'carousel-1' }]), at + 1)).toBe(true)
-    expect(isSlotDeclarationFresh({ keys, at }, slotDeclarationKeys([{ id: 'hero' }, { id: 'carousel-1' }]), at + 1)).toBe(false)
+  it('keys include the display name, so a renamed block is a new key', () => {
+    expect(slotDeclarationKey({ id: 'hero', displayName: 'Hero' })).toBe('hero\u001fHero')
+    expect(slotDeclarationKey({ id: 'carousel-1' })).toBe('carousel-1')
+    expect(slotDeclarationKeys([{ id: 'hero', displayName: 'Hero' }, { id: 'carousel-1' }])).toEqual(['carousel-1', 'hero\u001fHero'])
+    const memory = rememberSlotKeys({}, ['hero\u001fHero'], at)
+    expect(pendingSlotKeys(memory, ['hero\u001fHero banner'], at + 1)).toEqual(['hero\u001fHero banner'])
+  })
+
+  it('rememberSlotKeys keeps the newest 500 ids', () => {
+    let memory: Record<string, number> = {}
+    for (let i = 0; i < SLOT_DECLARATION_MEMORY_CAP; i++) memory = rememberSlotKeys(memory, [`id-${i}`], at + i)
+    expect(Object.keys(memory)).toHaveLength(SLOT_DECLARATION_MEMORY_CAP)
+    memory = rememberSlotKeys(memory, ['newest'], at + 10_000)
+    expect(Object.keys(memory)).toHaveLength(SLOT_DECLARATION_MEMORY_CAP)
+    expect(memory.newest).toBe(at + 10_000)
+    expect(memory['id-0']).toBeUndefined() // the oldest dropped
+    expect(memory['id-1']).toBe(at + 1)
+    // Never mutates its input.
+    const base = { a: at }
+    rememberSlotKeys(base, ['b'], at)
+    expect(base).toEqual({ a: at })
   })
 
   it('keys storage by platform and a hash of the key — never the key itself', () => {
@@ -272,6 +287,19 @@ describe('auto identity (no page path: one template, thousands of articles, one 
     expect(autoSlotDisplayName('detail', 0, ' Título del artículo ')).toBe('Detail 1 · Título del artículo')
     // The scope id alone is not a label.
     expect(autoSlotDisplayName('carousel', 0, undefined)).toBe('Carousel 1')
+  })
+
+  it('never exceeds the server\'s 100 chars: a long scope is cut, kind + number are kept', () => {
+    const scope = 's'.repeat(120)
+    const id = autoSlotId('carousel', 0, scope)
+    expect(id).toHaveLength(SLOT_ID_MAX_LENGTH)
+    expect(id.endsWith('-carousel-1')).toBe(true)
+    expect(autoSlotId('carousel', 11, scope)).toHaveLength(SLOT_ID_MAX_LENGTH)
+    expect(autoSlotId('carousel', 11, scope).endsWith('-carousel-12')).toBe(true)
+    // The cut scope keeps the numbering unique and stable.
+    expect(autoSlotId('card', 0, scope)).not.toBe(autoSlotId('card', 1, scope))
+    expect(autoSlotId('card', 0, scope)).toBe(autoSlotId('card', 0, scope))
+    expect(normalizeSlotId(autoSlotId('card', 0, scope))).toBe(autoSlotId('card', 0, scope))
   })
 
   it('normalizeScope trims and joins inner whitespace', () => {

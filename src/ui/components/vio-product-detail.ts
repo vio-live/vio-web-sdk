@@ -68,10 +68,16 @@ export class VioProductDetail extends LitElement {
   /** Per-element override of the content title. */
   @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
   private readonly slotRegistration = new SlotRegistration(this, 'detail')
-  /** What the click that opened the detail carried ('' when nothing). */
+  /** What the click that opened the detail carried ('' when nothing), and for which product. */
   private eventSlot = ''
   private eventContentId = ''
   private eventContentTitle = ''
+  private eventProductId = ''
+
+  /** The card's context applies to the product it opened — not to one the host opened by hand later. */
+  private get fromCard(): boolean {
+    return this.eventProductId !== '' && this.eventProductId === String(this.productId)
+  }
 
   /** The slot id in effect for this element: `vio-slot`, else the auto id (`detail-N`). Read-only. */
   get effectiveSlot(): string {
@@ -80,7 +86,7 @@ export class VioProductDetail extends LitElement {
 
   /** The slot the open product is attributed to: the opening card's, else this element's. */
   private get activeSlot(): string {
-    return this.eventSlot || this.effectiveSlot
+    return (this.fromCard && this.eventSlot) || this.effectiveSlot
   }
 
   private slotAttributes() {
@@ -94,9 +100,12 @@ export class VioProductDetail extends LitElement {
 
   /** Attribution every event of the open product carries (`Vio.attribution` of the opening card's slot, else this element's). */
   private attribution() {
-    const base = Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
-    const contentId = this.eventContentId || this.vioContentId
-    const contentTitle = this.eventContentTitle || this.vioContentTitle
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.activeSlot, { sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined })
+        : { slot: this.activeSlot || undefined }
+    const contentId = (this.fromCard && this.eventContentId) || this.vioContentId
+    const contentTitle = (this.fromCard && this.eventContentTitle) || this.vioContentTitle
     return {
       ...base,
       ...(contentId ? { contentId } : {}),
@@ -156,11 +165,15 @@ export class VioProductDetail extends LitElement {
     let sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
     if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) {
       // A card without a sponsor: the primary of the campaign its slot shows.
-      const fromSlot = Number(Vio.campaignForSlot(slot || this.effectiveSlot || null)?.primarySponsor?.id)
+      const fromSlot =
+        typeof Vio.campaignForSlot === 'function'
+          ? Number(Vio.campaignForSlot(slot || this.effectiveSlot || null)?.primarySponsor?.id)
+          : NaN
       if (!Number.isFinite(fromSlot) || fromSlot <= 0) return
       sponsorIdNum = fromSlot
     }
     this.eventSlot = slot
+    this.eventProductId = String(ev.detail.productId)
     this.eventContentId =
       ev.detail.contentId !== undefined && ev.detail.contentId !== null ? String(ev.detail.contentId).trim() : ''
     this.eventContentTitle = typeof ev.detail.contentTitle === 'string' ? ev.detail.contentTitle.trim() : ''
@@ -643,6 +656,11 @@ export class VioProductDetail extends LitElement {
     // Reset state after the slide-out animation completes.
     setTimeout(() => {
       if (!this.open) {
+        // What the opening card said belongs to that product, not the next.
+        this.eventSlot = ''
+        this.eventContentId = ''
+        this.eventContentTitle = ''
+        this.eventProductId = ''
         this.product = null
         this.sellerName = null
         this.sellerSettled = false
@@ -770,7 +788,9 @@ export class VioProductDetail extends LitElement {
   private async loadAvailablePaymentMethods(): Promise<void> {
     const spId =
       this.sponsorId ||
-      Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id) ||
+      (typeof Vio.campaignForSlot === 'function'
+        ? Number(Vio.campaignForSlot(this.activeSlot || null)?.primarySponsor?.id)
+        : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
     try {

@@ -16,7 +16,8 @@ const manager = Vio.checkout as any
 let onShipping: ((result: any, err?: unknown) => void) | undefined
 
 beforeEach(() => {
-  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)

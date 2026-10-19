@@ -17,7 +17,8 @@ const DEAR = { id: 'sc-dear', supplierId: '7', method: 'other to NO', name: 'oth
 const ITEM = { id: 'li-1', name: 'Sofa', brand: 'Bohus', quantity: 1, unitPrice: 4999, currency: 'NOK' }
 
 beforeEach(() => {
-  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'loadAvailableShippings', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)

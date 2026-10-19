@@ -1094,10 +1094,13 @@ export async function executeCartGraphQL(
     const json = (await Promise.race([res.json().catch(() => ({})), timedOut])) as GraphQLEnvelope
     if (!res.ok || json.errors) {
       const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
-      // The envelope travels with the error: a caller can tell a validation
-      // error (the gateway refused the selection, nothing ran) from a failure
-      // of something that did run — see `isUnknownFieldError`.
-      throw Object.assign(new Error(errMsg), { graphql: json })
+      // What the envelope says travels with the error — whether anything ran
+      // (`data`) and the errors, never the data itself — so a caller can tell
+      // a validation error (the gateway refused the selection, nothing ran)
+      // from a failure of something that did run; see `isUnknownFieldError`.
+      throw Object.assign(new Error(errMsg), {
+        graphql: { hasData: json.data !== undefined && json.data !== null, errors: json.errors ?? [] },
+      })
     }
     return json
   } finally {
@@ -1218,9 +1221,20 @@ export const BUYER_REF_FIELD = 'buyer_ref'
 
 let gatewayKnowsBuyerRef = true
 
+/** Whether this page load still expects the gateway to know `buyer_ref` (false once it refused the selection). */
+export function gatewayHasBuyerRef(): boolean {
+  return gatewayKnowsBuyerRef
+}
+
 /** Forget what this page load learned about `buyer_ref` (tests). */
 export function resetBuyerRefSupport(): void {
   gatewayKnowsBuyerRef = true
+}
+
+/** What `executeCartGraphQL` attaches to the error it throws. */
+export interface GraphQLErrorInfo {
+  hasData: boolean
+  errors: Array<{ message?: string }>
 }
 
 /**
@@ -1232,8 +1246,8 @@ export function resetBuyerRefSupport(): void {
  */
 export function isUnknownFieldError(err: unknown, field: string): boolean {
   if (!err || typeof err !== 'object') return false
-  const { message, graphql } = err as { message?: unknown; graphql?: GraphQLEnvelope }
-  if (graphql?.data) return false
+  const { message, graphql } = err as { message?: unknown; graphql?: Partial<GraphQLErrorInfo> }
+  if (graphql?.hasData) return false
   const messages = [message, ...(graphql?.errors ?? []).map((e) => e?.message)]
   return messages.some(
     (m) => typeof m === 'string' && m.includes(`"${field}"`) && /cannot query field|unknown field/i.test(m),

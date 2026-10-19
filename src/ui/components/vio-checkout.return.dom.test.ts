@@ -32,7 +32,8 @@ function landOn(search: string) {
 }
 
 beforeEach(() => {
-  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   // Everything the component fires at the backend on a state change.
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'loadAvailableShippings', 'refreshApplePay', 'refreshKlarna']) {

@@ -71,14 +71,14 @@ describe('getCheckoutReference: the buyer reference', () => {
     expect(await getCheckoutReference('c', OPTS)).toEqual({ orderNumber: 4497, buyerRef: 'brf_7f3a9c' })
   })
 
-  it('null for whatever the API does not say — and never an email, never over 64 chars', async () => {
+  it('null for whatever the API does not say — and never an email, never over 128 chars', async () => {
     answer({ data: { Checkout: { GetCheckout: { id: 'c', order_id: null, buyer_ref: null } } } })
     expect(await getCheckoutReference('c', OPTS)).toEqual({ orderNumber: null, buyerRef: null })
     vi.restoreAllMocks()
     answer({ data: { Checkout: { GetCheckout: { id: 'c', order_id: 1, buyer_ref: 'ola@nordmann.no' } } } })
     expect((await getCheckoutReference('c', OPTS)).buyerRef).toBeNull()
     vi.restoreAllMocks()
-    answer({ data: { Checkout: { GetCheckout: { id: 'c', order_id: 1, buyer_ref: 'x'.repeat(65) } } } })
+    answer({ data: { Checkout: { GetCheckout: { id: 'c', order_id: 1, buyer_ref: 'x'.repeat(129) } } } })
     expect((await getCheckoutReference('c', OPTS)).buyerRef).toBeNull()
   })
 
@@ -106,11 +106,11 @@ describe('getCheckoutReference: the buyer reference', () => {
   it('isUnknownFieldError: the validation message about THAT field, with no data; nothing that ran', () => {
     const e = (message: string, graphql?: unknown) => Object.assign(new Error(message), graphql ? { graphql } : {})
     expect(isUnknownFieldError(e('Cannot query field "buyer_ref" on type "X".'), 'buyer_ref')).toBe(true)
-    expect(isUnknownFieldError(e('boom', { errors: [{ message: 'Unknown field "buyer_ref"' }] }), 'buyer_ref')).toBe(true)
+    expect(isUnknownFieldError(e('boom', { hasData: false, errors: [{ message: 'Unknown field "buyer_ref"' }] }), 'buyer_ref')).toBe(true)
     expect(isUnknownFieldError(e('Cannot query field "order_id" on type "X".'), 'buyer_ref')).toBe(false)
     // Something ran and failed on that field: data present — never a retry.
     expect(
-      isUnknownFieldError(e('Cannot query field "buyer_ref"', { data: { Payment: {} }, errors: [{ message: 'x' }] }), 'buyer_ref'),
+      isUnknownFieldError(e('Cannot query field "buyer_ref"', { hasData: true, errors: [{ message: 'x' }] }), 'buyer_ref'),
     ).toBe(false)
     expect(isUnknownFieldError(e('GraphQL request timed out after 15000ms'), 'buyer_ref')).toBe(false)
     expect(isUnknownFieldError(null, 'buyer_ref')).toBe(false)
@@ -163,5 +163,19 @@ describe('Vio.checkout.getOrderNumber / getOrderReference never throw', () => {
     expect(await (Vio.checkout as any).getOrderNumber('', 5)).toBeNull()
     expect(await (Vio.checkout as any).getOrderReference('', 5)).toEqual({ orderNumber: null, buyerRef: null })
     expect(spy).not.toHaveBeenCalled()
+  })
+
+  it('concurrent asks for the same checkout share one request (the receipt and the payment event start together)', async () => {
+    const fetchMock = answer({ data: { Checkout: { GetCheckout: { id: 'c', order_id: 4497, buyer_ref: 'brf_1' } } } })
+    const m = Vio.checkout as any
+    const [a, b, n] = await Promise.all([m.getOrderReference('c', 5), m.getOrderReference('c', 5), m.getOrderNumber('c', 5)])
+    expect(a).toEqual({ orderNumber: 4497, buyerRef: 'brf_1' })
+    expect(b).toBe(a)
+    expect(n).toBe(4497)
+    const graphqlCalls = fetchMock.mock.calls.filter((c) => String((c[1] as { body?: string })?.body ?? '').includes('GetCheckoutOrderNumber'))
+    expect(graphqlCalls).toHaveLength(1)
+    // Settled: the next ask is a new request.
+    await m.getOrderReference('c', 5)
+    expect(fetchMock.mock.calls.filter((c) => String((c[1] as { body?: string })?.body ?? '').includes('GetCheckoutOrderNumber'))).toHaveLength(2)
   })
 })

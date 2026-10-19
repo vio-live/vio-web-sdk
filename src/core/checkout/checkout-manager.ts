@@ -691,13 +691,26 @@ export class CheckoutManager extends EventTarget {
    */
   async getOrderReference(checkoutId: string, sponsorId?: number): Promise<CheckoutReference> {
     if (!checkoutId) return { orderNumber: null, buyerRef: null }
-    try {
-      const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
-      return await gqlGetCheckoutReference(checkoutId, opts)
-    } catch {
-      return { orderNumber: null, buyerRef: null }
-    }
+    // Concurrent asks for the same checkout (the receipt's order number and
+    // the payment event's buyer reference start together) share one request.
+    const inFlight = this.referenceInFlight.get(checkoutId)
+    if (inFlight) return inFlight
+    const request = (async (): Promise<CheckoutReference> => {
+      try {
+        const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+        return await gqlGetCheckoutReference(checkoutId, opts)
+      } catch {
+        return { orderNumber: null, buyerRef: null }
+      } finally {
+        this.referenceInFlight.delete(checkoutId)
+      }
+    })()
+    this.referenceInFlight.set(checkoutId, request)
+    return request
   }
+
+  /** In-flight `getOrderReference` per checkout id (see there). */
+  private referenceInFlight = new Map<string, Promise<CheckoutReference>>()
 
   /**
    * Payment methods enabled for the sponsor (backend-configured). Memoised per

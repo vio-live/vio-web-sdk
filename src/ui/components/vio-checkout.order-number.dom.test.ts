@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { mount, unmountAll, settle, shadowText } from '../test-harness.js'
 import { Vio } from '../../core/client.js'
 import { VioCheckout } from './vio-checkout.js'
+import { resetBuyerRefSupport, withBuyerRef } from '../../core/api/cart-queries.js'
 
 /**
  * Back from paying (Angelo, QA on a phone, 2026-10-08):
@@ -34,7 +35,8 @@ async function renderCycles(el: HTMLElement, n = 5) {
 const q = (el: HTMLElement, sel: string) => el.shadowRoot?.querySelector(sel) ?? null
 
 beforeEach(() => {
-  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'loadAvailableShippings', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)
@@ -50,6 +52,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  resetBuyerRefSupport()
   unmountAll()
   manager.state = null
   window.history.replaceState({}, '', '/')
@@ -303,6 +306,148 @@ describe('the buyer reference in vio:payment-success (analytics buyer_id)', () =
     expect(seen).toHaveLength(1)
     expect(seen[0]).not.toHaveProperty('buyerRef')
     expect(seen[0]).toMatchObject({ method: 'qliro', checkoutId: CHECKOUT })
+  })
+
+  it('W1: a rejected ask does not hold the event: after the 1.2 s retry it fires without the reference and clears the cart', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.useFakeTimers()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+    const ask = vi.spyOn(manager, 'getOrderReference').mockRejectedValue(new Error('network'))
+    const cleared = vi.mocked(Vio.cart.clearSponsorCart)
+    cleared.mockClear()
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('stripe', SPONSOR, { chargedTotal: 10 })
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(seen).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(200)
+    } finally {
+      off()
+    }
+    expect(ask).toHaveBeenCalledTimes(2)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).not.toHaveProperty('buyerRef')
+    expect(cleared).toHaveBeenCalledWith(SPONSOR)
+  })
+
+  it('W1c: the second ask at 1.2 s catches a reference the webhook wrote after the redirect', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.useFakeTimers()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+    const ask = vi
+      .spyOn(manager, 'getOrderReference')
+      .mockResolvedValueOnce({ orderNumber: null, buyerRef: null })
+      .mockResolvedValueOnce({ orderNumber: 4499, buyerRef: 'brf_late' })
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('stripe', SPONSOR, { chargedTotal: 10 })
+      await vi.advanceTimersByTimeAsync(1_100)
+      expect(seen).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(200)
+    } finally {
+      off()
+    }
+    expect(ask).toHaveBeenCalledTimes(2)
+    expect(seen[0]).toMatchObject({ buyerRef: 'brf_late' })
+  })
+
+  it('W1a: the page hiding settles the event at once, without the reference, and the cart is cleared; the late answer and the timer add nothing', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.useFakeTimers()
+    let answer!: (v: unknown) => void
+    vi.spyOn(manager, 'getOrderReference').mockReturnValue(new Promise((r) => { answer = r }))
+    const cleared = vi.mocked(Vio.cart.clearSponsorCart)
+    cleared.mockClear()
+    const { seen, off } = listen()
+    try {
+      el.showProviderReceipt('qliro', SPONSOR, { orderId: 'Q-1' })
+      await vi.advanceTimersByTimeAsync(100)
+      expect(seen).toHaveLength(0)
+      window.dispatchEvent(new Event('pagehide'))
+      expect(seen).toHaveLength(1) // synchronously, inside the pagehide handler
+      expect(seen[0]).not.toHaveProperty('buyerRef')
+      expect(cleared).toHaveBeenCalledWith(SPONSOR)
+      answer({ orderNumber: 1, buyerRef: 'brf_too_late' })
+      await vi.advanceTimersByTimeAsync(3_000)
+    } finally {
+      off()
+    }
+    expect(seen).toHaveLength(1)
+  })
+
+  it('W1a: visibilitychange → hidden settles it the same way', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.useFakeTimers()
+    vi.spyOn(manager, 'getOrderReference').mockReturnValue(new Promise(() => {}))
+    const { seen, off } = listen()
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true })
+    try {
+      el.showProviderReceipt('walley', SPONSOR, { orderId: 'W-1' })
+      document.dispatchEvent(new Event('visibilitychange'))
+      expect(seen).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(3_000)
+      expect(seen).toHaveLength(1)
+    } finally {
+      off()
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+    }
+  })
+
+  it('W1a: removing the element while it waits fires the event at once — on the element and, detached, on the window', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.spyOn(manager, 'getOrderReference').mockReturnValue(new Promise(() => {}))
+    const onWindow: unknown[] = []
+    const listener = (e: Event) => onWindow.push((e as CustomEvent).detail)
+    window.addEventListener('vio:payment-success', listener)
+    const onElement: unknown[] = []
+    el.addEventListener('vio:payment-success', (e: Event) => onElement.push((e as CustomEvent).detail))
+    try {
+      el.showProviderReceipt('qliro', SPONSOR, { orderId: 'Q-2' })
+      await settle(el)
+      expect(onElement).toHaveLength(0)
+      el.remove()
+      expect(onElement).toHaveLength(1)
+      expect(onWindow).toHaveLength(1)
+      expect(onWindow[0]).toMatchObject({ method: 'qliro', checkoutId: CHECKOUT })
+    } finally {
+      window.removeEventListener('vio:payment-success', listener)
+    }
+  })
+
+  it('W1b: once the gateway refused buyer_ref on this page load, nothing is asked and the event is immediate', async () => {
+    await withBuyerRef(async (withRef) => {
+      if (withRef) throw Object.assign(new Error('Cannot query field "buyer_ref" on type "X".'), { graphql: { hasData: false, errors: [] } })
+      return null
+    })
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+    const ask = vi.spyOn(manager, 'getOrderReference')
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('stripe', SPONSOR, { chargedTotal: 10 })
+      await Promise.resolve()
+    } finally {
+      off()
+    }
+    expect(ask).not.toHaveBeenCalled()
+    expect(seen).toHaveLength(1)
   })
 
   it('a result that already carries it (Apple Pay / Klarna native) is sent at once, without asking', async () => {

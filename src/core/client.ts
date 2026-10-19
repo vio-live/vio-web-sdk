@@ -17,12 +17,14 @@
  */
 
 import { Configuration, type VioConfig } from './configuration.js'
-import { createVioApi, type VioApi } from './api/vio.js'
+import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import { resolveContent, type ContentRef } from './content.js'
+import { resolveLanding } from './analytics/client-context.js'
+import { checkoutAttributionOf, type CheckoutAttributionWire } from './checkout/attribution.js'
 import {
   MAX_DECLARATIONS_PER_LOAD,
   MAX_LOCATIONS_PER_DECLARATION,
@@ -55,10 +57,19 @@ import type {
   ManifestLocation,
   ManifestResult,
   Sponsor,
+  SurfacePrivacyMode,
 } from './types.js'
 
 /** Mount storms (a carousel of cards, Vev blocks) collapse into ONE manifest. */
 const SLOT_DECLARATION_DEBOUNCE_MS = 1_000
+
+/** How long the order attribution waits for the surface's privacy mode before going out without the entry. */
+const PRIVACY_MODE_TIMEOUT_MS = 1_500
+
+/** `standard` | `minimal` as the backend says it; anything else is "not said". */
+function privacyModeOf(value: unknown): SurfacePrivacyMode | undefined {
+  return value === 'minimal' || value === 'standard' ? value : undefined
+}
 
 class VioFacade {
   private apiInstance: VioApi | null = null
@@ -93,6 +104,9 @@ class VioFacade {
   private cartManager: CartManager | null = null
   private checkoutManager: CheckoutManager | null = null
   private analyticsManager: AnalyticsManager | null = null
+  /** The surface's privacy mode being asked (`GET /v2/mobile/surface`), once per configuration. */
+  private surfacePromise: Promise<SurfacePrivacyMode | 'unknown'> | null = null
+  private surfaceGeneration = -1
 
   init(config: VioConfig): void {
     Configuration.init(config)
@@ -103,6 +117,8 @@ class VioFacade {
     this.cachedBootstrap = null
     this.bootstrapFailedAt = 0
     this.generation++
+    // The surface (its privacy mode) is the key's: asked again for the new one.
+    this.surfacePromise = null
     // A new key/environment invalidates the per-sponsor payment methods too.
     this.checkoutManager?.clearPaymentMethodsCache()
     // The page's slots stay; they are declared again once the NEW key has
@@ -151,9 +167,13 @@ class VioFacade {
     return this.cartManager
   }
 
-  /** Checkout flow manager. Subscribes to cart state via the CartManager. */
+  /** Checkout flow manager. Subscribes to cart state via the CartManager; asks here for the order's attribution. */
   get checkout(): CheckoutManager {
-    if (!this.checkoutManager) this.checkoutManager = new CheckoutManager(this.cart)
+    if (!this.checkoutManager) {
+      this.checkoutManager = new CheckoutManager(this.cart, {
+        orderAttribution: (sponsorId) => this.orderAttribution(sponsorId),
+      })
+    }
     return this.checkoutManager
   }
 
@@ -506,10 +526,85 @@ class VioFacade {
       const content = this.content()
       if (content.id) out.contentId = content.id
       if (content.title) out.contentTitle = content.title
+      if (content.url) out.contentUrl = content.url
     } catch {
       /* attribution never breaks a render or a click */
     }
     return out
+  }
+
+  /**
+   * How much of the visit the order attribution may carry (ADR-0035): the
+   * surface's privacy mode — `Vio.init({ privacyMode: 'minimal' })` when the
+   * host says so, else what the bootstrap says of the surface, else what the
+   * surface answers itself (`GET /v2/mobile/surface`, asked once per
+   * configuration; a service that predates it — 404 — means `standard`),
+   * else the host's `standard`. `unknown` when none of them could tell: then
+   * the entry context (referrer, utm, landing) stays off the order, because
+   * what can reveal why someone is on the page is only sent when the surface
+   * is known to allow it. Never throws; never waits more than 1.5 s.
+   */
+  async privacyMode(): Promise<SurfacePrivacyMode | 'unknown'> {
+    try {
+      const config = Configuration.isInitialized ? Configuration.get() : undefined
+      if (config?.privacyMode === 'minimal') return 'minimal'
+      const fromBootstrap = privacyModeOf(this.cachedBootstrap?.surface?.privacyMode)
+      if (fromBootstrap) return fromBootstrap
+      if (!config) return 'unknown'
+      if (!this.surfacePromise || this.surfaceGeneration !== this.generation) {
+        this.surfaceGeneration = this.generation
+        const generation = this.generation
+        const asked = this.api.surface().then(
+          (res) => privacyModeOf(res?.surface?.privacyMode) ?? 'standard',
+          (err: unknown) => {
+            // Not asked again on this page load only when the service answered: a
+            // 404 is a service that predates the surface endpoint (no mode to have).
+            if (err instanceof VioApiError && err.status === 404) return 'standard' as const
+            if (this.surfacePromise === asked && this.surfaceGeneration === generation) this.surfacePromise = null
+            return 'unknown' as const
+          },
+        )
+        this.surfacePromise = asked
+      }
+      const answer = await Promise.race([
+        this.surfacePromise,
+        new Promise<'unknown'>((resolve) => setTimeout(() => resolve('unknown'), PRIVACY_MODE_TIMEOUT_MS)),
+      ])
+      if (answer !== 'unknown') return answer
+      return config.privacyMode ?? 'unknown'
+    } catch {
+      return 'unknown'
+    }
+  }
+
+  /**
+   * The attribution of the order a sponsor's cart is about to become
+   * (ADR-0035 phase B) — what `CreateCheckout` / `UpdateCheckout` send as
+   * `attribution` and shopcart writes on the order: the surface (its SDK
+   * key), the page's campaign (`pageCampaign()`; without one, the campaign
+   * that explains most units of the cart under the same rule `purchase` is
+   * split by — `cartSlices`), the page (`content()`'s url and title) and,
+   * on a `standard` surface only, where the session came in (the landing's
+   * referrer, utm and page — `resolveLanding`). snake_case, capped to
+   * Commerce's limits. `undefined` when there is nothing to say; never throws.
+   */
+  async orderAttribution(sponsorId?: number): Promise<CheckoutAttributionWire | undefined> {
+    try {
+      const config = Configuration.isInitialized ? Configuration.get() : undefined
+      const content = this.content()
+      const privacyMode = await this.privacyMode()
+      return checkoutAttributionOf({
+        surfaceKey: config?.apiKey,
+        pageCampaignId: toNumber(this.pageCampaign()?.id),
+        slices: this.cartSlices(sponsorId),
+        content: { url: content.url, title: content.title },
+        // Read, not written: analytics decides whether the landing may persist (consent).
+        landing: resolveLanding(undefined, false),
+        privacyMode,
+      })
+    } catch {
+      return undefined
+    }
   }
 
   /**

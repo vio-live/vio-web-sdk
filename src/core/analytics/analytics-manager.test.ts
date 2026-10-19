@@ -1350,7 +1350,11 @@ describe('bloque `client` (el contexto estándar de la visita, contrato 2026-10-
     expect(session.store.size).toBe(0)
     expect((flushedBatches[0]!.events.at(-1)!.client as Record<string, unknown>).utm_source).toBe('a')
     m.setConsent(true)
-    expect(JSON.parse(session.store.get('vio.landing.v1')!)).toEqual({ utm: { utm_source: 'a' } })
+    // The landing page itself is remembered too (origin + path), for the order's entry context.
+    expect(JSON.parse(session.store.get('vio.landing.v1')!)).toEqual({
+      utm: { utm_source: 'a' },
+      url: 'https://host.example/article',
+    })
     // W5: withdrawing it forgets the landing too.
     m.setConsent(false)
     expect(session.store.has('vio.landing.v1')).toBe(false)

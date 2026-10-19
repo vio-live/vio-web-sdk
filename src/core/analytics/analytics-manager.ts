@@ -30,7 +30,7 @@
  */
 
 import { Configuration } from '../configuration.js'
-import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, resolveContent, type ContentRef } from '../content.js'
+import { CONTENT_ID_MAX_LENGTH, CONTENT_TITLE_MAX_LENGTH, capContentUrl, resolveContent, type ContentRef } from '../content.js'
 import {
   activeCampaignEntry,
   assignmentApplies,
@@ -487,7 +487,7 @@ export class AnalyticsManager extends EventTarget {
       // one is usually the tracking tail, not the page. The other host-given
       // fields (broadcastId, componentTemplateId, errorCode, variant, …) are
       // the host's responsibility: the SDK does not touch them.
-      content_url: capUrl(ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined)),
+      content_url: capContentUrl(ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined)),
       // The host's own content id — its join key back onto its reporting.
       // Explicit on the event when it fits, else what the SDK resolved for
       // the page (already capped per source), else nothing.
@@ -1121,18 +1121,6 @@ function fitsId<T extends string | number>(value: T | null | undefined): T | und
 function capTitle(value: string | undefined): string | undefined {
   if (!value) return undefined
   return value.length > CONTENT_TITLE_MAX_LENGTH ? value.slice(0, CONTENT_TITLE_MAX_LENGTH) : value
-}
-
-/** The collector caps `content_url` at 2 048 chars. */
-const CONTENT_URL_MAX_LENGTH = 2_048
-
-/** A URL within the cap: as is, else without its query string, else cut. */
-function capUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined
-  if (value.length <= CONTENT_URL_MAX_LENGTH) return value
-  const cut = value.search(/[?#]/)
-  const withoutQuery = cut >= 0 ? value.slice(0, cut) : value
-  return withoutQuery.length <= CONTENT_URL_MAX_LENGTH ? withoutQuery : withoutQuery.slice(0, CONTENT_URL_MAX_LENGTH)
 }
 
 /** A slice as the commerce block of its event. */

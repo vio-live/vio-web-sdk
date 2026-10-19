@@ -6,9 +6,10 @@
  * CustomEvent that UI components subscribe to (Web Components react via
  * `requestUpdate()`).
  *
- * Server-side cart sync (Vio Commerce GraphQL CreateCart / AddToCart
- * mutations) is deferred to checkout time via the CheckoutManager —
- * this manager is purely client-side state for now.
+ * The backend cart (Vio Commerce GraphQL CreateCart / AddItem / UpdateItem /
+ * DeleteItem) is kept in sync optimistically from here; since 0.26 every add
+ * and every increase tells it where the units come from (`origin`, ADR-0035
+ * phase B) so the order is born attributed — see `origin-wire.ts`.
  */
 
 import {
@@ -19,6 +20,9 @@ import {
   type Product,
 } from '../types.js'
 import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
+import { currentOriginPage, lineOriginWire } from './origin-wire.js'
+import { componentKindOf } from '../slots.js'
+import { CONTENT_TITLE_MAX_LENGTH, capContentUrl } from '../content.js'
 import {
   addItem as gqlAddItem,
   createCart as gqlCreateCart,
@@ -70,6 +74,10 @@ interface QtySync {
   sent: number
   /** Latest target that arrived while in flight — the only one sent next. */
   pending?: number
+  /** Where the units the in-flight request ADDS come from (an increase); nothing for a decrease. */
+  origin?: CartOrigin
+  /** The same, for `pending`. */
+  pendingOrigin?: CartOrigin
 }
 
 function lineId(): string {
@@ -423,7 +431,8 @@ export class CartManager extends EventTarget {
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
-          // The server knows nothing about origins: keep the local ones. They
+          // The server keeps its own copy of the origins (per request); the
+          // cart read model does not answer them, so keep the local ones. They
           // are squared with its quantity (a stock clamp) only when no OTHER
           // mutation is in flight for this sponsor — an AddItem answering
           // while another is pending reports a quantity that is already old
@@ -563,11 +572,15 @@ export class CartManager extends EventTarget {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
         if (cartId) {
           const gqlOpts = await getCartGraphQLOptions(opts.sponsorId)
+          // Where these units come from, for the order (ADR-0035 phase B):
+          // the add's own origin; nothing when the host gave none.
+          const origin = opts.origin ? lineOriginWire(normalizeOrigin(opts.origin), currentOriginPage()) : undefined
           const lineItemsInput = [
             {
               product_id: Number(opts.productId || 0),
               quantity: qty,
               variant_id: opts.variantId != null ? Number(opts.variantId) : null,
+              ...(origin ? { origin } : {}),
             },
           ]
           const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
@@ -648,8 +661,12 @@ export class CartManager extends EventTarget {
     // The origins follow the quantity: more units go to the given origin (or
     // the most recent one), fewer come off the most recent first.
     const removedOrigin = latestOrigin(item)
-    if (target > item.quantity) addOriginQuantity(item, opts.origin, target - item.quantity)
+    const increase = target > item.quantity
+    if (increase) addOriginQuantity(item, opts.origin, target - item.quantity)
     else removeOriginQuantity(item, item.quantity - target)
+    // The origin the new units were credited to (the given one, else the most
+    // recent) goes to the server with the increase; a decrease names none.
+    const addedOrigin = increase ? latestOrigin(item) : undefined
     if (target <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
       // Choke point de la baja: sale acá y no en la UI para que también
@@ -692,7 +709,7 @@ export class CartManager extends EventTarget {
       return
     }
 
-    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target)
+    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target, addedOrigin)
   }
 
   /** Send a line's target quantity to the backend — ONE request in flight per
@@ -707,32 +724,43 @@ export class CartManager extends EventTarget {
     backendCartId: string,
     cartItemId: string,
     target: number,
+    origin?: CartOrigin,
   ): void {
     const key = this.qtySyncKey(sponsorId, cartItemId)
     const active = this.qtySyncs.get(key)
     if (active) {
       active.pending = target
+      active.pendingOrigin = origin
       return
     }
-    const sync: QtySync = { sent: target }
+    const sync: QtySync = { sent: target, origin }
     this.qtySyncs.set(key, sync)
 
     // This mutation, for `applyBackendCart` to tell its own answer from the others'.
     let settling: Promise<unknown> | undefined
     const run = (async () => {
       let next: number | undefined = target
+      let nextOrigin: CartOrigin | undefined = origin
       let removalRetried = false
       while (next !== undefined) {
         sync.sent = next
+        sync.origin = nextOrigin
         sync.pending = undefined
+        sync.pendingOrigin = undefined
         const seq = this.nextSeq(sponsorId)
         try {
           const gqlOpts = await getCartGraphQLOptions(sponsorId)
+          // The origin of the units this update adds (ADR-0035 phase B) —
+          // when it was an increase and the SDK knows a place for them.
+          const originWire = next > 0 && nextOrigin ? lineOriginWire(nextOrigin, currentOriginPage()) : undefined
           const resCart =
             next <= 0
               ? await gqlDeleteItem(backendCartId, cartItemId, gqlOpts)
-              : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
+              : originWire
+                ? await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts, { origin: originWire })
+                : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
           next = sync.pending
+          nextOrigin = sync.pendingOrigin
           // Back where the server already is (+, +, − while in flight):
           // nothing to send.
           if (next === sync.sent) next = undefined
@@ -754,11 +782,14 @@ export class CartManager extends EventTarget {
           // back without a DeleteItem ever going out.
           const retryRemoval = !removalRetried && sync.pending !== undefined && sync.pending <= 0
           next = undefined
+          nextOrigin = undefined
           if (retryRemoval) {
             removalRetried = true
             // Entry stays (heading to 0): the reconcile below leaves the line out.
             sync.sent = 0
+            sync.origin = undefined
             sync.pending = undefined
+            sync.pendingOrigin = undefined
             next = 0
           } else {
             this.qtySyncs.delete(key)
@@ -910,7 +941,13 @@ export class CartManager extends EventTarget {
 
 // ── Origins (where each unit of a line came from) ───────────────────────────
 
-/** Only the three attribution fields, trimmed; `{}` when nothing is known. */
+/**
+ * Only the attribution fields, trimmed; `{}` when nothing is known. The kind
+ * of element is kept as Commerce and the collector name it (`card`,
+ * `carousel`, `detail` — `componentKindOf`), from `componentKind` or from
+ * the `componentTemplateId` an element's attribution carries (`product-card`);
+ * the page (`contentUrl`, `contentTitle`) within Commerce's caps.
+ */
 export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrigin {
   const out: CartOrigin = {}
   if (!origin || typeof origin !== 'object') return out
@@ -922,12 +959,24 @@ export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrig
   if (origin.contentId !== undefined && origin.contentId !== null && String(origin.contentId).trim()) {
     out.contentId = String(origin.contentId).trim()
   }
+  const kind = componentKindOf(origin.componentKind ?? (origin as { componentTemplateId?: unknown }).componentTemplateId)
+  if (kind) out.componentKind = kind
+  const contentUrl = capContentUrl(origin.contentUrl)
+  if (contentUrl) out.contentUrl = contentUrl
+  if (typeof origin.contentTitle === 'string' && origin.contentTitle.trim()) {
+    out.contentTitle = origin.contentTitle.trim().slice(0, CONTENT_TITLE_MAX_LENGTH)
+  }
   return out
 }
 
-/** Two origins are the same place when campaign, slot and content all match. */
+/** Two origins are the same place when campaign, slot, content and kind of element all match (the page's URL and title are attributes of the place, not its identity). */
 export function sameOrigin(a: CartOrigin, b: CartOrigin): boolean {
-  return a.campaignId === b.campaignId && a.slot === b.slot && a.contentId === b.contentId
+  return (
+    a.campaignId === b.campaignId &&
+    a.slot === b.slot &&
+    a.contentId === b.contentId &&
+    a.componentKind === b.componentKind
+  )
 }
 
 /** The most recent origin of a line, or undefined. */

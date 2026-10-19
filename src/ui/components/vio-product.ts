@@ -342,11 +342,15 @@ export class VioProduct extends LitElement {
           // The host's sponsor-id wins; without one, the slot's campaign sponsor.
           sponsorId: this.sponsorId || this.sponsorFromAttribution(),
           // The host adds to the cart: pass this through as `origin` so the
-          // purchase is attributed to this place and campaign.
+          // purchase is attributed to this place, campaign, kind of element
+          // and page — the cart keeps it and Commerce receives it (ADR-0035).
           origin: {
             campaignId: attribution.campaignId,
             slot: attribution.slot,
             contentId: attribution.contentId,
+            componentKind: attribution.componentTemplateId,
+            contentUrl: attribution.contentUrl,
+            contentTitle: attribution.contentTitle,
           },
         },
       }),

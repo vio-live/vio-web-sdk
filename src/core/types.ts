@@ -146,6 +146,12 @@ export interface BootstrapResponse {
     countryCode: string
     currencyCode: string
   }
+  /**
+   * The surface of the key, when the bootstrap says it (the campaigns
+   * service answers it on `/v2/mobile/surface` today; here when it adds it).
+   * Its `privacyMode` decides what the order attribution may carry.
+   */
+  surface?: SurfaceResponse['surface']
 }
 
 /**
@@ -175,6 +181,26 @@ export interface Attribution {
   sponsorId?: number
   contentId?: string
   contentTitle?: string
+  /** The page's URL within the 2 048 cap (`content_url`) — what Commerce keeps on the order and its lines. */
+  contentUrl?: string
+}
+
+/**
+ * How much context analytics and Commerce may keep of a visit to this
+ * surface: `minimal` drops what can reveal why someone is on the page (the
+ * referrer, the utm parameters, the landing page) — the collector drops it
+ * on its side; the SDK does not send it to Commerce (no `entry` on the order).
+ */
+export type SurfacePrivacyMode = 'standard' | 'minimal'
+
+/** Response of `GET /v2/mobile/surface`: what the key may know of its own surface. */
+export interface SurfaceResponse {
+  surface?: {
+    id?: number
+    name?: string
+    status?: string
+    privacyMode?: SurfacePrivacyMode | string | null
+  } | null
 }
 
 /** Body of `POST /v2/mobile/components/manifest`. */

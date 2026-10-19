@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { resolveContent } from './content.js'
+import { CONTENT_URL_MAX_LENGTH, capContentUrl, resolveContent } from './content.js'
 
 /** A document with only what the resolver asks: metas/links by selector + title. */
 function fakeDocument(nodes: Record<string, Record<string, string>>, title = '') {
@@ -108,5 +108,25 @@ describe('resolveContent — safety', () => {
     expect(() => resolveContent({}, throwing, { pathname: '/p', search: '?%E0%A4%A' })).not.toThrow()
     expect(resolveContent({}, { title: 'T' } as unknown as Document, { pathname: '/p' })).toEqual({ id: '/p', title: 'T' })
     expect(resolveContent({}, fakeDocument({}), { search: 'not a query' })).toEqual({})
+  })
+})
+
+describe('resolveContent — url (what `content_url` and the order carry)', () => {
+  it('is location.href within the cap, whatever the id resolves to', () => {
+    const at = { href: 'https://host.example/sport/7?x=1#top', pathname: '/sport/7', search: '?x=1' }
+    expect(resolveContent({}, fakeDocument({}), at)).toEqual({ id: '/sport/7', url: 'https://host.example/sport/7?x=1#top' })
+    expect(resolveContent({}, fakeDocument({}), { pathname: '/p' })).toEqual({ id: '/p' })
+    // A document that throws still leaves the url.
+    const throwing = { querySelector: () => { throw new Error('no') } } as unknown as Document
+    expect(resolveContent({}, throwing, at).url).toBe(at.href)
+  })
+
+  it('capContentUrl: as is, else without the query string, else cut', () => {
+    const long = 'p'.repeat(2_100)
+    expect(capContentUrl('https://h/a?x=1')).toBe('https://h/a?x=1')
+    expect(capContentUrl(`https://h/a?q=${long}`)).toBe('https://h/a')
+    expect(capContentUrl(`https://h/${long}?q=1`)).toHaveLength(CONTENT_URL_MAX_LENGTH)
+    expect(capContentUrl('  ')).toBeUndefined()
+    expect(capContentUrl(undefined)).toBeUndefined()
   })
 })

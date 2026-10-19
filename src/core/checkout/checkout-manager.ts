@@ -218,6 +218,7 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
   },
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
+import type { CheckoutAttributionWire } from './attribution.js'
 
 // MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
 
@@ -521,6 +522,20 @@ export interface KlarnaPaymentsHandle {
   unmount(): void
 }
 
+/**
+ * What the facade lends the manager. `orderAttribution` answers the
+ * attribution of the order about to be created for a sponsor's cart
+ * (`Vio.orderAttribution`, ADR-0035 phase B) — the surface, the page's
+ * campaign, the page and the entry; sent as `attribution` on `CreateCheckout`
+ * and on the `UpdateCheckout` before paying. Optional: without it (a manager
+ * built apart from the facade) nothing is sent and nothing changes.
+ */
+export interface CheckoutManagerDeps {
+  orderAttribution?: (
+    sponsorId: number,
+  ) => Promise<CheckoutAttributionWire | undefined> | CheckoutAttributionWire | undefined
+}
+
 export class CheckoutManager extends EventTarget {
   private state: CheckoutState | null = null
   /** Counts `open()` calls — see CheckoutState.session. */
@@ -572,7 +587,10 @@ export class CheckoutManager extends EventTarget {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private paymentMethodsPromises = new Map<number, Promise<any>>()
 
-  constructor(private readonly cartManager: CartManager) {
+  constructor(
+    private readonly cartManager: CartManager,
+    private readonly deps: CheckoutManagerDeps = {},
+  ) {
     super()
     // Warm Stripe.js early: Apple Pay's sheet must open synchronously inside
     // the tap gesture, so the library can't be lazy-loaded at click time.
@@ -607,7 +625,21 @@ export class CheckoutManager extends EventTarget {
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
-  /** Create the backend checkout for the sponsor's cart (auto-accepts terms). */
+  /**
+   * The attribution of the order this sponsor's cart is about to become
+   * (ADR-0035 phase B), through the facade; `undefined` when there is none
+   * to give or it fails — attribution never costs a checkout.
+   */
+  private async attributionFor(sponsorId: number | undefined): Promise<CheckoutAttributionWire | undefined> {
+    if (!sponsorId || typeof this.deps.orderAttribution !== 'function') return undefined
+    try {
+      return (await this.deps.orderAttribution(sponsorId)) ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Create the backend checkout for the sponsor's cart (auto-accepts terms); born attributed when the facade knows the attribution. */
   async createCheckout(sponsorId: number): Promise<any> {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
@@ -621,7 +653,10 @@ export class CheckoutManager extends EventTarget {
       }
     }
     const opts = await getCartGraphQLOptions(sponsorId)
-    const checkout = await gqlCreateCheckout(cartId, opts)
+    const attribution = await this.attributionFor(sponsorId)
+    const checkout = attribution
+      ? await gqlCreateCheckout(cartId, opts, { attribution })
+      : await gqlCreateCheckout(cartId, opts)
     if (checkout?.id) {
       this.state = {
         ...(this.state ?? { sponsorId, subtotal: 0, currency: getGlobalCurrency() }),
@@ -653,12 +688,15 @@ export class CheckoutManager extends EventTarget {
     return checkout
   }
 
-  /** Update the backend checkout (terms are re-asserted unless overridden). */
+  /** Update the backend checkout (terms are re-asserted unless overridden; the attribution rides along unless the caller gives its own). */
   async updateCheckout(variables: Record<string, unknown>, sponsorId?: number): Promise<any> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const spId = sponsorId ?? this.state?.sponsorId
+    const opts = await getCartGraphQLOptions(spId)
+    const attribution = 'attribution' in variables ? undefined : await this.attributionFor(spId)
     const fullVars = {
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
+      ...(attribution ? { attribution } : {}),
       ...variables,
     }
     const updated = await gqlUpdateCheckout(fullVars, opts)
@@ -874,9 +912,14 @@ export class CheckoutManager extends EventTarget {
     }
 
     const opts = await getCartGraphQLOptions(spId)
+    // The order's attribution (ADR-0035 phase B): on the checkout when it is
+    // created here, and again on the update right before paying.
+    const attribution = await this.attributionFor(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
-      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      const checkoutRes = attribution
+        ? await gqlCreateCheckout(cartId, opts, { attribution })
+        : await gqlCreateCheckout(cartId, opts)
       checkoutId = checkoutRes?.id
     }
     if (!checkoutId) {
@@ -909,6 +952,7 @@ export class CheckoutManager extends EventTarget {
       ...(hasEmail ? { email: emailVal } : {}),
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
+      ...(attribution ? { attribution } : {}),
       ...extraUpdateVars,
     }
     if (addressObj) {

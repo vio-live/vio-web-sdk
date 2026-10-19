@@ -355,11 +355,16 @@ Every event carries a **`client`** block, the standard context of the visit:
 `screen_w` / `screen_h` and `tz` (IANA). The landing is read once and remembered
 for the session in `sessionStorage` (`vio.landing.v1`), so the third page of a visit
 still says it came from the newsletter — a page's own internal referrer is never
-sent, and a URL with utm parameters mid-session is a new landing that replaces the
-memory. With `requireConsent` nothing is written until `setConsent(true)`. Device
-type, OS, browser and country are **not** sent: the collector derives them from the
-request itself. The block is computed once per page load (capped to the collector's
-limits) and the same object rides on every event.
+sent. The referrer is kept as origin + path (no query string, no fragment) and
+dropped when it is this same host (a self-referral says nothing about the entry). A
+URL with utm parameters is a new landing that replaces the memory — unless it was
+reached from this same host, i.e. an internal link that propagates utm, which keeps
+the landing that was. With `requireConsent` nothing is written until
+`setConsent(true)`, and `setConsent(false)` forgets it. Device type, OS, browser and
+country are **not** sent: the collector derives them from the request itself. The
+block is computed once per page load (capped to the collector's limits) and the
+same object rides on every event. `resolveClientContext()` / `resolveLanding()` are
+exported from `/core` for hosts with their own pipeline.
 
 A `purchase` carries **`commerce.buyer_id`**: shopcart's `buyer_ref`, the keyed hash
 Commerce computes from the buyer's email — one person, one ref across orders and
@@ -367,12 +372,21 @@ devices, nothing reversible — so a campaign can count distinct and repeat buye
 The SDK never sends an email and never hashes one itself: it forwards the reference
 the checkout answers (the order-number query, the Apple Pay and the Klarna native
 confirmations select `buyer_ref`; a gateway that predates the field is asked again
-without it, once per page load) and omits it otherwise. The `vio:payment-success`
-detail carries it as `buyerRef`; an emitter that has to ask for it waits at most
-2.5 s before firing the event (the confirmation screen does not wait). A host with
-its own checkout passes `buyerRef` (or `buyer_ref`) in its `vio:payment-success` /
-`vio:checkout-open` detail, or `commerce.buyerId` to `Vio.analytics.track()`;
-anything that is not a reference (an email, more than 64 chars) is dropped.
+without it, once per page load) and omits it otherwise. `Vio.checkout.getOrderReference(checkoutId, sponsorId?)`
+answers `{ orderNumber, buyerRef }` (never throws; concurrent asks share one
+request); `getOrderNumber` is its order-number half. The `vio:payment-success`
+detail carries it as `buyerRef`; an emitter that has to ask for it asks at once (and
+again at 1.2 s while the checkout has neither order nor reference — a webhook may
+still be writing it), waits at most 2.5 s, fires the event at once without it when the
+page hides or the element is removed, and never asks when it cannot help (the
+gateway has no `buyer_ref` yet; a confirmation that already answered). The
+confirmation screen never waits. A host with its own checkout passes `buyerRef` (or
+`buyer_ref`) in its `vio:payment-success` / `vio:checkout-open` detail, or
+`commerce.buyerId` to `Vio.analytics.track()`; anything that is not a reference
+(an email, more than 128 chars, anything outside `[A-Za-z0-9._~-]`) is dropped
+(`normalizeBuyerRef` / `buyerRefOf`, exported from `/core`). **Without consent**
+(`requireConsent` until `setConsent(true)`) `buyer_id` is not sent at all: a visit
+measured with ephemeral ids carries no stable identifier of a person.
 
 ## Theming
 

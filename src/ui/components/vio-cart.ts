@@ -15,6 +15,7 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
+import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
@@ -567,11 +568,14 @@ export class VioCart extends LitElement {
       for (const sponsorId of [...this.carts.keys()]) {
         Vio.cart.clearSponsorCart(sponsorId)
       }
+      // The buyer reference came with the backend's confirmation
+      // (`result.confirmation.buyerRef`); hoisted so the host reads one key.
+      const buyerRef = buyerRefOf({ result: result as unknown as PaymentSuccessResult })
       this.dispatchEvent(
         new CustomEvent('vio:payment-success', {
           bubbles: true,
           composed: true,
-          detail: { method: 'apple-pay', result },
+          detail: { method: 'apple-pay', result, ...(buyerRef ? { buyerRef } : {}) },
         }),
       )
     })

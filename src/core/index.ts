@@ -22,13 +22,24 @@ export {
   autoSlotId,
   autoSlotDisplayName,
   normalizeScope,
+  normalizeSlotKind,
   type CampaignHint,
+  type RegisterSlotOptions,
   type SlotInput,
   type SlotKind,
 } from './slots.js'
 
 // Content (article) attribution: what `content_id` / `content_title` carry.
 export { resolveContent, type ContentRef } from './content.js'
+
+// The standard context of the visit (`client` block) and the buyer reference (`buyer_id`).
+export {
+  resolveClientContext,
+  resolveLanding,
+  type ClientContext,
+  type Landing,
+} from './analytics/client-context.js'
+export { normalizeBuyerRef, BUYER_REF_MAX_LENGTH } from './buyer-ref.js'
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
@@ -46,6 +57,8 @@ export {
   createCheckout,
   updateCheckout,
   getCheckout,
+  getCheckoutReference,
+  type CheckoutReference,
   getAvailablePaymentMethods,
   createPaymentStripe,
   createPaymentVipps,
@@ -88,6 +101,7 @@ export {
   AnalyticsManager,
   resolveCampaignId,
   purchaseFromPaymentSuccess,
+  buyerRefOf,
 } from './analytics/analytics-manager.js'
 export type {
   AnalyticsEventName,

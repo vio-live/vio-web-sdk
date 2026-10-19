@@ -43,6 +43,7 @@ let holdReady = false
 let pendingReady: (() => void) | null = null
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
   holdReady = false
   pendingReady = null
   ;(VioCheckout as any).RETURN_VERIFY_DELAYS_MS = [0, 0, 0]

@@ -22,6 +22,7 @@ const manager = Vio.checkout as any
 let sessionSeq = 0
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)

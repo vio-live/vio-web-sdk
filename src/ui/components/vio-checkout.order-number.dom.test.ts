@@ -34,6 +34,7 @@ async function renderCycles(el: HTMLElement, n = 5) {
 const q = (el: HTMLElement, sel: string) => el.shadowRoot?.querySelector(sel) ?? null
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'loadAvailableShippings', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)
@@ -212,6 +213,7 @@ describe('the checkout id for analytics', () => {
     const { seen, off } = listen()
     try {
       el.confirmOrder('qliro', SPONSOR, { order: { orderId: '3361254' }, chargedTotal: 5198 })
+      await settle(el) // the event follows the (mocked) buyer-reference ask
     } finally {
       off()
     }
@@ -229,6 +231,7 @@ describe('the checkout id for analytics', () => {
     try {
       el.confirmOrder('qliro', SPONSOR, { order: { orderId: '3361254' } }, CHECKOUT)
       el.showProviderReceipt('walley', SPONSOR, { orderId: 'W-9' }, CHECKOUT)
+      await settle(el)
     } finally {
       off()
     }
@@ -243,9 +246,79 @@ describe('the checkout id for analytics', () => {
     const { seen, off } = listen()
     try {
       el.showProviderReceipt('kustom', SPONSOR, { order_id: 'K-1', checkout_id: 'K-CHK' })
+      await settle(el)
     } finally {
       off()
     }
     expect(seen[0]).toMatchObject({ method: 'kustom', sponsorId: SPONSOR, checkoutId: CHECKOUT })
+  })
+})
+
+describe('the buyer reference in vio:payment-success (analytics buyer_id)', () => {
+  const listen = () => {
+    const seen: any[] = []
+    const on = (e: Event) => seen.push((e as CustomEvent).detail)
+    document.addEventListener('vio:payment-success', on)
+    return { seen, off: () => document.removeEventListener('vio:payment-success', on) }
+  }
+
+  it('an emitter without one asks the checkout once and the event carries it; the cart is cleared after the event', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's own ask, apart
+    const ask = vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 4499, buyerRef: 'brf_7f3a9c' })
+    const cleared = vi.mocked(Vio.cart.clearSponsorCart)
+    cleared.mockClear()
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('stripe', SPONSOR, { chargedTotal: 5198 })
+      expect(cleared).not.toHaveBeenCalled() // not before the event
+      await settle(el)
+    } finally {
+      off()
+    }
+    expect(ask).toHaveBeenCalledWith(CHECKOUT, SPONSOR)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ method: 'stripe', sponsorId: SPONSOR, checkoutId: CHECKOUT, buyerRef: 'brf_7f3a9c' })
+    expect(cleared).toHaveBeenCalledWith(SPONSOR)
+  })
+
+  it('a slow answer does not hold the event: after 2.5 s it fires without the reference', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    await settle(el)
+    vi.useFakeTimers() // after the mount: `settle` itself needs real timers
+    vi.spyOn(manager, 'getOrderReference').mockReturnValue(new Promise(() => {}))
+    const { seen, off } = listen()
+    try {
+      el.showProviderReceipt('qliro', SPONSOR, { orderId: 'Q-1' })
+      await vi.advanceTimersByTimeAsync(2_400)
+      expect(seen).toHaveLength(0)
+      await vi.advanceTimersByTimeAsync(200)
+    } finally {
+      off()
+    }
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).not.toHaveProperty('buyerRef')
+    expect(seen[0]).toMatchObject({ method: 'qliro', checkoutId: CHECKOUT })
+  })
+
+  it('a result that already carries it (Apple Pay / Klarna native) is sent at once, without asking', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // fillOrderNumber goes through getOrderNumber
+    const ask = vi.spyOn(manager, 'getOrderReference')
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('klarna', SPONSOR, { order: { orderId: 'K-1' }, buyerRef: 'brf_klarna' })
+      await settle(el)
+    } finally {
+      off()
+    }
+    expect(ask).not.toHaveBeenCalled()
+    expect(seen[0]).toMatchObject({ method: 'klarna', buyerRef: 'brf_klarna' })
   })
 })

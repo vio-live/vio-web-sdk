@@ -46,6 +46,7 @@ afterEach(() => {
 
 describe('<vio-product-detail> on the keyboard', () => {
   beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: null, buyerRef: null })
     vi.spyOn(VioProductDetail.prototype as any, 'loadVippsButton').mockResolvedValue(undefined)
   })
 

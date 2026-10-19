@@ -40,6 +40,14 @@ import {
   type CampaignHint,
 } from '../slots.js'
 import { SDK_VERSION } from '../version.js'
+import { normalizeBuyerRef } from '../buyer-ref.js'
+import {
+  persistLanding,
+  resolveClientContext,
+  resolveLanding,
+  type ClientContext,
+  type Landing,
+} from './client-context.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
 import type { CartLineItem } from '../cart/types.js'
@@ -122,6 +130,12 @@ export interface AnalyticsCommerce {
   currency?: string
   orderId?: string
   paymentMethod?: string
+  /**
+   * The buyer reference (`buyer_id` on the wire): shopcart's `buyer_ref`, a
+   * keyed hash of the buyer's email — one person, one ref across orders and
+   * devices, nothing reversible. Never an email (see core/buyer-ref.ts).
+   */
+  buyerId?: string
 }
 
 export interface TrackOptions {
@@ -193,6 +207,8 @@ interface WireEvent {
   external_user_id?: string
   context?: Record<string, unknown>
   commerce?: Record<string, unknown>
+  /** The standard context of the visit (contract "client"); the same object on every event of a page load. */
+  client?: Record<string, unknown>
   props?: Record<string, unknown>
 }
 
@@ -227,6 +243,11 @@ export class AnalyticsManager extends EventTarget {
    * (Apple Pay) clear the cart BEFORE `vio:payment-success` fires. */
   private lastCartSnapshot: { items: CartLineItem[]; currency?: string } | null = null
 
+  /** The `client` block (language, landing referrer / utm, screen, tz): read once per page load, reused on every event. */
+  private client: ClientContext | null = null
+  /** The landing it was read from — persisted later when consent arrives after the first event. */
+  private landing: Landing | null = null
+
   private teardown: Array<() => void> = []
 
   // MARK: - Public API
@@ -249,6 +270,8 @@ export class AnalyticsManager extends EventTarget {
       // parte en dos por haber aceptado a mitad de camino.
       if (this.anonIdCache) safeStorageSet(ANON_KEY, this.anonIdCache)
       if (this.sessionId) this.persistSession()
+      // And the landing (referrer / utm), so the next pages of the session inherit it.
+      if (this.landing) persistLanding(this.landing)
       return
     }
     safeStorageRemove(ANON_KEY)
@@ -495,8 +518,11 @@ export class AnalyticsManager extends EventTarget {
           currency: com.currency,
           order_id: com.orderId,
           payment_method: com.paymentMethod,
+          // Only a reference survives — never an email, whatever a host passes.
+          buyer_id: normalizeBuyerRef(com.buyerId),
         })
       : undefined
+    const client = this.clientBlock()
 
     return {
       event_id: uuid(),
@@ -510,8 +536,22 @@ export class AnalyticsManager extends EventTarget {
       ...(this.externalUserId ? { external_user_id: this.externalUserId } : {}),
       ...(Object.keys(context).length ? { context } : {}),
       ...(commerce ? { commerce } : {}),
+      ...(client ? { client } : {}),
       ...(opts.props ? { props: opts.props } : {}),
     }
+  }
+
+  /**
+   * The `client` block: read once — the landing is remembered for the session
+   * only when we may persist — then the same (frozen) object on every event.
+   * `null` when there is nothing to say (no browser).
+   */
+  private clientBlock(): Record<string, unknown> | null {
+    if (!this.client) {
+      this.landing = resolveLanding(undefined, this.canPersist)
+      this.client = Object.freeze(resolveClientContext(undefined, this.landing))
+    }
+    return Object.keys(this.client).length ? (this.client as Record<string, unknown>) : null
   }
 
   /** Guarda la sesión solo si podemos escribir en el dispositivo. */
@@ -644,10 +684,10 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; campaignId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; campaignId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string; componentTemplateId?: string }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), componentTemplateId: templateOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -721,11 +761,12 @@ export class AnalyticsManager extends EventTarget {
         slot?: string
         contentId?: string | number
         contentTitle?: string
+        componentTemplateId?: string
       }>).detail ?? {}
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
+        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), componentTemplateId: templateOf(d), ...contentOf(d) },
         commerce: {
           items: [
             {
@@ -745,8 +786,11 @@ export class AnalyticsManager extends EventTarget {
     })
 
     on('vio:checkout-open', (ev) => {
-      const d = (ev as CustomEvent<{ sponsorId?: number; campaignId?: number; slot?: string; contentId?: string | number; contentTitle?: string }>).detail ?? {}
-      const base: AnalyticsContext = { sponsorId: d.sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
+      const d = (ev as CustomEvent<{ sponsorId?: number; campaignId?: number; slot?: string; contentId?: string | number; contentTitle?: string; componentTemplateId?: string; buyerRef?: string }>).detail ?? {}
+      const base: AnalyticsContext = { sponsorId: d.sponsorId, campaignId: campaignOf(d), slot: slotOf(d), componentTemplateId: templateOf(d), ...contentOf(d) }
+      // The buyer reference only when the emitter already has it (a host's checkout); the SDK's own has none this early.
+      const buyerId = buyerRefOf(d)
+      const buyer = buyerId !== undefined ? { buyerId } : {}
       const { slices, explicit } = this.cartSlices(d.sponsorId)
       if (slices.length > 1) {
         // Several campaigns in the cart: one begin_checkout per campaign, each
@@ -754,7 +798,7 @@ export class AnalyticsManager extends EventTarget {
         for (const slice of slices) {
           this.track('begin_checkout', {
             context: this.sliceContext(slice, base),
-            commerce: sliceCommerce(slice),
+            commerce: { ...sliceCommerce(slice), ...buyer },
             props: { slice: slice.slice, slices: slice.slices },
           })
         }
@@ -763,7 +807,7 @@ export class AnalyticsManager extends EventTarget {
       const snap = this.cartCommerce(d.sponsorId)
       this.track('begin_checkout', {
         context: this.singleSliceContext(slices[0], explicit, base),
-        ...(snap ? { commerce: snap } : {}),
+        ...(snap || buyerId !== undefined ? { commerce: { ...(snap ?? {}), ...buyer } } : {}),
       })
     })
 
@@ -1097,6 +1141,13 @@ function slotOf(detail: { slot?: unknown }): string | undefined {
   return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
 }
 
+/** The `componentTemplateId` a `vio:*` event detail carries — the kind of SDK element that emitted it (`product-card`, `product-carousel`, `product-detail`). */
+function templateOf(detail: { componentTemplateId?: unknown }): string | undefined {
+  return typeof detail.componentTemplateId === 'string' && detail.componentTemplateId.trim()
+    ? detail.componentTemplateId.trim()
+    : undefined
+}
+
 /** The per-element content override a `vio:*` event detail carries (`vio-content-id` / `vio-content-title`). */
 function contentOf(detail: { contentId?: unknown; contentTitle?: unknown }): Pick<AnalyticsContext, 'contentId' | 'contentTitle'> {
   const out: Pick<AnalyticsContext, 'contentId' | 'contentTitle'> = {}
@@ -1128,6 +1179,14 @@ export interface PaymentSuccessDetail {
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */
   checkoutId?: string | number
+  /**
+   * The buyer reference the emitter learned with the payment — shopcart's
+   * `buyer_ref`, a keyed hash of the email (`buyerRef` from the SDK's own
+   * checkout; `buyer_ref` when a host passes the backend's answer through).
+   * Becomes `commerce.buyer_id`; never an email.
+   */
+  buyerRef?: string | null
+  buyer_ref?: string | null
   result?: PaymentSuccessResult | null
 }
 
@@ -1139,12 +1198,50 @@ export interface PaymentSuccessDetail {
  * methods only. Analytics reads none of those.
  */
 export interface PaymentSuccessResult {
-  confirmation?: { orderId?: string | number | null; status?: string } | null
+  confirmation?: {
+    orderId?: string | number | null
+    status?: string
+    buyerRef?: string | null
+    buyer_ref?: string | null
+  } | null
+  /** The checkout as a host's backend answered it, when the host passes it through. */
+  checkout?: { buyerRef?: string | null; buyer_ref?: string | null } | null
+  buyerRef?: string | null
+  buyer_ref?: string | null
   [key: string]: unknown
 }
 
 /**
- * The `order_id` of a `purchase`: ALWAYS a Vio id, never a provider's
+ * The buyer reference of a `vio:payment-success` / `vio:checkout-open`
+ * detail, wherever its emitter put it: top-level (`buyerRef`, or `buyer_ref`
+ * as the backend spells it), on the result, on the result's `confirmation`
+ * (Apple Pay) or `checkout`. Only a reference survives — never an email
+ * (`normalizeBuyerRef`).
+ */
+export function buyerRefOf(
+  d: { buyerRef?: unknown; buyer_ref?: unknown; result?: PaymentSuccessResult | null } | null | undefined,
+): string | undefined {
+  if (!d) return undefined
+  const r = d.result ?? {}
+  const candidates = [
+    d.buyerRef,
+    d.buyer_ref,
+    r.buyerRef,
+    r.buyer_ref,
+    r.confirmation?.buyerRef,
+    r.confirmation?.buyer_ref,
+    r.checkout?.buyerRef,
+    r.checkout?.buyer_ref,
+  ]
+  for (const candidate of candidates) {
+    const ref = normalizeBuyerRef(candidate)
+    if (ref) return ref
+  }
+  return undefined
+}
+
+/**
+ * The `order_id` and `buyer_id` of a `purchase`. The id is ALWAYS a Vio id, never a provider's
  * reference. Normalized across every emitter: `orderId` (redirect return) →
  * `result.confirmation.orderId` (Apple Pay) → `checkoutId`. `value` and
  * `currency` are deliberately NOT read from the result: on every path they
@@ -1155,10 +1252,14 @@ export interface PaymentSuccessResult {
  */
 export function purchaseFromPaymentSuccess(
   d: PaymentSuccessDetail,
-): Pick<AnalyticsCommerce, 'orderId'> {
+): Pick<AnalyticsCommerce, 'orderId' | 'buyerId'> {
   const r = d.result ?? {}
   const orderId = firstId(d.orderId, r.confirmation?.orderId, d.checkoutId)
-  return orderId !== undefined ? { orderId } : {}
+  const buyerId = buyerRefOf(d)
+  return {
+    ...(orderId !== undefined ? { orderId } : {}),
+    ...(buyerId !== undefined ? { buyerId } : {}),
+  }
 }
 
 function firstId(...candidates: unknown[]): string | undefined {

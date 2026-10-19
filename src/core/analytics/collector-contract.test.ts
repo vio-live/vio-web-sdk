@@ -34,6 +34,30 @@ function assertCollectorCaps(event: Record<string, unknown>): void {
   const commerce = (event.commerce ?? {}) as Record<string, unknown>
   if (typeof commerce.order_id === 'string' && commerce.order_id.length > 128) throw new Error('order_id > 128')
   if (typeof commerce.payment_method === 'string' && commerce.payment_method.length > 64) throw new Error('payment_method > 64')
+  if (typeof commerce.buyer_id === 'string' && commerce.buyer_id.length > 64) throw new Error('buyer_id > 64')
+  const client = (event.client ?? {}) as Record<string, unknown>
+  for (const [field, max] of Object.entries(CLIENT_CAPS)) {
+    const v = client[field]
+    if (typeof v === 'string' && v.length > max) throw new Error(`client.${field} is ${v.length} chars, max ${max}`)
+  }
+  for (const field of ['screen_w', 'screen_h']) {
+    const v = client[field]
+    if (v !== undefined && (!Number.isInteger(v) || (v as number) < 0 || (v as number) > 65_535)) {
+      throw new Error(`client.${field} is not an int in 0..65535`)
+    }
+  }
+}
+
+/** The limits of `analyticsClientSchema`. */
+const CLIENT_CAPS: Record<string, number> = {
+  language: 16,
+  referrer: 2_048,
+  utm_source: 128,
+  utm_medium: 128,
+  utm_campaign: 128,
+  utm_term: 128,
+  utm_content: 128,
+  tz: 64,
 }
 
 const flushed: Array<{ events: Array<Record<string, unknown>> }> = []
@@ -134,5 +158,27 @@ describe('buildEvent never sends what the collector rejects', () => {
     loc.href = 'https://host.example/' + 'p'.repeat(3_000) + '#x'
     expect((await tracked()).content_url).toHaveLength(2_048)
     expect((await tracked({ contentUrl: 'https://host.example/short?x=1' })).content_url).toBe('https://host.example/short?x=1')
+  })
+})
+
+describe('the client block and buyer_id respect the caps too', () => {
+  it('referrer 2048, utm 128, language 16, tz 64, screen ints; buyer_id over 64 is omitted, not cut', async () => {
+    vi.stubGlobal('navigator', { language: 'l'.repeat(40) })
+    vi.stubGlobal('screen', { width: 1e9, height: 10.6 })
+    ;(doc as Record<string, unknown>).referrer = 'https://r.example/' + 'p'.repeat(3_000)
+    loc.search = '?utm_source=' + 's'.repeat(500) + '&utm_content=c'
+    const m = new AnalyticsManager()
+    m.track('purchase', { commerce: { orderId: 'o', buyerId: 'b'.repeat(65) } })
+    await m.flush()
+    const ev = flushed.at(-1)!.events.at(-1)!
+    assertCollectorCaps(ev)
+    const client = ev.client as Record<string, unknown>
+    expect(client.language).toHaveLength(16)
+    expect(client.referrer).toHaveLength(2_048)
+    expect(client.utm_source).toHaveLength(128)
+    expect(client.utm_content).toBe('c')
+    expect(client.screen_w).toBe(65_535)
+    expect(client.screen_h).toBe(10)
+    expect((ev.commerce as Record<string, unknown>).buyer_id).toBeUndefined()
   })
 })

@@ -249,6 +249,11 @@ export class AnalyticsManager extends EventTarget {
   /** The landing it was read from — persisted later when consent arrives after the first event. */
   private landing: Landing | null = null
 
+  /** The landing this manager resolved on this page load (the first event's), or null before it; read only — for the order's entry context when nothing is stored yet. */
+  get currentLanding(): Landing | null {
+    return this.landing
+  }
+
   private teardown: Array<() => void> = []
 
   // MARK: - Public API

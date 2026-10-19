@@ -13,7 +13,8 @@
  * on the wire, the caps of shopcart's `CheckoutAttributionDto` enforced here.
  */
 
-import { CONTENT_TITLE_MAX_LENGTH, capContentUrl } from '../content.js'
+import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
+import { GRAPHQL_INT_MAX } from '../cart/origin-wire.js'
 import {
   CLIENT_LANDING_URL_MAX_LENGTH,
   CLIENT_REFERRER_MAX_LENGTH,
@@ -63,9 +64,13 @@ export interface CheckoutAttributionInput {
   /** Where the session came in (`resolveLanding()`): referrer, utm, landing page. */
   landing?: Landing | null
   /**
-   * The surface's privacy mode. `minimal` — or `unknown`, when it could not be
-   * learnt — keeps the entry context off the order: what can reveal why
-   * someone is on the page is only sent when the surface is known to allow it.
+   * The surface's privacy mode. Only on a `standard` surface do the page
+   * (`content_url`, `content_title`) and the entry context travel: which
+   * screen the sale was made on and why the shopper was there is what
+   * `minimal` keeps private — the same promise the collector keeps for the
+   * events. `unknown` (it could not be learnt) counts as `minimal`: what can
+   * reveal it is only sent when the surface is known to allow it. The surface
+   * and the campaign always travel.
    */
   privacyMode?: SurfacePrivacyMode | 'unknown'
 }
@@ -74,7 +79,8 @@ export interface CheckoutAttributionInput {
  * The attribution for the wire, or `undefined` when there is nothing to say.
  * The campaign is the page's; without one, the campaign that explains most
  * units of the cart under the same rule `purchase` is split by (ties: the
- * higher value, then the first). The entry goes only on a `standard` surface.
+ * higher value, then the first). The page (origin + path) and the entry go
+ * only on a `standard` surface.
  */
 export function checkoutAttributionOf(input: CheckoutAttributionInput): CheckoutAttributionWire | undefined {
   const out: CheckoutAttributionWire = {}
@@ -82,11 +88,11 @@ export function checkoutAttributionOf(input: CheckoutAttributionInput): Checkout
   if (surfaceKey) out.surface_key = surfaceKey
   const campaignId = positiveInt(input.pageCampaignId) ?? dominantCampaignOf(input.slices)
   if (campaignId !== undefined) out.campaign_id = campaignId
-  const url = capContentUrl(input.content?.url)
-  if (url) out.content_url = url
-  const title = cut(input.content?.title, CHECKOUT_ATTRIBUTION_CAPS.contentTitle)
-  if (title) out.content_title = title
   if (input.privacyMode === 'standard') {
+    const url = originAndPath(input.content?.url, CHECKOUT_ATTRIBUTION_CAPS.contentUrl)
+    if (url) out.content_url = url
+    const title = cut(input.content?.title, CHECKOUT_ATTRIBUTION_CAPS.contentTitle)
+    if (title) out.content_title = title
     const entry = entryContextOf(input.landing)
     if (entry) out.entry = entry
   }
@@ -132,10 +138,11 @@ export function dominantCampaignOf(slices: ReadonlyArray<CartSlice> | null | und
   return best?.campaignId
 }
 
+/** A positive `Int` as GraphQL coerces it (≤ 2³¹ − 1: a bigger value fails the whole mutation). */
 function positiveInt(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined
   const n = Number(value)
-  return Number.isInteger(n) && n > 0 ? n : undefined
+  return Number.isInteger(n) && n > 0 && n <= GRAPHQL_INT_MAX ? n : undefined
 }
 
 function cut(value: unknown, max: number): string | undefined {

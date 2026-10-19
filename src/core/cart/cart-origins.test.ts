@@ -109,9 +109,10 @@ describe('origins accumulate per add', () => {
     // The kind as Commerce and the collector name it: an element's template id loses its `product-` prefix.
     expect(normalizeOrigin({ ...HERO, componentTemplateId: 'product-card' } as never)).toEqual({ ...HERO, componentKind: 'card' })
     expect(normalizeOrigin({ ...HERO, componentKind: ' Carousel ' })).toEqual({ ...HERO, componentKind: 'carousel' })
-    expect(normalizeOrigin({ ...HERO, contentUrl: 'https://h.example/a?x=1', contentTitle: ' T ' })).toEqual({
+    // The page as origin + path: the query and the fragment never make it into the cart.
+    expect(normalizeOrigin({ ...HERO, contentUrl: 'https://h.example/a?email=kari@example.no#x', contentTitle: ' T ' })).toEqual({
       ...HERO,
-      contentUrl: 'https://h.example/a?x=1',
+      contentUrl: 'https://h.example/a',
       contentTitle: 'T',
     })
     expect(sameOrigin({}, {})).toBe(true)

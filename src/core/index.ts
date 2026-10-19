@@ -31,12 +31,13 @@ export {
 } from './slots.js'
 
 // Content (article) attribution: what `content_id` / `content_title` / `content_url` carry.
-export { resolveContent, capContentUrl, CONTENT_URL_MAX_LENGTH, type ContentRef } from './content.js'
+export { resolveContent, capContentUrl, originAndPath, CONTENT_URL_MAX_LENGTH, type ContentRef } from './content.js'
 
 // The standard context of the visit (`client` block) and the buyer reference (`buyer_id`).
 export {
   resolveClientContext,
   resolveLanding,
+  storedLanding,
   landingUrl,
   CLIENT_LANDING_URL_MAX_LENGTH,
   type ClientContext,
@@ -48,7 +49,9 @@ export { normalizeBuyerRef, BUYER_REF_MAX_LENGTH } from './buyer-ref.js'
 export {
   lineOriginWire,
   LINE_ORIGIN_CAPS,
+  GRAPHQL_INT_MAX,
   type LineOriginWire,
+  type LineOriginWireOptions,
   type OriginPage,
 } from './cart/origin-wire.js'
 export {

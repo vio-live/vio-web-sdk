@@ -25,6 +25,8 @@
  * storage, or without consent to persist, each page stands alone.
  */
 
+import { originAndPath } from '../content.js'
+
 export interface ClientContext {
   language?: string
   referrer?: string
@@ -121,7 +123,7 @@ export function resolveLanding(env: ClientEnvironment = defaultClientEnvironment
   }
 }
 
-/** A referrer as the landing keeps it: origin + path, no query, no fragment; capped. */
+/** A referrer as the landing keeps it: origin + path, no query, no fragment; capped (`originAndPath`, content.ts). */
 export function landingReferrer(raw: unknown): string | undefined {
   return originAndPath(raw, CLIENT_REFERRER_MAX_LENGTH)
 }
@@ -131,17 +133,14 @@ export function landingUrl(raw: unknown): string | undefined {
   return originAndPath(raw, CLIENT_LANDING_URL_MAX_LENGTH)
 }
 
-function originAndPath(raw: unknown, max: number): string | undefined {
-  const value = text(raw)
-  if (!value) return undefined
-  try {
-    const url = new URL(value)
-    return cut(`${url.origin}${url.pathname}`, max)
-  } catch {
-    // Not an absolute URL (an old engine, a scheme-less value): without its query and fragment.
-    const end = value.search(/[?#]/)
-    return cut(end >= 0 ? value.slice(0, end) : value, max)
-  }
+/**
+ * The landing this session REMEMBERS — what was written by the first page —
+ * or null when nothing is stored (no storage, no consent, analytics never
+ * started). Read only: for the order's entry context, which must not take the
+ * page the shopper pays on for the page they came in through.
+ */
+export function storedLanding(storage: StorageLike | null | undefined = defaultClientEnvironment().storage): Landing | null {
+  return readLanding(storage)
 }
 
 /** True when the referrer's host is this page's host (`location.host`, port included). */

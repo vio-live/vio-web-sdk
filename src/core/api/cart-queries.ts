@@ -1060,8 +1060,8 @@ export function getCustomerSessionId(): string {
 }
 
 interface GraphQLEnvelope {
-  data?: Record<string, Record<string, unknown>>
-  errors?: Array<{ message?: string }>
+  data?: Record<string, Record<string, unknown>> | null
+  errors?: Array<{ message?: string; path?: unknown }>
 }
 
 /** Upper bound for one commerce GraphQL round trip. A request that never
@@ -1116,9 +1116,10 @@ export async function executeCartGraphQL(
     if (!res.ok || json.errors) {
       const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
       // What the envelope says travels with the error — whether anything ran
-      // (`data`) and the errors, never the data itself — so a caller can tell
-      // a validation error (the gateway refused the selection, nothing ran)
-      // from a failure of something that did run; see `isUnknownFieldError`.
+      // (`data`, or an error with a `path`) and the errors, never the data
+      // itself — so a caller can tell a validation error (the gateway refused
+      // the selection, nothing ran) from a failure of something that did run;
+      // see gateway-features `isUnknownTokenError`.
       throw Object.assign(new Error(errMsg), {
         graphql: { hasData: json.data !== undefined && json.data !== null, errors: json.errors ?? [] },
       })

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { CONTENT_URL_MAX_LENGTH, capContentUrl, resolveContent } from './content.js'
+import { CONTENT_URL_MAX_LENGTH, capContentUrl, originAndPath, resolveContent } from './content.js'
 
 /** A document with only what the resolver asks: metas/links by selector + title. */
 function fakeDocument(nodes: Record<string, Record<string, string>>, title = '') {
@@ -111,17 +111,26 @@ describe('resolveContent — safety', () => {
   })
 })
 
-describe('resolveContent — url (what `content_url` and the order carry)', () => {
-  it('is location.href within the cap, whatever the id resolves to', () => {
-    const at = { href: 'https://host.example/sport/7?x=1#top', pathname: '/sport/7', search: '?x=1' }
-    expect(resolveContent({}, fakeDocument({}), at)).toEqual({ id: '/sport/7', url: 'https://host.example/sport/7?x=1#top' })
+describe('resolveContent — url (what the order and the cart\'s origins carry as `content_url`)', () => {
+  it('is location.href as origin + path — no query, no fragment — whatever the id resolves to', () => {
+    const at = { href: 'https://host.example/sport/7?email=kari@example.no&x=1#top', pathname: '/sport/7', search: '?x=1' }
+    expect(resolveContent({}, fakeDocument({}), at)).toEqual({ id: '/sport/7', url: 'https://host.example/sport/7' })
     expect(resolveContent({}, fakeDocument({}), { pathname: '/p' })).toEqual({ id: '/p' })
     // A document that throws still leaves the url.
     const throwing = { querySelector: () => { throw new Error('no') } } as unknown as Document
-    expect(resolveContent({}, throwing, at).url).toBe(at.href)
+    expect(resolveContent({}, throwing, at).url).toBe('https://host.example/sport/7')
   })
 
-  it('capContentUrl: as is, else without the query string, else cut', () => {
+  it('originAndPath: origin + path within the cap; a relative value without its query and fragment', () => {
+    expect(originAndPath('https://h/a/b?x=1#y')).toBe('https://h/a/b')
+    expect(originAndPath('/a/b?x=1#y')).toBe('/a/b')
+    expect(originAndPath(`https://h/${'p'.repeat(3_000)}`)).toHaveLength(CONTENT_URL_MAX_LENGTH)
+    expect(originAndPath('https://h/a', 5)).toBe('https')
+    expect(originAndPath('  ')).toBeUndefined()
+    expect(originAndPath(undefined)).toBeUndefined()
+  })
+
+  it('capContentUrl (the analytics events): as is, else without the query string, else cut', () => {
     const long = 'p'.repeat(2_100)
     expect(capContentUrl('https://h/a?x=1')).toBe('https://h/a?x=1')
     expect(capContentUrl(`https://h/a?q=${long}`)).toBe('https://h/a')

@@ -111,6 +111,23 @@ describe('withGatewayFeature', () => {
     expect(gatewayHasBuyerRef()).toBe(true)
   })
 
+  it('an error with a path is a resolver that failed — something ran — even with data: null, and is never retried', async () => {
+    const ran = e('Unknown argument "origin" said a resolver, not the validator', {
+      hasData: false,
+      errors: [{ message: 'Unknown argument "origin" said a resolver, not the validator', path: ['Cart', 'UpdateItem'] }],
+    })
+    expect(isUnknownTokenError(ran, 'origin')).toBe(false)
+    expect(isUnknownFeatureError(ran, 'line_origin')).toBe(false)
+    const request = vi.fn(async () => {
+      throw ran
+    })
+    await expect(withGatewayFeature('line_origin', request)).rejects.toThrow()
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(gatewayHas('line_origin')).toBe(true)
+    // An empty path says nothing.
+    expect(isUnknownTokenError(e('x', { hasData: false, errors: [{ message: 'Unknown type "CartLineOriginInput".', path: [] }] }), 'CartLineOriginInput')).toBe(true)
+  })
+
   it('any other failure is thrown as is — and never retried', async () => {
     const request = vi.fn(async () => {
       throw e('boom', { hasData: true, errors: [{ message: 'Unknown argument "origin"' }] })
@@ -203,6 +220,14 @@ describe('the mutations', () => {
   it('an UpdateCheckout that RAN and failed is thrown, not retried (it would be a second write)', async () => {
     gateway({ body: { data: { Checkout: null }, errors: [{ message: 'Unknown argument "attribution" — but something ran' }] } })
     await expect(updateCheckout({ checkoutId: 'CHK', attribution: ATTRIBUTION }, OPTS)).rejects.toThrow()
+    expect(gatewayHas('checkout_attribution')).toBe(true)
+    // Apollo's shape for a resolver that failed under a non-null root: data null, the error with a path.
+    const { sent } = gateway({
+      body: { data: null, errors: [{ message: 'Unknown argument "attribution" in a resolver message', path: ['Checkout', 'UpdateCheckout'] }] },
+      status: 200,
+    })
+    await expect(updateCheckout({ checkoutId: 'CHK', attribution: ATTRIBUTION }, OPTS)).rejects.toThrow()
+    expect(sent).toHaveLength(1)
     expect(gatewayHas('checkout_attribution')).toBe(true)
   })
 })

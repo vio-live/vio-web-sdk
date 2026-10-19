@@ -11,6 +11,8 @@ vi.mock('../api/cart-queries.js', async (importOriginal) => ({
   getCartGraphQLOptions: vi.fn(async () => ({})),
   createCheckout: vi.fn(async () => ({ id: 'CHK-1' })),
   updateCheckout: vi.fn(async (vars: { checkoutId: string }) => ({ id: vars.checkoutId })),
+  createPaymentApplePay: vi.fn(async () => ({ gateway_merchant_id: 'acct_1' })),
+  confirmPaymentApplePay: vi.fn(async () => ({ status: 'succeeded', order_id: 4497 })),
 }))
 
 import * as cartQueries from '../api/cart-queries.js'
@@ -33,6 +35,8 @@ type Prepare = {
 beforeEach(() => {
   vi.mocked(cartQueries.createCheckout).mockClear()
   vi.mocked(cartQueries.updateCheckout).mockClear()
+  vi.mocked(cartQueries.createPaymentApplePay).mockClear()
+  vi.mocked(cartQueries.confirmPaymentApplePay).mockClear()
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
@@ -95,6 +99,37 @@ describe('and attributed again right before paying', () => {
     await m.updateCheckout({ checkoutId: 'CHK-1', paymentMethod: 'Apple Pay' }, 5)
     expect(cartQueries.updateCheckout).toHaveBeenLastCalledWith(
       { buyerAcceptsPurchaseConditions: true, buyerAcceptsTermsConditions: true, checkoutId: 'CHK-1', paymentMethod: 'Apple Pay' },
+      expect.anything(),
+    )
+  })
+})
+
+describe('Apple Pay: the charge closure inside the authorize event', () => {
+  type Authorize = { buildApplePayAuthorize: (spId: number) => (raw: unknown) => Promise<unknown> }
+  const raw = { paymentMethodId: 'pm_1', payerEmail: 'kari@example.no', payerName: 'Kari Nordmann', shippingAddress: { addressLine: ['Gata 1'], locality: 'Oslo', postalCode: '0150', countryCode: 'NO' } }
+
+  it('creates the checkout attributed and records the method with the attribution — synchronously read, nothing awaited for it', async () => {
+    const orderAttribution = vi.fn(() => ATTRIBUTION) // a plain value: the facade's is synchronous
+    const m = new CheckoutManager(cart(), { orderAttribution }) as unknown as Authorize
+    const result = await m.buildApplePayAuthorize(5)(raw)
+    expect(result).toMatchObject({ orderId: 4497, status: 'succeeded' })
+    expect(cartQueries.createCheckout).toHaveBeenCalledWith('cart-1', expect.anything(), { attribution: ATTRIBUTION })
+    expect(cartQueries.updateCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({ checkoutId: 'CHK-1', paymentMethod: 'Apple Pay', email: 'kari@example.no', attribution: ATTRIBUTION }),
+      expect.anything(),
+    )
+    expect(cartQueries.confirmPaymentApplePay).toHaveBeenCalledWith(
+      expect.objectContaining({ checkoutId: 'CHK-1', applePayToken: 'pm_1', email: 'kari@example.no' }),
+      expect.anything(),
+    )
+  })
+
+  it('without a facade the sheet charges exactly as before', async () => {
+    const m = new CheckoutManager(cart()) as unknown as Authorize
+    await m.buildApplePayAuthorize(5)(raw)
+    expect(vi.mocked(cartQueries.createCheckout).mock.calls[0]).toHaveLength(2)
+    expect(cartQueries.updateCheckout).toHaveBeenCalledWith(
+      { buyerAcceptsPurchaseConditions: true, buyerAcceptsTermsConditions: true, checkoutId: 'CHK-1', paymentMethod: 'Apple Pay', email: 'kari@example.no' },
       expect.anything(),
     )
   })

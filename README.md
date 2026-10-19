@@ -274,7 +274,7 @@ and so do the Vev blocks and the Replit site:
 
 ```ts
 Vio.attribution('hero')
-// → { slot: 'hero', campaignId: 12, sponsorId: 7, contentId: 'article-42', contentTitle: 'Why the lamp matters', contentUrl: 'https://host.example/article-42' }
+// → { slot: 'hero', campaignId: 12, sponsorId: 7, contentId: 'article-42', contentTitle: 'Why the lamp matters', contentUrl: 'https://host.example/article-42' } // contentUrl: origin + path
 ```
 
 `campaignId`/`sponsorId` are the slot's campaign and its primary sponsor (`{}` before
@@ -360,8 +360,9 @@ Since 0.26 the origins do not stay in the browser: **Commerce receives them**
 - **Per line.** Every `AddItem` carries the line's `origin` — `{ campaign_id,
   location_id (the slot), component_kind, content_url, content_title }` — and a
   quantity **increase** carries, on `UpdateItem`, the origin of the units it adds (the
-  given one, else the line's most recent); a decrease and a removal carry none, and an
-  add without an origin sends none (the line inherits the order's campaign on the
+  given one, else the line's most recent; a burst of +1 from two places is two
+  updates, each with its own origin); a decrease and a removal carry none, and an add
+  without an origin sends none (the line inherits the order's campaign on the
   server). `component_kind` is the kind of element as the collector names it too
   (`card` | `carousel` | `detail`: the element's `componentTemplateId` without its
   `product-` / `vev-` prefix, else the kind word in the slot id), so
@@ -369,32 +370,47 @@ Since 0.26 the origins do not stay in the browser: **Commerce receives them**
   every origin of a line with its units and writes `order_item.campaign_id` /
   `location_id` / `component_kind` from them.
 - **Per checkout.** `CreateCheckout` and the `UpdateCheckout` right before paying
-  carry `attribution`: `surface_key` (the SDK key — shopcart checks it against the
-  cart's channel, so a page cannot credit a sale to another surface), `campaign_id`
-  (the page's campaign, `Vio.pageCampaign()` — else the campaign that explains most
-  units of the cart under the same rule `purchase` is split by), `content_url` /
-  `content_title` (the page at pay time) and `entry` (`{ referrer, utm_source,
-  utm_medium, utm_campaign, landing_url }`: the landing of the session, the same
-  memory the `client` block reads — the landing page itself is remembered too now, as
-  origin + path). They become `order.surface_id` / `campaign_id` / `content_url` /
+  carry `attribution`: `surface_key` (the SDK key — the gateway sets it from
+  `X-API-Key` anyway, and shopcart checks it against the cart's channel, so a page
+  cannot credit a sale to another surface), `campaign_id` (the page's campaign,
+  `Vio.pageCampaign()` — else the campaign that explains most units of the cart under
+  the same rule `purchase` is split by), `content_url` / `content_title` (the page at
+  pay time) and `entry` (`{ referrer, utm_source, utm_medium, utm_campaign,
+  landing_url }`: the landing the session **remembers** — the same memory the
+  `client` block reads, which now keeps the landing page too — never the page the
+  shopper pays on taken for a landing; without a remembered landing there is no
+  `entry`). They become `order.surface_id` / `campaign_id` / `content_url` /
   `content_title` / `entry_source`. `Vio.orderAttribution(sponsorId?)` answers what
-  would be sent (never throws).
-- **Privacy.** On a **`minimal`** surface the `entry` is not sent — what can reveal
-  why someone is on the page stays off the order, as the collector drops it from the
-  events. The mode comes from `Vio.init({ privacyMode: 'minimal' })` when the host
-  knows it (always wins), else the bootstrap's `surface.privacyMode`, else the surface
-  itself (`GET /v2/mobile/surface`, asked once per page load, at most 1.5 s; a service
-  that predates it means `standard`). When none of them could tell, the entry stays
-  off too. `Vio.privacyMode()` answers it.
+  would be sent — synchronously: nothing on the way to a payment waits for it.
+- **`content_url` is origin + path**, no query string, no fragment — on the order,
+  on the lines and in the landing: the query is where a page carries e-mails, tokens
+  and tracking tails, and none of that belongs on an order row. A site whose article
+  lives in the query or the hash identifies it through `contentId` (`Vio.init({
+  contentId })`, `?vio_content=`, the `vio:content-id` meta), not through the URL.
+  The analytics events keep `location.href` as before.
+- **Privacy.** On a **`minimal`** surface what says *which screen* a unit was sold
+  from and *why the shopper was there* stays off Commerce — the same promise the
+  collector keeps for the events (vio-analytics `privacy.ts`): no `content_url`, no
+  `content_title`, no `location_id` on the lines, no `entry`; `surface_key`,
+  `campaign_id` and `component_kind` do travel. The mode comes from
+  `Vio.init({ privacyMode: 'minimal' })` when the host knows it (always wins), else
+  the bootstrap's `surface.privacyMode`, else the surface itself: `GET
+  /v2/mobile/surface`, asked **once at `Vio.init()`** (and again by `bootstrap()` if
+  that failed), given 1.5 s, believed for the page load — a failure or a timeout is
+  believed for a minute, then asked again; a service that predates the endpoint (404)
+  means `standard`; a word the SDK does not know does not. The payment path reads
+  what is known at that moment (`Vio.privacyModeNow()`) and never waits; an unknown
+  mode counts as `minimal`. The cart's lines wait for the ask in flight, at most its
+  cap (`Vio.privacyMode()`).
 - **A gateway that predates these arguments** (`origin` on `LineItemInput` /
   `UpdateItem`, `attribution` on `CreateCheckout` / `UpdateCheckout`) refuses the
   operation at validation, before anything runs: the SDK sends it again without them,
   once per page load, says so in the console, and the cart works as in 0.25. Nothing
-  that ran is ever repeated.
+  that ran — data in the answer, or an error with a `path` — is ever repeated.
 
 Everything is capped to Commerce's columns in one place (`lineOriginWire`,
-`checkoutAttributionOf`, exported from `/core`): slot 100, kind 32, URL 2 048 (the
-query string goes first), title 255, referrer 2 048, utm 128.
+`checkoutAttributionOf`, exported from `/core`): slot 100, kind 32, URL 2 048, title
+255, referrer 2 048, utm 128; `campaign_id` only as a positive 32-bit `Int`.
 
 ### The visit and the buyer — `client` and `buyer_id` (0.25)
 

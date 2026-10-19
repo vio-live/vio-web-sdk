@@ -20,9 +20,9 @@ import {
   type Product,
 } from '../types.js'
 import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
-import { currentOriginPage, lineOriginWire } from './origin-wire.js'
+import { currentOriginPage, currentPrivacyMode, lineOriginWire } from './origin-wire.js'
 import { componentKindOf } from '../slots.js'
-import { CONTENT_TITLE_MAX_LENGTH, capContentUrl } from '../content.js'
+import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
 import {
   addItem as gqlAddItem,
   createCart as gqlCreateCart,
@@ -68,16 +68,65 @@ export interface AddManualOptions {
   origin?: CartOrigin
 }
 
+/**
+ * One change queued behind the request in flight: `delta` units more —
+ * credited to `origin`, the place they were added from — or fewer (no
+ * origin; the server takes them off the most recent, as the line does).
+ */
+interface QtyStep {
+  delta: number
+  origin?: CartOrigin
+}
+
 /** One backend quantity sync for one line. See `CartManager.qtySyncs`. */
 interface QtySync {
   /** Target quantity of the request currently in flight. */
   sent: number
-  /** Latest target that arrived while in flight — the only one sent next. */
-  pending?: number
-  /** Where the units the in-flight request ADDS come from (an increase); nothing for a decrease. */
-  origin?: CartOrigin
-  /** The same, for `pending`. */
-  pendingOrigin?: CartOrigin
+  /**
+   * What arrived while in flight, in order, reduced as the line's own
+   * origins are (a decrease comes off the most recent queued increase
+   * first): one request per step once the current one settles, so every
+   * increase reaches the server with ITS origin — a burst of +1 from the
+   * hero and +1 from the carousel is two updates, not one credited to the
+   * last. The line is heading to `sent + Σ delta`.
+   */
+  steps: QtyStep[]
+}
+
+/** The quantity a sync is heading to once every queued step has gone out. */
+function finalTarget(sync: QtySync): number {
+  return sync.steps.reduce((quantity, step) => quantity + step.delta, sync.sent)
+}
+
+/**
+ * Queue a target behind the request in flight: more units go on the last
+ * step when it is an increase from the same origin, else on a new one; fewer
+ * come off the most recent queued increases first and, past them, become a
+ * decrease below what is in flight. A target already reached queues nothing.
+ */
+function queueStep(sync: QtySync, target: number, origin: CartOrigin | undefined): void {
+  const delta = target - finalTarget(sync)
+  if (delta === 0) return
+  if (delta > 0) {
+    const last = sync.steps[sync.steps.length - 1]
+    if (last && last.delta > 0 && sameOrigin(last.origin ?? {}, origin ?? {})) last.delta += delta
+    else sync.steps.push({ delta, origin })
+    return
+  }
+  let left = -delta
+  while (left > 0 && sync.steps.length > 0) {
+    const last = sync.steps[sync.steps.length - 1]!
+    if (last.delta <= 0) break
+    const take = Math.min(last.delta, left)
+    last.delta -= take
+    left -= take
+    if (last.delta === 0) sync.steps.pop()
+  }
+  if (left > 0) {
+    const last = sync.steps[sync.steps.length - 1]
+    if (last && last.delta < 0) last.delta -= left
+    else sync.steps.push({ delta: -left })
+  }
 }
 
 function lineId(): string {
@@ -180,7 +229,7 @@ export class CartManager extends EventTarget {
    * undefined when no quantity sync is active for it. */
   private intendedQuantity(sponsorId: number, cartItemId: string): number | undefined {
     const sync = this.qtySyncs.get(this.qtySyncKey(sponsorId, cartItemId))
-    return sync ? (sync.pending ?? sync.sent) : undefined
+    return sync ? finalTarget(sync) : undefined
   }
 
   /** Apply a backend response only if no newer response was applied already.
@@ -573,8 +622,15 @@ export class CartManager extends EventTarget {
         if (cartId) {
           const gqlOpts = await getCartGraphQLOptions(opts.sponsorId)
           // Where these units come from, for the order (ADR-0035 phase B):
-          // the add's own origin; nothing when the host gave none.
-          const origin = opts.origin ? lineOriginWire(normalizeOrigin(opts.origin), currentOriginPage()) : undefined
+          // the add's own origin; nothing when the host gave none. On a
+          // `minimal` surface (or one whose mode is not known) the slot and
+          // the page stay out of it — see `lineOriginWire`.
+          const origin = opts.origin
+            ? lineOriginWire(normalizeOrigin(opts.origin), {
+                page: currentOriginPage(),
+                privacyMode: await currentPrivacyMode(),
+              })
+            : undefined
           const lineItemsInput = [
             {
               product_id: Number(opts.productId || 0),
@@ -713,12 +769,15 @@ export class CartManager extends EventTarget {
   }
 
   /** Send a line's target quantity to the backend — ONE request in flight per
-   * line. A target that arrives while one is in flight replaces any earlier
-   * waiting one and goes out when the current request settles, so the server
-   * ends on the last intent and never sees two updates racing each other.
-   * While the sync is active the line keeps its optimistic quantity through
-   * any backend response (see `updateFromBackendCart`); a rejection drops
-   * what was queued and reconciles the cart from the server. */
+   * line. Targets that arrive while one is in flight queue behind it as
+   * steps (`queueStep`): reduced like the line's origins, sent in order once
+   * the current request settles — one request per queued increase from a
+   * different origin, one for a net decrease — so the server ends on the
+   * last intent, credits every increase to its own origin, and never sees two
+   * updates racing each other. While the sync is active the line keeps its
+   * optimistic quantity through any backend response (see
+   * `updateFromBackendCart`); a rejection drops what was queued and
+   * reconciles the cart from the server. */
   private syncQuantity(
     sponsorId: number,
     backendCartId: string,
@@ -729,11 +788,10 @@ export class CartManager extends EventTarget {
     const key = this.qtySyncKey(sponsorId, cartItemId)
     const active = this.qtySyncs.get(key)
     if (active) {
-      active.pending = target
-      active.pendingOrigin = origin
+      queueStep(active, target, origin)
       return
     }
-    const sync: QtySync = { sent: target, origin }
+    const sync: QtySync = { sent: target, steps: [] }
     this.qtySyncs.set(key, sync)
 
     // This mutation, for `applyBackendCart` to tell its own answer from the others'.
@@ -743,30 +801,36 @@ export class CartManager extends EventTarget {
       let nextOrigin: CartOrigin | undefined = origin
       let removalRetried = false
       while (next !== undefined) {
-        sync.sent = next
-        sync.origin = nextOrigin
-        sync.pending = undefined
-        sync.pendingOrigin = undefined
         const seq = this.nextSeq(sponsorId)
         try {
           const gqlOpts = await getCartGraphQLOptions(sponsorId)
           // The origin of the units this update adds (ADR-0035 phase B) —
           // when it was an increase and the SDK knows a place for them.
-          const originWire = next > 0 && nextOrigin ? lineOriginWire(nextOrigin, currentOriginPage()) : undefined
+          const originWire =
+            next > 0 && nextOrigin
+              ? lineOriginWire(nextOrigin, { page: currentOriginPage(), privacyMode: await currentPrivacyMode() })
+              : undefined
           const resCart =
             next <= 0
               ? await gqlDeleteItem(backendCartId, cartItemId, gqlOpts)
               : originWire
                 ? await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts, { origin: originWire })
                 : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
-          next = sync.pending
-          nextOrigin = sync.pendingOrigin
-          // Back where the server already is (+, +, − while in flight):
-          // nothing to send.
-          if (next === sync.sent) next = undefined
-          // Nothing newer queued: the server's view of this line is the truth
-          // now. With a newer target queued the entry stays, so this (already
-          // stale) response cannot roll the line back.
+          // The next queued step, if any: an increase with its origin, or a
+          // decrease. It becomes `sent` at once — the line is heading there,
+          // and the response being applied below must not roll it back.
+          const step = sync.steps.shift()
+          if (step) {
+            next = sync.sent + step.delta
+            nextOrigin = step.delta > 0 ? step.origin : undefined
+            sync.sent = next
+          } else {
+            next = undefined
+            nextOrigin = undefined
+          }
+          // Nothing queued: the server's view of this line is the truth now.
+          // With a step queued the entry stays, so this (already stale)
+          // response cannot roll the line back.
           if (next === undefined) this.qtySyncs.delete(key)
           if (resCart && Array.isArray(resCart.line_items)) {
             const applied = this.applyBackendCart(sponsorId, resCart, seq, settling)
@@ -780,16 +844,14 @@ export class CartManager extends EventTarget {
           // (the line is gone, vio:removed-from-cart went out), so it is sent
           // once more, once, instead of letting the reconcile bring the line
           // back without a DeleteItem ever going out.
-          const retryRemoval = !removalRetried && sync.pending !== undefined && sync.pending <= 0
+          const retryRemoval = !removalRetried && sync.steps.length > 0 && finalTarget(sync) <= 0
+          sync.steps = []
           next = undefined
           nextOrigin = undefined
           if (retryRemoval) {
             removalRetried = true
             // Entry stays (heading to 0): the reconcile below leaves the line out.
             sync.sent = 0
-            sync.origin = undefined
-            sync.pending = undefined
-            sync.pendingOrigin = undefined
             next = 0
           } else {
             this.qtySyncs.delete(key)
@@ -946,7 +1008,7 @@ export class CartManager extends EventTarget {
  * of element is kept as Commerce and the collector name it (`card`,
  * `carousel`, `detail` — `componentKindOf`), from `componentKind` or from
  * the `componentTemplateId` an element's attribution carries (`product-card`);
- * the page (`contentUrl`, `contentTitle`) within Commerce's caps.
+ * the page as origin + path (`contentUrl`) and its title, within Commerce's caps.
  */
 export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrigin {
   const out: CartOrigin = {}
@@ -961,7 +1023,7 @@ export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrig
   }
   const kind = componentKindOf(origin.componentKind ?? (origin as { componentTemplateId?: unknown }).componentTemplateId)
   if (kind) out.componentKind = kind
-  const contentUrl = capContentUrl(origin.contentUrl)
+  const contentUrl = originAndPath(origin.contentUrl)
   if (contentUrl) out.contentUrl = contentUrl
   if (typeof origin.contentTitle === 'string' && origin.contentTitle.trim()) {
     out.contentTitle = origin.contentTitle.trim().slice(0, CONTENT_TITLE_MAX_LENGTH)

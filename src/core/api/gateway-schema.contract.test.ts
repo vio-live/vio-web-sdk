@@ -12,13 +12,17 @@
 
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { buildSchema, getOperationAST, getVariableValues, parse, validate } from 'graphql'
 import { describe, expect, it } from 'vitest'
 import { lineOriginWire } from '../cart/origin-wire.js'
 import { checkoutAttributionOf } from '../checkout/attribution.js'
 import {
   ADD_ITEM_MUTATION,
+  CREATE_CHECKOUT_MUTATION,
   CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
+  UPDATE_CHECKOUT_MUTATION,
   UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
+  UPDATE_ITEM_MUTATION,
   UPDATE_ITEM_WITH_ORIGIN_MUTATION,
 } from './cart-queries.js'
 import { featureTokens } from './gateway-features.js'
@@ -67,6 +71,7 @@ const bareType = (type: string) => type.replace(/[[\]!]/g, '')
 /** A fully filled origin / attribution: every field the SDK can ever send. */
 const ORIGIN = lineOriginWire(
   { campaignId: 1, slot: 'hero', componentKind: 'card', contentUrl: 'https://h.example/a', contentTitle: 'T' },
+  { privacyMode: 'standard' },
 )!
 const ATTRIBUTION = checkoutAttributionOf({
   surfaceKey: 'k',
@@ -131,5 +136,68 @@ describe(`the gateway schema (${process.env.VIO_GATEWAY_SCHEMA ? 'VIO_GATEWAY_SC
     expect(featureTokens('checkout_attribution')).toContain(entryType)
     const entry = inputFields(entryType)
     for (const field of Object.keys(ATTRIBUTION.entry!)) expect(entry, `entry.${field}`).toHaveProperty(field)
+  })
+})
+
+describe('the gateway schema, validated for real (graphql)', () => {
+  const built = buildSchema(schema)
+
+  /** The operation validated against the schema and its variables coerced — what the gateway does before running anything. */
+  function accepts(document: string, variables: Record<string, unknown>) {
+    const doc = parse(document)
+    const errors = validate(built, doc)
+    expect(errors.map((e) => e.message)).toEqual([])
+    const operation = getOperationAST(doc)!
+    const coerced = getVariableValues(built, operation.variableDefinitions ?? [], variables)
+    expect((coerced.errors ?? []).map((e) => e.message)).toEqual([])
+    return coerced.coerced!
+  }
+
+  it('AddItem with origin on the line', () => {
+    const coerced = accepts(ADD_ITEM_MUTATION, {
+      cartId: 'c',
+      lineItems: [{ product_id: 9, quantity: 1, variant_id: null, origin: ORIGIN }],
+    })
+    expect((coerced.lineItems as Array<{ origin: unknown }>)[0]!.origin).toEqual(ORIGIN)
+  })
+
+  it('UpdateItem with $origin', () => {
+    const coerced = accepts(UPDATE_ITEM_WITH_ORIGIN_MUTATION, { cartId: 'c', cartItemId: 'i', shippingId: null, qty: 2, origin: ORIGIN })
+    expect(coerced.origin).toEqual(ORIGIN)
+  })
+
+  it('CreateCheckout and UpdateCheckout with $attribution', () => {
+    expect(accepts(CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION, { cartId: 'c', attribution: ATTRIBUTION }).attribution).toEqual(ATTRIBUTION)
+    const vars = {
+      checkoutId: 'CHK',
+      email: 'kari@example.no',
+      buyerAcceptsPurchaseConditions: true,
+      buyerAcceptsTermsConditions: true,
+      attribution: ATTRIBUTION,
+    }
+    expect(accepts(UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION, vars).attribution).toEqual(ATTRIBUTION)
+  })
+
+  it('a campaign_id over Int would be refused at coercion — which is why the SDK never sends one', () => {
+    const doc = parse(UPDATE_ITEM_WITH_ORIGIN_MUTATION)
+    const operation = getOperationAST(doc)!
+    const coerced = getVariableValues(built, operation.variableDefinitions ?? [], {
+      cartId: 'c',
+      cartItemId: 'i',
+      qty: 2,
+      origin: { campaign_id: 2_147_483_648 },
+    })
+    expect(coerced.errors?.length ?? 0).toBeGreaterThan(0)
+    expect(lineOriginWire({ campaignId: 2_147_483_648, slot: 'hero' }, { privacyMode: 'standard' })).not.toHaveProperty('campaign_id')
+  })
+
+  it('the legacy documents validate too (what a gateway that predates the arguments gets)', () => {
+    for (const [document, variables] of [
+      [UPDATE_ITEM_MUTATION, { cartId: 'c', cartItemId: 'i', shippingId: null, qty: 1 }],
+      [CREATE_CHECKOUT_MUTATION, { cartId: 'c' }],
+      [UPDATE_CHECKOUT_MUTATION, { checkoutId: 'CHK' }],
+    ] as const) {
+      accepts(document, variables as Record<string, unknown>)
+    }
   })
 })

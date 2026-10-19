@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 import type { CartSlice } from '../cart/slices.js'
+import { GRAPHQL_INT_MAX } from '../cart/origin-wire.js'
 import { CHECKOUT_ATTRIBUTION_CAPS, checkoutAttributionOf, dominantCampaignOf, entryContextOf } from './attribution.js'
 
 const LANDING = {
@@ -14,7 +15,8 @@ const LANDING = {
   utm: { utm_source: 'nyhetsbrev', utm_medium: 'email', utm_campaign: 'okt', utm_term: 'ignored', utm_content: 'ignored' },
   url: 'https://host.example/landing',
 }
-const CONTENT = { url: 'https://host.example/article?x=1', title: 'Why the lamp matters' }
+const CONTENT = { url: 'https://host.example/article?email=kari@example.no&utm_source=x#frag', title: 'Why the lamp matters' }
+const PAGE = 'https://host.example/article'
 
 const slice = (campaignId: number | undefined, units: number, value = units * 100): CartSlice => ({
   campaignId,
@@ -31,7 +33,7 @@ describe('checkoutAttributionOf', () => {
     ).toEqual({
       surface_key: 'surface-key',
       campaign_id: 7,
-      content_url: CONTENT.url,
+      content_url: PAGE,
       content_title: CONTENT.title,
       entry: {
         referrer: 'https://news.example/front',
@@ -56,23 +58,25 @@ describe('checkoutAttributionOf', () => {
     expect(checkoutAttributionOf({ surfaceKey: 'k', slices: [slice(undefined, 5)] })).toEqual({ surface_key: 'k' })
   })
 
-  it('minimal — or unknown — keeps the entry off the order', () => {
+  it('content_url is origin + path: the query (an e-mail, a token, the utm) and the fragment never reach the order', () => {
+    expect(checkoutAttributionOf({ content: { url: CONTENT.url }, privacyMode: 'standard' })).toEqual({ content_url: PAGE })
+    expect(checkoutAttributionOf({ content: { url: '/a/b?x=1#y' }, privacyMode: 'standard' })).toEqual({ content_url: '/a/b' })
+  })
+
+  it('minimal — or unknown — keeps the page, its title and the entry off the order; the surface and the campaign stay', () => {
     const base = { surfaceKey: 'k', pageCampaignId: 7, content: CONTENT, landing: LANDING }
-    expect(checkoutAttributionOf({ ...base, privacyMode: 'minimal' })).toEqual({
-      surface_key: 'k',
-      campaign_id: 7,
-      content_url: CONTENT.url,
-      content_title: CONTENT.title,
-    })
-    expect(checkoutAttributionOf({ ...base, privacyMode: 'unknown' })).not.toHaveProperty('entry')
-    expect(checkoutAttributionOf(base)).not.toHaveProperty('entry')
+    expect(checkoutAttributionOf({ ...base, privacyMode: 'minimal' })).toEqual({ surface_key: 'k', campaign_id: 7 })
+    expect(checkoutAttributionOf({ ...base, privacyMode: 'unknown' })).toEqual({ surface_key: 'k', campaign_id: 7 })
+    expect(checkoutAttributionOf(base)).toEqual({ surface_key: 'k', campaign_id: 7 })
+    // Only the page known, on a minimal surface: nothing to say.
+    expect(checkoutAttributionOf({ content: CONTENT, landing: LANDING, privacyMode: 'minimal' })).toBeUndefined()
   })
 
   it('an empty entry is omitted; nothing at all is undefined', () => {
     expect(checkoutAttributionOf({ surfaceKey: 'k', landing: {}, privacyMode: 'standard' })).toEqual({ surface_key: 'k' })
     expect(checkoutAttributionOf({ surfaceKey: 'k', landing: null, privacyMode: 'standard' })).toEqual({ surface_key: 'k' })
     expect(checkoutAttributionOf({})).toBeUndefined()
-    expect(checkoutAttributionOf({ surfaceKey: '  ', content: { url: '', title: ' ' } })).toBeUndefined()
+    expect(checkoutAttributionOf({ surfaceKey: '  ', content: { url: '', title: ' ' }, privacyMode: 'standard' })).toBeUndefined()
   })
 
   it('cuts to the caps of the DTO: key 255, title 255, url 2 048 (query first), referrer 2 048, utm 128, landing 2 048', () => {
@@ -97,13 +101,16 @@ describe('checkoutAttributionOf', () => {
     expect(out.entry!.utm_medium).toHaveLength(CHECKOUT_ATTRIBUTION_CAPS.utm)
     expect(out.entry!.utm_campaign).toHaveLength(CHECKOUT_ATTRIBUTION_CAPS.utm)
     expect(out.entry!.landing_url).toHaveLength(CHECKOUT_ATTRIBUTION_CAPS.landingUrl)
-    // A page URL over the cap loses its query string first; one that then fits is kept whole.
-    expect(checkoutAttributionOf({ content: { url: `https://host.example/a?q=${long(2_100)}` } })!.content_url).toBe('https://host.example/a')
   })
 
-  it('campaign_id only as a positive integer', () => {
+  it('campaign_id only as a positive 32-bit Int (a bigger one would fail the whole mutation)', () => {
     expect(checkoutAttributionOf({ pageCampaignId: 0, slices: [slice(2.5 as never, 1)] })).toBeUndefined()
     expect(checkoutAttributionOf({ pageCampaignId: -1 })).toBeUndefined()
+    expect(checkoutAttributionOf({ pageCampaignId: GRAPHQL_INT_MAX })).toEqual({ campaign_id: 2_147_483_647 })
+    expect(checkoutAttributionOf({ pageCampaignId: GRAPHQL_INT_MAX + 1 })).toBeUndefined()
+    // Over the cap on the page: the cart's dominant campaign, if any, else nothing.
+    expect(checkoutAttributionOf({ pageCampaignId: GRAPHQL_INT_MAX + 1, slices: [slice(9, 1)] })).toEqual({ campaign_id: 9 })
+    expect(dominantCampaignOf([slice(GRAPHQL_INT_MAX + 1, 5), slice(7, 1)])).toBe(7)
   })
 })
 

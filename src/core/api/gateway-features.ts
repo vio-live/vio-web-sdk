@@ -59,10 +59,15 @@ export function resetGatewayFeatures(feature?: GatewayFeature): void {
   warned.clear()
 }
 
-/** What `executeCartGraphQL` attaches to the error it throws. */
+/**
+ * What `executeCartGraphQL` attaches to the error it throws: whether the
+ * envelope carried data, and its errors — their `path` included, since an
+ * error WITH a path is one a resolver raised (something ran), even when the
+ * envelope's `data` is null (a non-null root that failed).
+ */
 export interface GraphQLErrorInfo {
   hasData: boolean
-  errors: Array<{ message?: string }>
+  errors: Array<{ message?: string; path?: unknown }>
 }
 
 /** The messages an error carries: its own and the envelope's, when it has one. */
@@ -74,9 +79,17 @@ function messagesOf(err: unknown): string[] {
   )
 }
 
+/**
+ * True when the operation ran: the envelope carried data, or an error names
+ * a `path` — Apollo answers `data: null` plus errors with a path when a
+ * resolver failed, and that is a failure of something that executed, never a
+ * refused selection. A validation error has `locations`, never a `path`.
+ */
 function ranSomething(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
-  return (err as { graphql?: Partial<GraphQLErrorInfo> }).graphql?.hasData === true
+  const graphql = (err as { graphql?: Partial<GraphQLErrorInfo> }).graphql
+  if (graphql?.hasData === true) return true
+  return (graphql?.errors ?? []).some((e) => Array.isArray(e?.path) && e.path.length > 0)
 }
 
 /**
@@ -84,8 +97,9 @@ function ranSomething(err: unknown): boolean {
  * `token` (`Cannot query field "buyer_ref" on type …`, `Unknown argument
  * "origin" on field …`, `Unknown type "CartLineOriginInput"`, `Field "origin" is
  * not defined by type "LineItemInput"`): a validation error, with no `data`
- * because nothing ran — safe to send again without it, a mutation included.
- * Anything that ran (data present) or any other message is not.
+ * and no `path` because nothing ran — safe to send again without it, a
+ * mutation included. Anything that ran (data present, or an error with a
+ * path) or any other message is not.
  */
 export function isUnknownTokenError(err: unknown, token: string): boolean {
   if (ranSomething(err)) return false

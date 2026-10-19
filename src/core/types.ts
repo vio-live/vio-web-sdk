@@ -187,9 +187,14 @@ export interface Attribution {
 
 /**
  * How much context analytics and Commerce may keep of a visit to this
- * surface: `minimal` drops what can reveal why someone is on the page (the
- * referrer, the utm parameters, the landing page) — the collector drops it
- * on its side; the SDK does not send it to Commerce (no `entry` on the order).
+ * surface. `minimal` drops what says WHICH screen someone was on and WHY —
+ * the page (`content_url`, `content_title`), the slot (`location_id`) and
+ * the entry (referrer, utm, landing page) — the collector drops it from the
+ * events on its side (vio-analytics `privacy.ts`); the SDK keeps it off the
+ * order and off the cart lines it sends to Commerce. What measures the
+ * funnel and bills the sale stays: the surface, the campaign, the kind of
+ * component, the products and the amounts. A mode the SDK could not learn
+ * counts as `minimal`.
  */
 export type SurfacePrivacyMode = 'standard' | 'minimal'
 

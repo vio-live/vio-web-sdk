@@ -16,7 +16,7 @@
 export interface ContentRef {
   id?: string
   title?: string
-  /** The page's URL (`location.href`) within the collector's cap — what `content_url` carries. */
+  /** The page's URL as origin + path (no query, no fragment), capped — what the order and the cart's origins carry as `content_url`. */
   url?: string
 }
 
@@ -41,9 +41,37 @@ export const CONTENT_TITLE_MAX_LENGTH = 255
 export const CONTENT_URL_MAX_LENGTH = 2_048
 
 /**
- * A page URL within the cap — as is, else without its query string (a long
- * one is usually the tracking tail, not the page), else cut. The ONE rule for
- * `content_url`, shared by the analytics events and the cart's origins.
+ * A page as the ORDER and the cart's origins name it (`content_url` to
+ * Commerce): origin + path — no query string, no fragment — within the cap.
+ * The query is where a page carries e-mails, tokens and tracking tails
+ * (`?email=…&utm_…#frag`); none of that belongs on an order row. A site whose
+ * article lives in the query or the hash identifies it through `contentId`
+ * (`Vio.init({ contentId })`, `?vio_content=`), not through the URL. Also
+ * the shape of the landing's referrer and page (client-context.ts).
+ */
+export function originAndPath(raw: unknown, max: number = CONTENT_URL_MAX_LENGTH): string | undefined {
+  const value = text(raw)
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    return cutTo(`${url.origin}${url.pathname}`, max)
+  } catch {
+    // Not an absolute URL (an old engine, a scheme-less value): without its query and fragment.
+    const end = value.search(/[?#]/)
+    return cutTo(end >= 0 ? value.slice(0, end) : value, max)
+  }
+}
+
+function cutTo(value: string, max: number): string | undefined {
+  const out = value.length > max ? value.slice(0, max) : value
+  return out || undefined
+}
+
+/**
+ * A page URL within the cap for the analytics EVENTS — as is, else without
+ * its query string (a long one is usually the tracking tail, not the page),
+ * else cut. The collector keeps the query there (`page_views` strip it
+ * themselves); the order does not (`originAndPath`).
  */
 export function capContentUrl(value: unknown): string | undefined {
   const url = text(value)
@@ -72,7 +100,8 @@ export function resolveContent(
   const out: ContentRef = {}
   try {
     // The URL first: a document that throws below must not cost the page.
-    const url = capContentUrl(loc?.href)
+    // Origin + path: what the order and the cart's origins carry.
+    const url = originAndPath(loc?.href)
     if (url !== undefined) out.url = url
   } catch {
     /* no location */

@@ -45,10 +45,10 @@ export interface RegisterSlotOptions {
 /** A kind is a short word (the micro stores it from 2026-10 on; before, it ignored the key). */
 export const SLOT_KIND_MAX_LENGTH = 32
 
-/** The kind as the manifest carries it: trimmed, cut at 32 chars; `undefined` for nothing. */
+/** The kind as the manifest carries it: trimmed, lower-case, cut at 32 chars; `undefined` for nothing. */
 export function normalizeSlotKind(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
-  const kind = value.trim().slice(0, SLOT_KIND_MAX_LENGTH).trim()
+  const kind = value.trim().toLowerCase().slice(0, SLOT_KIND_MAX_LENGTH).trim()
   return kind || undefined
 }
 
@@ -455,9 +455,9 @@ export function pendingSlotKeys(
   })
 }
 
-/** The id part of a memory key (before the display name / campaign separators). */
+/** The id part of a memory key (before the display name / campaign / kind separators). */
 export function slotKeyId(key: string): string {
-  const cut = key.search(/[\u001f\u001e]/)
+  const cut = key.search(/[\u001f\u001e\u001d]/)
   return cut >= 0 ? key.slice(0, cut) : key
 }
 

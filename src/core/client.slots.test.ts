@@ -880,6 +880,22 @@ describe('slot kind in the manifest (ADR-0034, amendment 4)', () => {
     offs.forEach((off) => off())
   })
 
+  it('W4: registerSlot(id, name, campaignId, { kind }) — the campaign positional, the kind fourth — is what the elements send, so a 0.24 facade keeps the campaign', async () => {
+    init()
+    await Vio.bootstrap()
+    const offs = [Vio.registerSlot('hero', 'Hero', 10, { kind: 'card' }), Vio.registerSlot('side', undefined, 12, { kind: 'CAROUSEL' })]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [
+        { id: 'hero', displayName: 'Hero', campaignId: 10, kind: 'card' },
+        { id: 'side', campaignId: 12, kind: 'carousel' },
+      ],
+    })
+    offs.forEach((off) => off())
+  })
+
   it('the first kind an id gets stays: the cards a carousel renders share its id without turning it into a card', async () => {
     init()
     await Vio.bootstrap()

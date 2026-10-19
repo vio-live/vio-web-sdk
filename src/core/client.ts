@@ -362,25 +362,31 @@ class VioFacade {
    * whenever a new id, display name, campaign or kind appears. A `displayName` /
    * `campaignId` given later for an id already registered replaces the one
    * kept; `undefined` leaves it alone. The third argument is the campaign id
-   * (as before) or `{ campaignId?, kind? }` — `kind` being what kind of
-   * element holds the slot (`card` | `carousel` | `detail`); the FIRST kind an
-   * id gets stays (the cards a carousel renders share its id: the slot is the
-   * carousel's). The returned function unregisters; removal never re-declares.
+   * (as before) or `{ campaignId?, kind? }`, and a fourth `{ kind? }` may
+   * follow a positional campaign — the elements call
+   * `registerSlot(id, name, campaignId, { kind })` so a facade from an older
+   * bundle, which reads only three arguments, still gets the campaign. `kind`
+   * is what kind of element holds the slot (`card` | `carousel` | `detail`);
+   * the FIRST kind an id gets stays (the cards a carousel renders share its
+   * id: the slot is the carousel's). The returned function unregisters;
+   * removal never re-declares.
    */
   registerSlot(
     name: string,
     displayName?: string,
     campaignIdOrOptions?: number | string | null | RegisterSlotOptions,
+    options?: RegisterSlotOptions,
   ): () => void {
     const id = normalizeSlotId(name)
     if (!id) return () => {}
     const label = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined
-    const options: RegisterSlotOptions =
+    const positional: RegisterSlotOptions =
       campaignIdOrOptions !== null && typeof campaignIdOrOptions === 'object'
         ? campaignIdOrOptions
         : { campaignId: campaignIdOrOptions }
-    const campaign = toCampaignId(options.campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
-    const kind = normalizeSlotKind(options.kind)
+    const merged: RegisterSlotOptions = { ...positional, ...(options ?? {}) }
+    const campaign = toCampaignId(merged.campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
+    const kind = normalizeSlotKind(merged.kind)
     const entry = this.slotRegistry.get(id)
     let changed = false
     if (!entry) {

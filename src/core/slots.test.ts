@@ -28,6 +28,7 @@ import {
   slotDeclarationKey,
   slotDeclarationKeys,
   slotDeclarationStorageKey,
+  slotKeyId,
 } from './slots.js'
 
 const sponsor = (id: number) => ({ id, name: `Sponsor ${id}`, commerce: { apiKey: `key-${id}` } })
@@ -430,7 +431,23 @@ describe('slot kind (ADR-0034, amendment 4)', () => {
     ])
     expect(normalizeSlotKind(undefined)).toBeUndefined()
     expect(normalizeSlotKind('  ')).toBeUndefined()
-    expect(normalizeSlotKind(' card')).toBe('card')
+    expect(normalizeSlotKind(' Card')).toBe('card') // lower-case: one spelling per kind
+  })
+
+  it('W3: the memory keeps ONE state per id across kinds too — A → B → A with different kinds declares A again, once', () => {
+    const card = slotDeclarationKey({ id: 'hero', kind: 'card' })
+    const carousel = slotDeclarationKey({ id: 'hero', kind: 'carousel' })
+    expect(slotKeyId(card)).toBe('hero')
+    expect(slotKeyId('hero\u001fHero\u001e10\u001dcard')).toBe('hero')
+    let memory = rememberSlotKeys({}, ['hero'], OCT_15)
+    memory = rememberSlotKeys(memory, [card], OCT_15 + 1)
+    expect(Object.keys(memory)).toEqual([card]) // `hero` without kind forgotten
+    memory = rememberSlotKeys(memory, [carousel], OCT_15 + 2)
+    expect(Object.keys(memory)).toEqual([carousel])
+    expect(pendingSlotKeys(memory, [card], OCT_15 + 3)).toEqual([card]) // A again: pending once
+    memory = rememberSlotKeys(memory, [card], OCT_15 + 3)
+    expect(pendingSlotKeys(memory, [card], OCT_15 + 4)).toEqual([])
+    expect(Object.keys(memory)).toEqual([card])
   })
 
   it('the memory key carries the kind: an id whose kind becomes known declares again', () => {

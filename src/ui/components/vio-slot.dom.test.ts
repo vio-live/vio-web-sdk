@@ -506,11 +506,11 @@ describe('page campaign on the elements (ADR-0034, amendment 3)', () => {
     document.body.setAttribute('data-vio-campaign', '12')
     const inherited = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'b' })
     expect(inherited.effectiveCampaignId).toBe(12)
-    expect(registerSlot).toHaveBeenLastCalledWith('b', undefined, { kind: 'card', campaignId: 12 })
+    expect(registerSlot).toHaveBeenLastCalledWith('b', undefined, 12, { kind: 'card' })
 
     const own = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'c', 'vio-campaign': '10' })
     expect(own.effectiveCampaignId).toBe(10)
-    expect(registerSlot).toHaveBeenLastCalledWith('c', undefined, { kind: 'card', campaignId: 10 })
+    expect(registerSlot).toHaveBeenLastCalledWith('c', undefined, 10, { kind: 'card' })
 
     const bad = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'd', 'vio-campaign': 'nope' })
     expect(bad.effectiveCampaignId).toBe(12) // not a number → the ancestor's
@@ -531,7 +531,7 @@ describe('page campaign on the elements (ADR-0034, amendment 3)', () => {
     await settle(el)
     expect(el.effectiveCampaignId).toBe(12)
     expect(releases[0]).toHaveBeenCalledTimes(1)
-    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, { kind: 'card', campaignId: 12 })
+    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, 12, { kind: 'card' })
   })
 
   it('the carousel hands its campaign to its cards and uses it to pick the sponsor', async () => {

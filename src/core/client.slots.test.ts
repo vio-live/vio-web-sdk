@@ -850,3 +850,67 @@ describe('page campaign (ADR-0034, amendment 3)', () => {
     off3()
   })
 })
+
+describe('slot kind in the manifest (ADR-0034, amendment 4)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  it('registerSlot(id, name, { kind }) and { kind, campaignId } reach the manifest as `kind`; (id), (id, name) and (id, name, campaignId) still work', async () => {
+    init()
+    await Vio.bootstrap()
+    const offs = [
+      Vio.registerSlot('carousel-1', 'Carousel 1', { kind: 'carousel' }),
+      Vio.registerSlot('hero', 'Hero', { kind: 'card', campaignId: 10 }),
+      Vio.registerSlot('footer'),
+      Vio.registerSlot('aside', 'Aside', 12),
+    ]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+    expect(manifestRequests()[0]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [
+        { id: 'carousel-1', displayName: 'Carousel 1', kind: 'carousel' },
+        { id: 'hero', displayName: 'Hero', campaignId: 10, kind: 'card' },
+        { id: 'footer' },
+        { id: 'aside', displayName: 'Aside', campaignId: 12 },
+      ],
+    })
+    offs.forEach((off) => off())
+  })
+
+  it('the first kind an id gets stays: the cards a carousel renders share its id without turning it into a card', async () => {
+    init()
+    await Vio.bootstrap()
+    const offs = [
+      Vio.registerSlot('hero', undefined, { kind: 'carousel' }),
+      Vio.registerSlot('hero', undefined, { kind: 'card' }),
+      Vio.registerSlot('hero', undefined, { kind: 'card' }),
+    ]
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+    expect(manifestRequests()[0]!.body).toMatchObject({ locations: [{ id: 'hero', kind: 'carousel' }] })
+    offs.forEach((off) => off())
+  })
+
+  it('a kind learned later for an id without one re-declares (new memory key); Vio.declareSlots takes kind too', async () => {
+    init()
+    await Vio.bootstrap()
+    const off1 = Vio.registerSlot('hero')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(1)
+    const off2 = Vio.registerSlot('hero', undefined, { kind: ' detail ' })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(manifestRequests()).toHaveLength(2)
+    expect(manifestRequests()[1]!.body).toMatchObject({ locations: [{ id: 'hero', kind: 'detail' }] })
+    expect(await Vio.declareSlots([{ id: 'sidebar', displayName: 'Sidebar', kind: 'k'.repeat(40) }])).toEqual(MANIFEST_OK)
+    expect(manifestRequests()[2]!.body).toEqual({
+      platform: 'web',
+      mode: 'merge',
+      locations: [{ id: 'sidebar', displayName: 'Sidebar', kind: 'k'.repeat(32) }],
+    })
+    off1()
+    off2()
+  })
+})

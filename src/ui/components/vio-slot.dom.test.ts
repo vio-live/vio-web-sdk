@@ -97,7 +97,7 @@ describe('<vio-product>: identity', () => {
     const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'hero', 'vio-slot-name': 'Hero banner' })
     expect(el.effectiveSlot).toBe('hero')
     expect(registerSlot).toHaveBeenCalledTimes(1)
-    expect(registerSlot).toHaveBeenCalledWith('hero', 'Hero banner')
+    expect(registerSlot).toHaveBeenCalledWith('hero', 'Hero banner', { kind: 'card' })
     // The native attribute is untouched.
     expect(el.getAttribute('slot')).toBeNull()
     expect(el.slot).toBe('')
@@ -109,7 +109,7 @@ describe('<vio-product>: identity', () => {
 
   it('a host id without a name leaves the display name undefined (the server keeps its own)', async () => {
     await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'hero' })
-    expect(registerSlot).toHaveBeenCalledWith('hero', undefined)
+    expect(registerSlot).toHaveBeenCalledWith('hero', undefined, { kind: 'card' })
   })
 
   it('without `vio-slot` it registers itself as `card-N` by position, named `Card N`', async () => {
@@ -117,8 +117,8 @@ describe('<vio-product>: identity', () => {
     const second = await mountWithAttributes<VioProduct>('vio-product', CARD)
     expect(first.effectiveSlot).toBe('card-1')
     expect(second.effectiveSlot).toBe('card-2')
-    expect(registerSlot).toHaveBeenNthCalledWith(1, 'card-1', 'Card 1')
-    expect(registerSlot).toHaveBeenNthCalledWith(2, 'card-2', 'Card 2')
+    expect(registerSlot).toHaveBeenNthCalledWith(1, 'card-1', 'Card 1', { kind: 'card' })
+    expect(registerSlot).toHaveBeenNthCalledWith(2, 'card-2', 'Card 2', { kind: 'card' })
   })
 
   it('the auto id is stable across reloads of the same layout', async () => {
@@ -132,22 +132,22 @@ describe('<vio-product>: identity', () => {
 
   it('a `vio-slot` set after mount (React) replaces the auto id; clearing it goes back to it', async () => {
     const el = await mount<VioProduct>('vio-product', { productId: '9', sponsorId: '7' })
-    expect(registerSlot).toHaveBeenLastCalledWith('card-1', 'Card 1')
+    expect(registerSlot).toHaveBeenLastCalledWith('card-1', 'Card 1', { kind: 'card' })
 
     el.vioSlot = 'late'
     await settle(el)
     expect(releases[0]).toHaveBeenCalledTimes(1)
-    expect(registerSlot).toHaveBeenLastCalledWith('late', undefined)
+    expect(registerSlot).toHaveBeenLastCalledWith('late', undefined, { kind: 'card' })
     expect(el.effectiveSlot).toBe('late')
 
     el.vioSlotName = 'Late slot'
     await settle(el)
-    expect(registerSlot).toHaveBeenLastCalledWith('late', 'Late slot')
+    expect(registerSlot).toHaveBeenLastCalledWith('late', 'Late slot', { kind: 'card' })
 
     el.vioSlot = ''
     await settle(el)
     expect(el.effectiveSlot).toBe('card-1')
-    expect(registerSlot).toHaveBeenLastCalledWith('card-1', 'Late slot')
+    expect(registerSlot).toHaveBeenLastCalledWith('card-1', 'Late slot', { kind: 'card' })
   })
 })
 
@@ -159,8 +159,8 @@ describe('scope, inherited from the DOM', () => {
     const card = await mountWithAttributes<VioProduct>('vio-product', CARD)
     expect(carousel.effectiveSlot).toBe('article-123-carousel-1')
     expect(card.effectiveSlot).toBe('article-123-card-1')
-    expect(registerSlot).toHaveBeenCalledWith('article-123-carousel-1', 'Carousel 1 · Título del artículo')
-    expect(registerSlot).toHaveBeenCalledWith('article-123-card-1', 'Card 1 · Título del artículo')
+    expect(registerSlot).toHaveBeenCalledWith('article-123-carousel-1', 'Carousel 1 · Título del artículo', { kind: 'carousel' })
+    expect(registerSlot).toHaveBeenCalledWith('article-123-card-1', 'Card 1 · Título del artículo', { kind: 'card' })
   })
 
   it("the element's own `vio-scope` wins over the ancestor's, and ordinals count per scope", async () => {
@@ -173,8 +173,8 @@ describe('scope, inherited from the DOM', () => {
     expect(b.effectiveSlot).toBe('sidebar-carousel-1')
     expect(c.effectiveSlot).toBe('page-carousel-2')
     expect(d.effectiveSlot).toBe('sidebar-carousel-2')
-    expect(registerSlot).toHaveBeenCalledWith('sidebar-carousel-1', 'Carousel 1 · Sidebar')
-    expect(registerSlot).toHaveBeenCalledWith('sidebar-carousel-2', 'Carousel 2') // no label on d nor on body
+    expect(registerSlot).toHaveBeenCalledWith('sidebar-carousel-1', 'Carousel 1 · Sidebar', { kind: 'carousel' })
+    expect(registerSlot).toHaveBeenCalledWith('sidebar-carousel-2', 'Carousel 2', { kind: 'carousel' }) // no label on d nor on body
   })
 
   it('a nested scope applies to its subtree only', async () => {
@@ -199,7 +199,7 @@ describe('scope, inherited from the DOM', () => {
     const el = await mountWithAttributes<VioProduct>('vio-product', CARD)
     expect(el.effectiveSlot.length).toBe(100)
     expect(el.effectiveSlot.endsWith('-card-1')).toBe(true)
-    expect(registerSlot).toHaveBeenCalledWith(el.effectiveSlot, 'Card 1')
+    expect(registerSlot).toHaveBeenCalledWith(el.effectiveSlot, 'Card 1', { kind: 'card' })
     el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
     expect(click.detail!.slot).toBe(el.effectiveSlot)
     // A host id is cut the same way — and a space at position 100 does not survive the cut,
@@ -207,11 +207,11 @@ describe('scope, inherited from the DOM', () => {
     unmountAll()
     const long = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'h'.repeat(130) })
     expect(long.effectiveSlot).toBe('h'.repeat(100))
-    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(100), undefined)
+    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(100), undefined, { kind: 'card' })
     unmountAll()
     const spaced = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'h'.repeat(99) + ' tail' })
     expect(spaced.effectiveSlot).toBe('h'.repeat(99))
-    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(99), undefined)
+    expect(registerSlot).toHaveBeenLastCalledWith('h'.repeat(99), undefined, { kind: 'card' })
   })
 })
 
@@ -275,7 +275,7 @@ describe('W7: a page whose `Vio` singleton predates attribution()', () => {
       const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'hero' })
       el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
       expect(click.detail).toMatchObject({ slot: 'hero', sponsorId: '7' })
-      expect(registerSlot).toHaveBeenCalledWith('hero', undefined)
+      expect(registerSlot).toHaveBeenCalledWith('hero', undefined, { kind: 'card' })
     } finally {
       ;(Vio as unknown as { attribution?: unknown }).attribution = original
     }
@@ -295,9 +295,17 @@ describe('<vio-product>: what its events carry', () => {
       slot: 'hero',
       contentId: 'article-123',
       contentTitle: 'Título',
+      componentTemplateId: 'product-card',
     })
     el.shadowRoot!.querySelector<HTMLElement>('.add-btn')!.click()
-    expect(add.detail).toMatchObject({ slot: 'hero', sponsorId: '7' })
+    expect(add.detail).toMatchObject({ slot: 'hero', sponsorId: '7', componentTemplateId: 'product-card' })
+  })
+
+  it('reports its component type: `product-card`, or what `component-template-id` says (a host grid)', async () => {
+    const click = lastEvent<Record<string, unknown>>('vio:product-click')
+    const el = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'component-template-id': 'product-grid' })
+    el.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+    expect(click.detail!.componentTemplateId).toBe('product-grid')
   })
 
   it('without `vio-slot` the auto id travels; `vio-content-id` / `vio-content-title` override the page content', async () => {
@@ -333,7 +341,7 @@ describe('<vio-product-carousel>', () => {
     })
     for (let i = 0; i < 5; i++) await settle(el)
 
-    expect(registerSlot).toHaveBeenCalledWith('hero', undefined)
+    expect(registerSlot).toHaveBeenCalledWith('hero', undefined, { kind: 'carousel' })
     expect(commerceFor).toHaveBeenCalledWith(7)
     const card = el.shadowRoot!.querySelector<VioProduct>('vio-product')
     expect(card).not.toBeNull()
@@ -342,6 +350,11 @@ describe('<vio-product-carousel>', () => {
     expect(card!.vioContentId).toBe('art-1')
     expect(card!.getAttribute('sponsor-id')).toBe('7')
     expect(card!.getAttribute('slot')).toBeNull()
+    // Its cards are the carousel to analytics: impressions and clicks under ONE component type.
+    expect(card!.componentTemplateId).toBe('product-carousel')
+    const click = lastEvent<Record<string, unknown>>('vio:product-click')
+    card!.shadowRoot!.querySelector<HTMLElement>('.card')!.click()
+    expect(click.detail).toMatchObject({ slot: 'hero', componentTemplateId: 'product-carousel' })
     // The card registers the SAME id (the registry dedupes): no `card-N` for it.
     expect(registerSlot.mock.calls.map((c) => c[0])).toEqual(['hero', 'hero'])
   })
@@ -361,7 +374,7 @@ describe('<vio-product-carousel>', () => {
     const el = await mountWithAttributes<VioProductCarousel>('vio-product-carousel', { 'product-ids': '9' })
     for (let i = 0; i < 5; i++) await settle(el)
     expect(el.effectiveSlot).toBe('carousel-1')
-    expect(registerSlot).toHaveBeenCalledWith('carousel-1', 'Carousel 1')
+    expect(registerSlot).toHaveBeenCalledWith('carousel-1', 'Carousel 1', { kind: 'carousel' })
     expect(commerceFor).toHaveBeenCalledWith(4)
     expect(el.shadowRoot!.querySelector<VioProduct>('vio-product')!.effectiveSlot).toBe('carousel-1')
   })
@@ -396,7 +409,7 @@ describe('<vio-product-detail> and the card that opened it', () => {
   it('registers itself as `detail-1`', async () => {
     const el = await mount<VioProductDetail>('vio-product-detail')
     expect(el.effectiveSlot).toBe('detail-1')
-    expect(registerSlot).toHaveBeenCalledWith('detail-1', 'Detail 1')
+    expect(registerSlot).toHaveBeenCalledWith('detail-1', 'Detail 1', { kind: 'detail' })
   })
 
   it('a card without a sponsor opens with the primary sponsor of its slot campaign; view_item carries slot + content', async () => {
@@ -408,7 +421,7 @@ describe('<vio-product-detail> and the card that opened it', () => {
     expect(track).toHaveBeenCalledWith(
       'view_item',
       expect.objectContaining({
-        context: expect.objectContaining({ slot: 'hero', sponsorId: 7, contentId: 'art-9', contentTitle: 'Nine' }),
+        context: expect.objectContaining({ slot: 'hero', sponsorId: 7, contentId: 'art-9', contentTitle: 'Nine', componentTemplateId: 'product-detail' }),
       }),
     )
   })
@@ -422,7 +435,7 @@ describe('<vio-product-detail> and the card that opened it', () => {
 
   it("its own `vio-slot` is used when the card names none", async () => {
     const el = await mountWithAttributes<VioProductDetail>('vio-product-detail', { 'vio-slot': 'hero' })
-    expect(registerSlot).toHaveBeenCalledWith('hero', undefined)
+    expect(registerSlot).toHaveBeenCalledWith('hero', undefined, { kind: 'detail' })
     await click({ productId: '9', sponsorId: '' }, el)
     expect(el.sponsorId).toBe(7)
     expect(track).toHaveBeenCalledWith(
@@ -488,16 +501,16 @@ describe('page campaign on the elements (ADR-0034, amendment 3)', () => {
     const attribution = vi.spyOn(Vio, 'attribution').mockReturnValue({})
     const none = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'a' })
     expect(none.effectiveCampaignId).toBeUndefined()
-    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined)
+    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, { kind: 'card' })
 
     document.body.setAttribute('data-vio-campaign', '12')
     const inherited = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'b' })
     expect(inherited.effectiveCampaignId).toBe(12)
-    expect(registerSlot).toHaveBeenLastCalledWith('b', undefined, 12)
+    expect(registerSlot).toHaveBeenLastCalledWith('b', undefined, { kind: 'card', campaignId: 12 })
 
     const own = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'c', 'vio-campaign': '10' })
     expect(own.effectiveCampaignId).toBe(10)
-    expect(registerSlot).toHaveBeenLastCalledWith('c', undefined, 10)
+    expect(registerSlot).toHaveBeenLastCalledWith('c', undefined, { kind: 'card', campaignId: 10 })
 
     const bad = await mountWithAttributes<VioProduct>('vio-product', { ...CARD, 'vio-slot': 'd', 'vio-campaign': 'nope' })
     expect(bad.effectiveCampaignId).toBe(12) // not a number → the ancestor's
@@ -518,7 +531,7 @@ describe('page campaign on the elements (ADR-0034, amendment 3)', () => {
     await settle(el)
     expect(el.effectiveCampaignId).toBe(12)
     expect(releases[0]).toHaveBeenCalledTimes(1)
-    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, 12)
+    expect(registerSlot).toHaveBeenLastCalledWith('a', undefined, { kind: 'card', campaignId: 12 })
   })
 
   it('the carousel hands its campaign to its cards and uses it to pick the sponsor', async () => {

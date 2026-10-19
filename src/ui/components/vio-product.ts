@@ -56,6 +56,13 @@ export class VioProduct extends LitElement {
   @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
   /** Per-element override of the content title. */
   @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
+  /**
+   * What kind of SDK element this card stands for in analytics
+   * (`component_template_id`): `product-card` on its own; a carousel sets
+   * `product-carousel` on the cards it renders, so its impressions and its
+   * clicks count under one component type.
+   */
+  @property({ type: String, attribute: 'component-template-id' }) componentTemplateId = ''
   private readonly slotRegistration = new SlotRegistration(this, 'card')
 
   /** The slot id in effect: `vio-slot`, else the auto id (`card-N`). Read-only. */
@@ -103,6 +110,7 @@ export class VioProduct extends LitElement {
         : { slot: this.effectiveSlot || undefined }
     return {
       ...base,
+      componentTemplateId: this.componentTemplateId || 'product-card',
       ...(this.vioContentId ? { contentId: this.vioContentId } : {}),
       ...(this.vioContentTitle ? { contentTitle: this.vioContentTitle } : {}),
     }

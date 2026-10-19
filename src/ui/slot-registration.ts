@@ -141,12 +141,16 @@ export class SlotRegistration {
     this.unregister()
     if (!next) return
     try {
+      // The kind (and the campaign) travel as an options object; an older
+      // facade reads it as an absent campaign (`toCampaignId` of an object is
+      // undefined) and registers the id and name as it always did.
       this.release =
         typeof Vio.registerSlot !== 'function'
           ? null
-          : next.campaignId !== undefined
-            ? Vio.registerSlot(next.id, next.displayName, next.campaignId)
-            : Vio.registerSlot(next.id, next.displayName)
+          : Vio.registerSlot(next.id, next.displayName, {
+              kind: this.kind,
+              ...(next.campaignId !== undefined ? { campaignId: next.campaignId } : {}),
+            })
       this.identity = next
     } catch {
       this.release = null

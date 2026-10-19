@@ -31,6 +31,7 @@ import {
   activeCampaignEntry,
   campaignCandidates,
   normalizeSlotId,
+  normalizeSlotKind,
   normalizeSlotLocations,
   pendingSlotKeys,
   readSlotDeclaration,
@@ -42,6 +43,7 @@ import {
   toNumber,
   writeSlotDeclaration,
   type CampaignHint,
+  type RegisterSlotOptions,
   type SlotInput,
 } from './slots.js'
 import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
@@ -71,8 +73,8 @@ class VioFacade {
    * belongs to that configuration and must not land in this one. */
   private generation = 0
 
-  /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each, its display name and its own campaign. */
-  private slotRegistry = new Map<string, { count: number; displayName?: string; campaignId?: number }>()
+  /** Slot ids present on the page (`Vio.registerSlot`): how many elements hold each, its display name, its own campaign and its kind. */
+  private slotRegistry = new Map<string, { count: number; displayName?: string; campaignId?: number; kind?: string }>()
   /** Slots already warned about (`dashboard`: the dashboard's assignment stands; `replaced`: this page moved it). */
   private warnedDashboardSlots = new Set<string>()
   private warnedReplacedSlots = new Set<string>()
@@ -357,20 +359,32 @@ class VioFacade {
    * the optional display name, and the element's own campaign when it has
    * one: `vio-campaign` or an ancestor's `data-vio-campaign`). The registry is
    * declared ONCE, debounced, after the first successful bootstrap — and again
-   * whenever a new id, display name or campaign appears. A `displayName` /
+   * whenever a new id, display name, campaign or kind appears. A `displayName` /
    * `campaignId` given later for an id already registered replaces the one
-   * kept; `undefined` leaves it alone. The returned function unregisters;
-   * removal never re-declares.
+   * kept; `undefined` leaves it alone. The third argument is the campaign id
+   * (as before) or `{ campaignId?, kind? }` — `kind` being what kind of
+   * element holds the slot (`card` | `carousel` | `detail`); the FIRST kind an
+   * id gets stays (the cards a carousel renders share its id: the slot is the
+   * carousel's). The returned function unregisters; removal never re-declares.
    */
-  registerSlot(name: string, displayName?: string, campaignId?: number | string | null): () => void {
+  registerSlot(
+    name: string,
+    displayName?: string,
+    campaignIdOrOptions?: number | string | null | RegisterSlotOptions,
+  ): () => void {
     const id = normalizeSlotId(name)
     if (!id) return () => {}
     const label = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : undefined
-    const campaign = toCampaignId(campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
+    const options: RegisterSlotOptions =
+      campaignIdOrOptions !== null && typeof campaignIdOrOptions === 'object'
+        ? campaignIdOrOptions
+        : { campaignId: campaignIdOrOptions }
+    const campaign = toCampaignId(options.campaignId) // invalid (0, -5, 'x') = absent: leaves the kept one alone
+    const kind = normalizeSlotKind(options.kind)
     const entry = this.slotRegistry.get(id)
     let changed = false
     if (!entry) {
-      this.slotRegistry.set(id, { count: 1, displayName: label, campaignId: campaign })
+      this.slotRegistry.set(id, { count: 1, displayName: label, campaignId: campaign, kind })
       changed = true
     } else {
       entry.count++
@@ -380,6 +394,10 @@ class VioFacade {
       }
       if (campaign !== undefined && campaign !== entry.campaignId) {
         entry.campaignId = campaign
+        changed = true
+      }
+      if (kind !== undefined && entry.kind === undefined) {
+        entry.kind = kind
         changed = true
       }
     }
@@ -582,10 +600,11 @@ class VioFacade {
       this.slotDeclareTimer = null
       this.slotsDirty = false
       void this.declareSlots(
-        [...this.slotRegistry.entries()].map(([id, { displayName, campaignId }]) => ({
+        [...this.slotRegistry.entries()].map(([id, { displayName, campaignId, kind }]) => ({
           id,
           ...(displayName ? { displayName } : {}),
           ...(campaignId !== undefined ? { campaignId } : {}),
+          ...(kind ? { kind } : {}),
         })),
       )
     }, SLOT_DECLARATION_DEBOUNCE_MS)

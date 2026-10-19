@@ -33,6 +33,8 @@ describe('React wrappers', () => {
     expectTypeOf<CarouselProps['vioScopeName']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<ProductProps['vioContentId']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<DetailProps['vioContentTitle']>().toEqualTypeOf<string | undefined>()
+    // The component type a card reports (`product-card`, or what a carousel sets on its cards).
+    expectTypeOf<ProductProps['componentTemplateId']>().toEqualTypeOf<string | undefined>()
     // The effective id is read-only on the element: not something React sets.
     expectTypeOf<ProductProps['effectiveSlot']>().toEqualTypeOf<string | undefined>()
   })

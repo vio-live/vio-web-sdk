@@ -50,6 +50,14 @@ export interface VioConfig {
   campaignId?: number
   /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
   debug?: boolean
+  /**
+   * The surface's privacy mode, when the host knows it (ADR-0035): `minimal`
+   * keeps the entry context (referrer, utm, landing page) off the order
+   * attribution. Without it the SDK asks the surface itself
+   * (`GET /v2/mobile/surface`), once per page load; a host-set `minimal`
+   * always wins.
+   */
+  privacyMode?: 'standard' | 'minimal'
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -88,6 +96,7 @@ export interface ResolvedConfig {
   contentTitle?: string
   campaignId?: number
   debug: boolean
+  privacyMode?: 'standard' | 'minimal'
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -138,6 +147,9 @@ class ConfigurationSingleton {
       contentTitle: input.contentTitle,
       campaignId: toCampaignId(input.campaignId),
       debug: input.debug === true,
+      // Only the two words the backend knows; anything else is "not said".
+      privacyMode:
+        input.privacyMode === 'minimal' || input.privacyMode === 'standard' ? input.privacyMode : undefined,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,

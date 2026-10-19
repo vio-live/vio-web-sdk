@@ -23,23 +23,55 @@ export {
   autoSlotDisplayName,
   normalizeScope,
   normalizeSlotKind,
+  componentKindOf,
   type CampaignHint,
   type RegisterSlotOptions,
   type SlotInput,
   type SlotKind,
 } from './slots.js'
 
-// Content (article) attribution: what `content_id` / `content_title` carry.
-export { resolveContent, type ContentRef } from './content.js'
+// Content (article) attribution: what `content_id` / `content_title` / `content_url` carry.
+export { resolveContent, capContentUrl, originAndPath, CONTENT_URL_MAX_LENGTH, type ContentRef } from './content.js'
 
 // The standard context of the visit (`client` block) and the buyer reference (`buyer_id`).
 export {
   resolveClientContext,
   resolveLanding,
+  storedLanding,
+  landingUrl,
+  CLIENT_LANDING_URL_MAX_LENGTH,
   type ClientContext,
   type Landing,
 } from './analytics/client-context.js'
 export { normalizeBuyerRef, BUYER_REF_MAX_LENGTH } from './buyer-ref.js'
+
+// The attribution of the order (ADR-0035 phase B): what the cart lines and the checkout send to Commerce.
+export {
+  lineOriginWire,
+  LINE_ORIGIN_CAPS,
+  GRAPHQL_INT_MAX,
+  type LineOriginWire,
+  type LineOriginWireOptions,
+  type OriginPage,
+} from './cart/origin-wire.js'
+export {
+  checkoutAttributionOf,
+  entryContextOf,
+  dominantCampaignOf,
+  CHECKOUT_ATTRIBUTION_CAPS,
+  type CheckoutAttributionWire,
+  type CheckoutAttributionInput,
+  type EntryContextWire,
+} from './checkout/attribution.js'
+// What the commerce gateway may not know yet (a field the SDK ships ahead of).
+export {
+  withGatewayFeature,
+  gatewayHas,
+  resetGatewayFeatures,
+  isUnknownFeatureError,
+  isUnknownTokenError,
+  type GatewayFeature,
+} from './api/gateway-features.js'
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
@@ -70,11 +102,14 @@ export {
   ADD_ITEM_MUTATION,
   DELETE_ITEM_MUTATION,
   UPDATE_ITEM_MUTATION,
+  UPDATE_ITEM_WITH_ORIGIN_MUTATION,
   GET_CART_QUERY,
   GET_LINE_ITEMS_BY_SUPPLIER_QUERY,
   UPDATE_SHIPPINGS_BY_SUPPLIER_MUTATION,
   CREATE_CHECKOUT_MUTATION,
+  CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
   UPDATE_CHECKOUT_MUTATION,
+  UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
   GET_CHECKOUT_QUERY,
   GET_AVAILABLE_PAYMENT_METHODS_QUERY,
   CREATE_PAYMENT_STRIPE_MUTATION,
@@ -119,6 +154,7 @@ export { SDK_VERSION } from './version.js'
 export { CheckoutManager } from './checkout/checkout-manager.js'
 export type {
   CheckoutChangeDetail,
+  CheckoutManagerDeps,
   PaymentSelectDetail,
   PaymentCompleteDetail,
 } from './checkout/checkout-manager.js'
@@ -162,6 +198,8 @@ export type {
   BootstrapCampaignStatus,
   BootstrapSlot,
   Attribution,
+  SurfacePrivacyMode,
+  SurfaceResponse,
   ManifestLocation,
   ManifestRequest,
   ManifestResult,

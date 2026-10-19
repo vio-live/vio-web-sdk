@@ -25,6 +25,8 @@
  * storage, or without consent to persist, each page stands alone.
  */
 
+import { originAndPath } from '../content.js'
+
 export interface ClientContext {
   language?: string
   referrer?: string
@@ -47,14 +49,22 @@ export const CLIENT_REFERRER_MAX_LENGTH = 2_048
 export const CLIENT_UTM_MAX_LENGTH = 128
 export const CLIENT_TZ_MAX_LENGTH = 64
 export const CLIENT_SCREEN_MAX = 65_535
+/** Commerce's cap for the landing page on the order's entry context (`entry.landing_url`, ADR-0035). */
+export const CLIENT_LANDING_URL_MAX_LENGTH = 2_048
 
 /** Where the session remembers its landing (per tab, like the browser's own session). */
 export const LANDING_KEY = 'vio.landing.v1'
 
-/** What a session remembers of the page it landed on. */
+/**
+ * What a session remembers of the page it landed on. `url` is the landing
+ * page itself — origin + path, like the referrer: no query (the utm are kept
+ * apart, the rest is a tracking tail), no fragment — for the order's entry
+ * context; the events do not carry it (the collector derives the landing).
+ */
 export interface Landing {
   referrer?: string
   utm?: Partial<Record<UtmKey, string>>
+  url?: string
 }
 
 export interface StorageLike {
@@ -67,7 +77,7 @@ export interface StorageLike {
 export interface ClientEnvironment {
   navigator?: { language?: unknown } | null
   document?: { referrer?: unknown } | null
-  location?: { search?: unknown; host?: unknown } | null
+  location?: { search?: unknown; host?: unknown; href?: unknown } | null
   screen?: { width?: unknown; height?: unknown } | null
   /** The session memory for the landing; `null` = none (SSR, private mode, blocked). */
   storage?: StorageLike | null
@@ -104,6 +114,8 @@ export function resolveLanding(env: ClientEnvironment = defaultClientEnvironment
     const referrer = internal ? undefined : landingReferrer(raw)
     if (referrer) landing.referrer = referrer
     if (utm) landing.utm = utm
+    const url = landingUrl(env.location?.href)
+    if (url) landing.url = url
     if (persist) writeLanding(env.storage, landing)
     return landing
   } catch {
@@ -111,18 +123,24 @@ export function resolveLanding(env: ClientEnvironment = defaultClientEnvironment
   }
 }
 
-/** A referrer as the landing keeps it: origin + path, no query, no fragment; capped. */
+/** A referrer as the landing keeps it: origin + path, no query, no fragment; capped (`originAndPath`, content.ts). */
 export function landingReferrer(raw: unknown): string | undefined {
-  const value = text(raw)
-  if (!value) return undefined
-  try {
-    const url = new URL(value)
-    return cut(`${url.origin}${url.pathname}`, CLIENT_REFERRER_MAX_LENGTH)
-  } catch {
-    // Not an absolute URL (an old engine, a scheme-less value): without its query and fragment.
-    const end = value.search(/[?#]/)
-    return cut(end >= 0 ? value.slice(0, end) : value, CLIENT_REFERRER_MAX_LENGTH)
-  }
+  return originAndPath(raw, CLIENT_REFERRER_MAX_LENGTH)
+}
+
+/** The landing page as the landing keeps it: origin + path, no query, no fragment; capped. */
+export function landingUrl(raw: unknown): string | undefined {
+  return originAndPath(raw, CLIENT_LANDING_URL_MAX_LENGTH)
+}
+
+/**
+ * The landing this session REMEMBERS — what was written by the first page —
+ * or null when nothing is stored (no storage, no consent, analytics never
+ * started). Read only: for the order's entry context, which must not take the
+ * page the shopper pays on for the page they came in through.
+ */
+export function storedLanding(storage: StorageLike | null | undefined = defaultClientEnvironment().storage): Landing | null {
+  return readLanding(storage)
 }
 
 /** True when the referrer's host is this page's host (`location.host`, port included). */
@@ -207,10 +225,12 @@ function readLanding(storage: StorageLike | null | undefined): Landing | null {
     if (!raw) return null
     const parsed = JSON.parse(raw) as unknown
     if (!parsed || typeof parsed !== 'object') return null
-    const p = parsed as { referrer?: unknown; utm?: unknown }
+    const p = parsed as { referrer?: unknown; utm?: unknown; url?: unknown }
     const landing: Landing = {}
     const referrer = cut(text(p.referrer), CLIENT_REFERRER_MAX_LENGTH)
     if (referrer) landing.referrer = referrer
+    const url = cut(text(p.url), CLIENT_LANDING_URL_MAX_LENGTH)
+    if (url) landing.url = url
     if (p.utm && typeof p.utm === 'object') {
       const utm: Partial<Record<UtmKey, string>> = {}
       let any = false

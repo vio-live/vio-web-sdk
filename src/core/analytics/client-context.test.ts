@@ -16,6 +16,7 @@ import {
   LANDING_KEY,
   isSameHost,
   landingReferrer,
+  landingUrl,
   persistLanding,
   removeLanding,
   resolveClientContext,
@@ -213,5 +214,36 @@ describe('the landing is remembered for the session', () => {
       referrer: 'https://news.example/front',
       utm: { utm_source: 'late' },
     })
+  })
+})
+
+describe('the landing page itself (for the order\'s entry context)', () => {
+  it('is remembered as origin + path — no query, no fragment — and read back by the next page', () => {
+    const storage = fakeStorage()
+    const first = page({
+      storage,
+      location: { search: '?utm_source=a', href: 'https://host.example/landing?utm_source=a#frag', host: 'host.example' },
+    })
+    expect(resolveLanding(first)).toEqual({
+      referrer: 'https://news.example/front',
+      utm: { utm_source: 'a' },
+      url: 'https://host.example/landing',
+    })
+    const second = page({
+      storage,
+      document: { referrer: 'https://host.example/landing' },
+      location: { search: '', href: 'https://host.example/article', host: 'host.example' },
+    })
+    expect(resolveLanding(second).url).toBe('https://host.example/landing')
+    // The `client` block of the events does not carry it: the collector derives the landing.
+    expect(resolveClientContext(second)).not.toHaveProperty('url')
+  })
+
+  it('landingUrl: capped at 2 048, without query and fragment; nothing for nothing', () => {
+    expect(landingUrl('https://host.example/a/b?x=1#y')).toBe('https://host.example/a/b')
+    expect(landingUrl(`https://host.example/${'p'.repeat(3_000)}`)).toHaveLength(2_048)
+    expect(landingUrl('/relative?x')).toBe('/relative')
+    expect(landingUrl('')).toBeUndefined()
+    expect(landingUrl(undefined)).toBeUndefined()
   })
 })

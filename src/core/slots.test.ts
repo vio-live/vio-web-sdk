@@ -29,6 +29,7 @@ import {
   slotDeclarationKeys,
   slotDeclarationStorageKey,
   slotKeyId,
+  componentKindOf,
 } from './slots.js'
 
 const sponsor = (id: number) => ({ id, name: `Sponsor ${id}`, commerce: { apiKey: `key-${id}` } })
@@ -455,5 +456,27 @@ describe('slot kind (ADR-0034, amendment 4)', () => {
     expect(slotDeclarationKey({ id: 'hero', kind: 'card' })).toBe('hero\u001dcard')
     expect(slotDeclarationKey({ id: 'hero', displayName: 'Hero', campaignId: 10, kind: 'carousel' })).toBe('hero\u001fHero\u001e10\u001dcarousel')
     expect(pendingSlotKeys({ hero: Date.now() }, [slotDeclarationKey({ id: 'hero', kind: 'card' })], Date.now())).toEqual(['hero\u001dcard'])
+  })
+})
+
+describe('componentKindOf — the kind of element as Commerce and the collector name it', () => {
+  it('the template id without its product-/vev- prefix, lower-cased, cut at 32', () => {
+    expect(componentKindOf('product-card')).toBe('card')
+    expect(componentKindOf('product-carousel')).toBe('carousel')
+    expect(componentKindOf('product-detail')).toBe('detail')
+    expect(componentKindOf('vev-card')).toBe('card')
+    expect(componentKindOf(' Product-Grid ')).toBe('grid')
+    expect(componentKindOf('card')).toBe('card')
+    expect(componentKindOf('x'.repeat(40))).toHaveLength(32)
+  })
+
+  it('else the kind word in the slot id; undefined when neither says', () => {
+    expect(componentKindOf(undefined, 'article-9-carousel-2')).toBe('carousel')
+    expect(componentKindOf('', 'card-3')).toBe('card')
+    expect(componentKindOf(undefined, 'detail-1')).toBe('detail')
+    expect(componentKindOf(undefined, 'hero')).toBe('hero')
+    expect(componentKindOf(undefined, 'sidebar')).toBeUndefined()
+    expect(componentKindOf(undefined, undefined)).toBeUndefined()
+    expect(componentKindOf(7 as never, 9 as never)).toBeUndefined()
   })
 })

@@ -219,10 +219,11 @@ mutation DeleteItem($cartId: String!, $cartItemId: String!) {
 }
 `;
 
-export const UPDATE_ITEM_MUTATION = `
-mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String, $qty: Int) {
+/** With `origin` — where the units a quantity increase adds come from (ADR-0035 phase B, gateway-features `line_origin`) — or without it, for a gateway that predates it. */
+const updateItemMutation = (withExtra: boolean) => `
+mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String, $qty: Int${withExtra ? ', $origin: CartLineOriginInput' : ''}) {
   Cart {
-    UpdateItem(cart_id: $cartId, cart_item_id: $cartItemId, shipping_id: $shippingId, qty: $qty) {
+    UpdateItem(cart_id: $cartId, cart_item_id: $cartItemId, shipping_id: $shippingId, qty: $qty${withExtra ? ', origin: $origin' : ''}) {
       cart_id
       customer_session_id
       shipping_country
@@ -290,7 +291,10 @@ mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String,
     }
   }
 }
-`;
+`
+export const UPDATE_ITEM_MUTATION = updateItemMutation(false)
+/** `UpdateItem` with the `origin` of the added units (`CartLineOriginInput`, snake_case fields — see `lineOriginWire`). */
+export const UPDATE_ITEM_WITH_ORIGIN_MUTATION = updateItemMutation(true)
 
 export const GET_CART_QUERY = `
 query GetCart($cartId: String!) {
@@ -508,10 +512,11 @@ mutation UpdateShippingsBySupplier($cartId: String!, $data: [DataUpdateShippings
 }
 `;
 
-export const CREATE_CHECKOUT_MUTATION = `
-mutation CreateCheckout($cartId: String!) {
+/** With `attribution` — the surface, the page's campaign, the page and the entry the order is born with (ADR-0035 phase B, gateway-features `checkout_attribution`) — or without it, for a gateway that predates it. */
+const createCheckoutMutation = (withExtra: boolean) => `
+mutation CreateCheckout($cartId: String!${withExtra ? ', $attribution: CheckoutAttributionInput' : ''}) {
   Checkout {
-    CreateCheckout(cart_id: $cartId) {
+    CreateCheckout(cart_id: $cartId${withExtra ? ', attribution: $attribution' : ''}) {
       buyer_accepts_purchase_conditions
       buyer_accepts_terms_conditions
       created_at
@@ -639,12 +644,16 @@ mutation CreateCheckout($cartId: String!) {
     }
   }
 }
-`;
+`
+export const CREATE_CHECKOUT_MUTATION = createCheckoutMutation(false)
+/** `CreateCheckout` with the checkout's `attribution` (`CheckoutAttributionInput`, snake_case fields — see `checkoutAttributionOf`). */
+export const CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION = createCheckoutMutation(true)
 
-export const UPDATE_CHECKOUT_MUTATION = `
-mutation UpdateCheckout($checkoutId: String!, $status: String, $successUrl: String, $email: String, $cancelUrl: String, $paymentMethod: String, $shippingAddress: AddressArgs, $billingAddress: AddressArgs, $buyerAcceptsPurchaseConditions: Boolean, $buyerAcceptsTermsConditions: Boolean) {
+/** With `attribution` (the checkout's, merged key by key on the server) or without it, for a gateway that predates it. */
+const updateCheckoutMutation = (withExtra: boolean) => `
+mutation UpdateCheckout($checkoutId: String!, $status: String, $successUrl: String, $email: String, $cancelUrl: String, $paymentMethod: String, $shippingAddress: AddressArgs, $billingAddress: AddressArgs, $buyerAcceptsPurchaseConditions: Boolean, $buyerAcceptsTermsConditions: Boolean${withExtra ? ', $attribution: CheckoutAttributionInput' : ''}) {
   Checkout {
-    UpdateCheckout(checkout_id: $checkoutId, status: $status, success_url: $successUrl, email: $email, cancel_url: $cancelUrl, payment_method: $paymentMethod, shipping_address: $shippingAddress, billing_address: $billingAddress, buyer_accepts_purchase_conditions: $buyerAcceptsPurchaseConditions, buyer_accepts_terms_conditions: $buyerAcceptsTermsConditions) {
+    UpdateCheckout(checkout_id: $checkoutId, status: $status, success_url: $successUrl, email: $email, cancel_url: $cancelUrl, payment_method: $paymentMethod, shipping_address: $shippingAddress, billing_address: $billingAddress, buyer_accepts_purchase_conditions: $buyerAcceptsPurchaseConditions, buyer_accepts_terms_conditions: $buyerAcceptsTermsConditions${withExtra ? ', attribution: $attribution' : ''}) {
       buyer_accepts_purchase_conditions
       buyer_accepts_terms_conditions
       created_at
@@ -772,7 +781,10 @@ mutation UpdateCheckout($checkoutId: String!, $status: String, $successUrl: Stri
     }
   }
 }
-`;
+`
+export const UPDATE_CHECKOUT_MUTATION = updateCheckoutMutation(false)
+/** `UpdateCheckout` with the checkout's `attribution` (`CheckoutAttributionInput`). */
+export const UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION = updateCheckoutMutation(true)
 
 export const GET_CHECKOUT_QUERY = `
 query GetCheckout($checkoutId: String!) {
@@ -934,6 +946,15 @@ query Config {
 import { Configuration } from '../configuration.js'
 import { normalizeBuyerRef } from '../buyer-ref.js'
 import { getGlobalCountryCode, getGlobalCurrency } from '../types.js'
+import {
+  gatewayHas,
+  isUnknownTokenError,
+  resetGatewayFeatures,
+  withGatewayFeature,
+  type GraphQLErrorInfo,
+} from './gateway-features.js'
+import type { LineOriginWire } from '../cart/origin-wire.js'
+import type { CheckoutAttributionWire } from '../checkout/attribution.js'
 
 /** Transport options for a cart/checkout GraphQL call. */
 export interface CartQueryOptions {
@@ -1039,8 +1060,8 @@ export function getCustomerSessionId(): string {
 }
 
 interface GraphQLEnvelope {
-  data?: Record<string, Record<string, unknown>>
-  errors?: Array<{ message?: string }>
+  data?: Record<string, Record<string, unknown>> | null
+  errors?: Array<{ message?: string; path?: unknown }>
 }
 
 /** Upper bound for one commerce GraphQL round trip. A request that never
@@ -1095,9 +1116,10 @@ export async function executeCartGraphQL(
     if (!res.ok || json.errors) {
       const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
       // What the envelope says travels with the error — whether anything ran
-      // (`data`) and the errors, never the data itself — so a caller can tell
-      // a validation error (the gateway refused the selection, nothing ran)
-      // from a failure of something that did run; see `isUnknownFieldError`.
+      // (`data`, or an error with a `path`) and the errors, never the data
+      // itself — so a caller can tell a validation error (the gateway refused
+      // the selection, nothing ran) from a failure of something that did run;
+      // see gateway-features `isUnknownTokenError`.
       throw Object.assign(new Error(errMsg), {
         graphql: { hasData: json.data !== undefined && json.data !== null, errors: json.errors ?? [] },
       })
@@ -1128,13 +1150,35 @@ export async function createCart(
   return json?.data?.Cart?.CreateCart
 }
 
+/**
+ * `AddItem`. A line may carry `origin` (`LineOriginWire`: where its units
+ * come from — ADR-0035 phase B). A gateway that predates the field refuses
+ * the whole mutation at validation (`LineItemInput` has no `origin`), so the
+ * lines are sent again without it, once per page load — see gateway-features.
+ */
 export async function addItem(
   cartId: string,
   lineItems: unknown[],
   options?: CartQueryOptions,
 ): Promise<any> {
-  const json = await executeCartGraphQL(ADD_ITEM_MUTATION, { cartId, lineItems }, options)
+  const attributed = lineItems.some((li) => !!(li as { origin?: unknown } | null)?.origin)
+  const json = attributed
+    ? await withGatewayFeature('line_origin', (supported) =>
+        executeCartGraphQL(
+          ADD_ITEM_MUTATION,
+          { cartId, lineItems: supported ? lineItems : lineItems.map(withoutOrigin) },
+          options,
+        ),
+      )
+    : await executeCartGraphQL(ADD_ITEM_MUTATION, { cartId, lineItems }, options)
   return json?.data?.Cart?.AddItem
+}
+
+/** A line item without its `origin` — the legacy `LineItemInput`. */
+function withoutOrigin(lineItem: unknown): unknown {
+  if (!lineItem || typeof lineItem !== 'object') return lineItem
+  const { origin: _origin, ...rest } = lineItem as { origin?: unknown }
+  return rest
 }
 
 export async function deleteItem(
@@ -1146,18 +1190,31 @@ export async function deleteItem(
   return json?.data?.Cart?.DeleteItem
 }
 
+/**
+ * `UpdateItem`. `extra.origin` is where the units a quantity INCREASE adds
+ * come from (ADR-0035 phase B); the server credits the new units to it. Sent
+ * only with it; a gateway that predates the argument gets the legacy
+ * mutation instead, once per page load — see gateway-features.
+ */
 export async function updateItem(
   cartId: string,
   cartItemId: string,
   shippingId?: string | null,
   qty?: number | null,
   options?: CartQueryOptions,
+  extra: { origin?: LineOriginWire } = {},
 ): Promise<any> {
-  const json = await executeCartGraphQL(
-    UPDATE_ITEM_MUTATION,
-    { cartId, cartItemId, shippingId: shippingId || null, qty: qty != null ? qty : null },
-    options,
-  )
+  const variables = { cartId, cartItemId, shippingId: shippingId || null, qty: qty != null ? qty : null }
+  const origin = extra.origin
+  const json = origin
+    ? await withGatewayFeature('line_origin', (supported) =>
+        executeCartGraphQL(
+          supported ? UPDATE_ITEM_WITH_ORIGIN_MUTATION : UPDATE_ITEM_MUTATION,
+          supported ? { ...variables, origin } : variables,
+          options,
+        ),
+      )
+    : await executeCartGraphQL(UPDATE_ITEM_MUTATION, variables, options)
   return json?.data?.Cart?.UpdateItem
 }
 
@@ -1187,16 +1244,49 @@ export async function updateShippingsBySupplier(
   return json?.data?.Cart?.UpdateShippingsBySupplier
 }
 
-export async function createCheckout(cartId: string, options?: CartQueryOptions): Promise<any> {
-  const json = await executeCartGraphQL(CREATE_CHECKOUT_MUTATION, { cartId }, options)
+/**
+ * `CreateCheckout`. With `extra.attribution` (`CheckoutAttributionWire`:
+ * the surface, the page's campaign, the page and the entry — ADR-0035 phase
+ * B) the checkout is born attributed; a gateway that predates the argument
+ * gets the legacy mutation, once per page load — see gateway-features.
+ */
+export async function createCheckout(
+  cartId: string,
+  options?: CartQueryOptions,
+  extra: { attribution?: CheckoutAttributionWire } = {},
+): Promise<any> {
+  const attribution = extra.attribution
+  const json = attribution
+    ? await withGatewayFeature('checkout_attribution', (supported) =>
+        executeCartGraphQL(
+          supported ? CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION : CREATE_CHECKOUT_MUTATION,
+          supported ? { cartId, attribution } : { cartId },
+          options,
+        ),
+      )
+    : await executeCartGraphQL(CREATE_CHECKOUT_MUTATION, { cartId }, options)
   return json?.data?.Checkout?.CreateCheckout
 }
 
+/**
+ * `UpdateCheckout`. `variables.attribution` (`CheckoutAttributionWire`) is
+ * merged key by key over what the checkout has; a gateway that predates the
+ * argument gets the legacy mutation without it, once per page load.
+ */
 export async function updateCheckout(
   variables: Record<string, unknown>,
   options?: CartQueryOptions,
 ): Promise<any> {
-  const json = await executeCartGraphQL(UPDATE_CHECKOUT_MUTATION, variables, options)
+  const { attribution, ...legacy } = variables
+  const json = attribution
+    ? await withGatewayFeature('checkout_attribution', (supported) =>
+        executeCartGraphQL(
+          supported ? UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION : UPDATE_CHECKOUT_MUTATION,
+          supported ? variables : legacy,
+          options,
+        ),
+      )
+    : await executeCartGraphQL(UPDATE_CHECKOUT_MUTATION, legacy, options)
   return json?.data?.Checkout?.UpdateCheckout
 }
 
@@ -1214,44 +1304,34 @@ export async function getCheckout(checkoutId: string, options?: CartQueryOptions
  * Apple Pay confirmation and the Klarna native confirmation. A gateway that
  * does not have the field yet refuses the WHOLE operation at validation —
  * before anything runs — so each of them is sent again without the field,
- * once, and the answer remembered for the page load. A confirmation that
- * DID run and failed is never repeated: that would charge twice.
+ * once, and the answer remembered for the page load (gateway-features, the
+ * same mechanism the cart's `origin` and the checkout's `attribution` use).
+ * A confirmation that DID run and failed is never repeated: that would
+ * charge twice.
  */
 export const BUYER_REF_FIELD = 'buyer_ref'
 
-let gatewayKnowsBuyerRef = true
-
 /** Whether this page load still expects the gateway to know `buyer_ref` (false once it refused the selection). */
 export function gatewayHasBuyerRef(): boolean {
-  return gatewayKnowsBuyerRef
+  return gatewayHas('buyer_ref')
 }
 
 /** Forget what this page load learned about `buyer_ref` (tests). */
 export function resetBuyerRefSupport(): void {
-  gatewayKnowsBuyerRef = true
+  resetGatewayFeatures('buyer_ref')
 }
 
-/** What `executeCartGraphQL` attaches to the error it throws. */
-export interface GraphQLErrorInfo {
-  hasData: boolean
-  errors: Array<{ message?: string }>
-}
+export type { GraphQLErrorInfo }
 
 /**
  * True when `err` is the gateway refusing a selection it does not know
  * (`Cannot query field "buyer_ref" on type …`): a validation error, with no
  * `data` because nothing ran — safe to send again without the field, a
  * mutation included. Anything that ran (data present) or any other message
- * is not.
+ * is not. (`isUnknownTokenError` of gateway-features, by field name.)
  */
 export function isUnknownFieldError(err: unknown, field: string): boolean {
-  if (!err || typeof err !== 'object') return false
-  const { message, graphql } = err as { message?: unknown; graphql?: Partial<GraphQLErrorInfo> }
-  if (graphql?.hasData) return false
-  const messages = [message, ...(graphql?.errors ?? []).map((e) => e?.message)]
-  return messages.some(
-    (m) => typeof m === 'string' && m.includes(`"${field}"`) && /cannot query field|unknown field/i.test(m),
-  )
+  return isUnknownTokenError(err, field)
 }
 
 /**
@@ -1259,15 +1339,8 @@ export function isUnknownFieldError(err: unknown, field: string): boolean {
  * not know the field, `request(false)` (without it) — and from then on, for
  * this page load, straight to the latter.
  */
-export async function withBuyerRef<T>(request: (withBuyerRef: boolean) => Promise<T>): Promise<T> {
-  if (!gatewayKnowsBuyerRef) return request(false)
-  try {
-    return await request(true)
-  } catch (err) {
-    if (!isUnknownFieldError(err, BUYER_REF_FIELD)) throw err
-    gatewayKnowsBuyerRef = false
-    return request(false)
-  }
+export function withBuyerRef<T>(request: (withBuyerRef: boolean) => Promise<T>): Promise<T> {
+  return withGatewayFeature('buyer_ref', request)
 }
 
 /**

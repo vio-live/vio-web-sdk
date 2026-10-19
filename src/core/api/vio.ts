@@ -18,6 +18,7 @@ import type {
   ManifestRequest,
   ManifestResult,
   PlacementComponent,
+  SurfaceResponse,
 } from '../types.js'
 
 export interface VioApiOptions {
@@ -57,6 +58,15 @@ export class VioApi {
    */
   async declareManifest(body: ManifestRequest): Promise<ManifestResult> {
     return this.post<ManifestResult>('/v2/mobile/components/manifest', body)
+  }
+
+  /**
+   * The surface of the key (`GET /v2/mobile/surface`): its id, name, status
+   * and `privacyMode` — what decides whether the order attribution may carry
+   * the entry context (ADR-0035). A 404 means a service that predates it.
+   */
+  async surface(): Promise<SurfaceResponse> {
+    return this.get<SurfaceResponse>('/v2/mobile/surface')
   }
 
   /**

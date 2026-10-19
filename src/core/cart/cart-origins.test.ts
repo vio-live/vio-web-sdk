@@ -101,13 +101,36 @@ describe('origins accumulate per add', () => {
     ])
   })
 
-  it('keeps only campaignId / slot / contentId of whatever attribution it is handed', () => {
+  it('keeps only the attribution fields of whatever it is handed — the place, the kind of element and the page; never the sponsor', () => {
     const cart = new CartManager()
     lamp(cart, 1, { ...HERO, sponsorId: 5, contentTitle: 'x', campaignId: '12' })
-    expect(originsOf(cart)).toEqual([{ ...HERO, quantity: 1 }])
+    expect(originsOf(cart)).toEqual([{ ...HERO, contentTitle: 'x', quantity: 1 }])
     expect(normalizeOrigin({ campaignId: 'nope' as never, slot: '  ', contentId: 7 as never })).toEqual({ contentId: '7' })
+    // The kind as Commerce and the collector name it: an element's template id loses its `product-` prefix.
+    expect(normalizeOrigin({ ...HERO, componentTemplateId: 'product-card' } as never)).toEqual({ ...HERO, componentKind: 'card' })
+    expect(normalizeOrigin({ ...HERO, componentKind: ' Carousel ' })).toEqual({ ...HERO, componentKind: 'carousel' })
+    // The page as origin + path: the query and the fragment never make it into the cart.
+    expect(normalizeOrigin({ ...HERO, contentUrl: 'https://h.example/a?email=kari@example.no#x', contentTitle: ' T ' })).toEqual({
+      ...HERO,
+      contentUrl: 'https://h.example/a',
+      contentTitle: 'T',
+    })
     expect(sameOrigin({}, {})).toBe(true)
     expect(sameOrigin(HERO, { ...HERO, contentId: 'other' })).toBe(false)
+    // The kind of element is part of the place; the page's URL and title are not.
+    expect(sameOrigin({ ...HERO, componentKind: 'card' }, { ...HERO, componentKind: 'detail' })).toBe(false)
+    expect(sameOrigin({ ...HERO, contentUrl: 'https://h.example/a' }, { ...HERO, contentUrl: 'https://h.example/b' })).toBe(true)
+  })
+
+  it('the same place from a card and from the detail are two origins; a +1 without origin goes to the most recent', () => {
+    const cart = new CartManager()
+    const line = lamp(cart, 1, { ...HERO, componentKind: 'card' })
+    lamp(cart, 1, { ...HERO, componentKind: 'detail' })
+    cart.adjustQuantity(line.id, SPONSOR, +1)
+    expect(originsOf(cart)).toEqual([
+      { ...HERO, componentKind: 'card', quantity: 1 },
+      { ...HERO, componentKind: 'detail', quantity: 2 },
+    ])
   })
 })
 

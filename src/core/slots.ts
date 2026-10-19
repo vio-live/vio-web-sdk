@@ -45,6 +45,25 @@ export interface RegisterSlotOptions {
 /** A kind is a short word (the micro stores it from 2026-10 on; before, it ignored the key). */
 export const SLOT_KIND_MAX_LENGTH = 32
 
+/**
+ * The kind of component some units were sold from, as Commerce keeps it on
+ * the order line (`order_item.component_kind`, ≤ 32) — the SAME rule the
+ * collector applies for `breakdown?by=component_kind` (vio-analytics
+ * `componentKind`), so the order and the events agree: what the element says
+ * it is (`component_template_id`: `product-card`, `product-carousel`,
+ * `product-detail`, a Vev block's `vev-card`) lower-cased and without its
+ * `product-` / `vev-` prefix, else the kind word in the slot id the page
+ * declared (`card-<key>`, `<scope>-carousel-2`, `detail-1`); `undefined` when
+ * neither says.
+ */
+export function componentKindOf(templateId: unknown, slot?: unknown): string | undefined {
+  const hint = typeof templateId === 'string' ? templateId.trim().toLowerCase() : ''
+  if (hint) return hint.replace(/^(product|vev)-/, '').slice(0, SLOT_KIND_MAX_LENGTH) || undefined
+  const id = typeof slot === 'string' ? slot.toLowerCase() : ''
+  const m = id.match(/(?:^|-)(card|carousel|grid|detail|banner|list|hero|stepper)(?:-|$)/)
+  return m?.[1]
+}
+
 /** The kind as the manifest carries it: trimmed, lower-case, cut at 32 chars; `undefined` for nothing. */
 export function normalizeSlotKind(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined

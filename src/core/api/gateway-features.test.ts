@@ -52,7 +52,7 @@ const refusal = (message: string) => ({ body: { errors: [{ message }] }, status:
 const UNKNOWN_FIELD_ORIGIN = refusal(
   'Variable "$lineItems" got invalid value { origin: {…} } at "lineItems[0]"; Field "origin" is not defined by type "LineItemInput".',
 )
-const UNKNOWN_TYPE_ORIGIN = refusal('Unknown type "LineOriginInput".')
+const UNKNOWN_TYPE_ORIGIN = refusal('Unknown type "CartLineOriginInput".')
 const UNKNOWN_ARG_ATTRIBUTION = refusal('Unknown argument "attribution" on field "CheckoutMutations.UpdateCheckout".')
 const UNKNOWN_TYPE_ATTRIBUTION = refusal('Unknown type "CheckoutAttributionInput".')
 
@@ -68,7 +68,7 @@ afterEach(() => {
 describe('isUnknownTokenError / isUnknownFeatureError', () => {
   it('a validation message naming THAT token, with no data', () => {
     expect(isUnknownTokenError(e('Unknown argument "origin" on field "CartMutations.UpdateItem".'), 'origin')).toBe(true)
-    expect(isUnknownTokenError(e('Unknown type "LineOriginInput".'), 'LineOriginInput')).toBe(true)
+    expect(isUnknownTokenError(e('Unknown type "CartLineOriginInput".'), 'CartLineOriginInput')).toBe(true)
     expect(isUnknownTokenError(e('x', { hasData: false, errors: [{ message: 'Field "origin" is not defined by type "LineItemInput".' }] }), 'origin')).toBe(true)
     expect(isUnknownTokenError(e('Cannot query field "buyer_ref" on type "X".'), 'buyer_ref')).toBe(true)
     // Another token, something that ran, a timeout, nothing at all.
@@ -80,9 +80,9 @@ describe('isUnknownTokenError / isUnknownFeatureError', () => {
   })
 
   it('a feature goes by its argument and its input types', () => {
-    expect(isUnknownFeatureError(e('Unknown type "LineOriginInput".'), 'line_origin')).toBe(true)
+    expect(isUnknownFeatureError(e('Unknown type "CartLineOriginInput".'), 'line_origin')).toBe(true)
     expect(isUnknownFeatureError(e('Unknown argument "origin" on field "X".'), 'line_origin')).toBe(true)
-    expect(isUnknownFeatureError(e('Unknown type "EntryContextInput".'), 'checkout_attribution')).toBe(true)
+    expect(isUnknownFeatureError(e('Unknown type "CheckoutAttributionEntryInput".'), 'checkout_attribution')).toBe(true)
     expect(isUnknownFeatureError(e('Unknown type "CheckoutAttributionInput".'), 'line_origin')).toBe(false)
   })
 
@@ -95,7 +95,7 @@ describe('isUnknownTokenError / isUnknownFeatureError', () => {
 describe('withGatewayFeature', () => {
   it('tries with the feature, falls back without it on a refusal, and remembers for the page load', async () => {
     const request = vi.fn(async (supported: boolean) => {
-      if (supported) throw e('Unknown type "LineOriginInput".')
+      if (supported) throw e('Unknown type "CartLineOriginInput".')
       return 'legacy'
     })
     expect(gatewayHas('line_origin')).toBe(true)
@@ -130,7 +130,7 @@ describe('withGatewayFeature', () => {
 
 describe('the mutations', () => {
   it('declare the new argument only in their attributed variant', () => {
-    expect(UPDATE_ITEM_WITH_ORIGIN_MUTATION).toContain('$origin: LineOriginInput')
+    expect(UPDATE_ITEM_WITH_ORIGIN_MUTATION).toContain('$origin: CartLineOriginInput')
     expect(UPDATE_ITEM_WITH_ORIGIN_MUTATION).toContain('origin: $origin')
     expect(UPDATE_ITEM_MUTATION).not.toContain('origin')
     expect(CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION).toContain('$attribution: CheckoutAttributionInput')

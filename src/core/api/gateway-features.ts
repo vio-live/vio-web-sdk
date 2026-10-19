@@ -18,16 +18,22 @@ export type GatewayFeature = 'buyer_ref' | 'line_origin' | 'checkout_attribution
 
 /**
  * What the gateway's validation error names when it does not know the
- * feature: the field or argument, and the input types the SDK declares for
- * it (a variable of an unknown type fails on the TYPE's name). The type
- * names are the ones `vio-live/graphql` `feat/atribucion-en-la-orden`
- * defines; a rename there makes the SDK fall back to the legacy shape — and
- * say so in the console — until it is updated here.
+ * feature: the field or argument first, then the input types the SDK
+ * declares for it (a variable of an unknown type fails on the TYPE's name).
+ * The type names are the ones `vio-live/graphql#30` (`schema.gql`) defines —
+ * `gateway-schema.contract.test.ts` checks them against that schema; a rename
+ * there makes the SDK fall back to the legacy shape — and say so in the
+ * console — until it is updated here.
  */
 const FEATURE_TOKENS: Readonly<Record<GatewayFeature, readonly string[]>> = {
   buyer_ref: ['buyer_ref'],
-  line_origin: ['origin', 'LineOriginInput'],
-  checkout_attribution: ['attribution', 'CheckoutAttributionInput', 'EntryContextInput'],
+  line_origin: ['origin', 'CartLineOriginInput'],
+  checkout_attribution: ['attribution', 'CheckoutAttributionInput', 'CheckoutAttributionEntryInput'],
+}
+
+/** The names a feature goes by on the gateway: its field or argument, then its input types (tests). */
+export function featureTokens(feature: GatewayFeature): readonly string[] {
+  return FEATURE_TOKENS[feature]
 }
 
 /** What a gateway says of a field, argument or type it does not have. */
@@ -76,7 +82,7 @@ function ranSomething(err: unknown): boolean {
 /**
  * True when `err` is the gateway refusing something it does not know, named
  * `token` (`Cannot query field "buyer_ref" on type …`, `Unknown argument
- * "origin" on field …`, `Unknown type "LineOriginInput"`, `Field "origin" is
+ * "origin" on field …`, `Unknown type "CartLineOriginInput"`, `Field "origin" is
  * not defined by type "LineItemInput"`): a validation error, with no `data`
  * because nothing ran — safe to send again without it, a mutation included.
  * Anything that ran (data present) or any other message is not.

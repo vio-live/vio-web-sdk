@@ -221,7 +221,7 @@ mutation DeleteItem($cartId: String!, $cartItemId: String!) {
 
 /** With `origin` — where the units a quantity increase adds come from (ADR-0035 phase B, gateway-features `line_origin`) — or without it, for a gateway that predates it. */
 const updateItemMutation = (withExtra: boolean) => `
-mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String, $qty: Int${withExtra ? ', $origin: LineOriginInput' : ''}) {
+mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String, $qty: Int${withExtra ? ', $origin: CartLineOriginInput' : ''}) {
   Cart {
     UpdateItem(cart_id: $cartId, cart_item_id: $cartItemId, shipping_id: $shippingId, qty: $qty${withExtra ? ', origin: $origin' : ''}) {
       cart_id
@@ -293,7 +293,7 @@ mutation UpdateItem($cartId: String!, $cartItemId: String!, $shippingId: String,
 }
 `
 export const UPDATE_ITEM_MUTATION = updateItemMutation(false)
-/** `UpdateItem` with the `origin` of the added units (`LineOriginInput`, snake_case fields — see `lineOriginWire`). */
+/** `UpdateItem` with the `origin` of the added units (`CartLineOriginInput`, snake_case fields — see `lineOriginWire`). */
 export const UPDATE_ITEM_WITH_ORIGIN_MUTATION = updateItemMutation(true)
 
 export const GET_CART_QUERY = `

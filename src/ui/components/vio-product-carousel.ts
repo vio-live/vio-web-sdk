@@ -121,6 +121,7 @@ export class VioProductCarousel extends LitElement {
         : { slot: this.effectiveSlot || undefined }
     return {
       ...base,
+      componentTemplateId: 'product-carousel',
       ...(this.vioContentId ? { contentId: this.vioContentId } : {}),
       ...(this.vioContentTitle ? { contentTitle: this.vioContentTitle } : {}),
     }
@@ -411,7 +412,6 @@ export class VioProductCarousel extends LitElement {
         this,
         {
           sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
-          componentTemplateId: 'product-carousel',
           // The slot is the real location id; the label only stands in for it.
           locationId: this.effectiveSlot || this.label || undefined,
           ...this.attribution(),
@@ -441,7 +441,6 @@ export class VioProductCarousel extends LitElement {
       Vio.analytics.track('view_item_list', {
         context: {
           sponsorId: sponsorId > 0 ? sponsorId : undefined,
-          componentTemplateId: 'product-carousel',
           locationId: this.effectiveSlot || this.label || undefined,
           ...this.attribution(),
         },
@@ -510,6 +509,7 @@ export class VioProductCarousel extends LitElement {
             image-url=${img}
             ?has-variants=${(p.variants?.length ?? 0) > 1}
             .vioSlot=${this.effectiveSlot}
+            .componentTemplateId=${'product-carousel'}
             .vioCampaign=${this.effectiveCampaignId !== undefined ? String(this.effectiveCampaignId) : ''}
             .vioContentId=${this.vioContentId}
             .vioContentTitle=${this.vioContentTitle}

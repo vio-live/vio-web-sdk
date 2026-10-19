@@ -179,10 +179,12 @@ template that wants slots shared across articles simply sets no scope.
 
 ### Declaration
 
-Every mounted element registers its id (and label); after the first successful
-`Vio.bootstrap()` the SDK sends **one** manifest for the whole page
-(`POST /v2/mobile/components/manifest`, `mode: 'merge'`, so one page never
-deprecates another page's slots) and again whenever a new id or label appears.
+Every mounted element registers its id, its label and its **kind** (`card` |
+`carousel` | `detail` — each manifest location is `{ id, displayName, kind }`; the
+campaigns micro stores the kind from 2026-10 on and ignored the key before); after
+the first successful `Vio.bootstrap()` the SDK sends **one** manifest for the whole
+page (`POST /v2/mobile/components/manifest`, `mode: 'merge'`, so one page never
+deprecates another page's slots) and again whenever a new id, label or kind appears.
 The browser remembers **each id — under its label and the campaign it was
 declared with — for 24 h** in `localStorage` (under the platform and a hash of
 the key — never the key itself; one state per id), so a multi-page site posts
@@ -194,9 +196,15 @@ once). Best-effort, never throws. By hand, e.g. from an editor (`force` re-sends
 everything and ignores the per-load cap):
 
 ```ts
-await Vio.declareSlots(['hero', { id: 'sidebar', displayName: 'Sidebar' }], { force: true })
+await Vio.declareSlots(['hero', { id: 'sidebar', displayName: 'Sidebar', kind: 'carousel' }], { force: true })
 // → ManifestResult | null (null = skipped as already declared, or failed — see the console)
+
+// What an element does on mount (a host block can too). `(id, name, campaignId)` still works.
+const release = Vio.registerSlot('sidebar', 'Sidebar', { kind: 'carousel', campaignId: 12 })
 ```
+
+The first kind an id gets stays — the cards a carousel renders share the carousel's
+id, and the slot is the carousel's.
 
 ### Which campaign a slot shows
 
@@ -296,7 +304,12 @@ sponsor's campaign → the default. Two things changed from
 0.22 for carousels: a carousel's impressions and `view_item_list` report
 `location_id` as its slot id (`carousel-1`, or the `vio-slot`) instead of its
 `label`, and every event now carries `content_id` / `content_title` — including
-the single-campaign `begin_checkout` / `purchase`.
+the single-campaign `begin_checkout` / `purchase`. Since 0.25 every element also
+says **what it is**: `component_template_id` is `product-card` for a card,
+`product-carousel` for a carousel — and for the cards it renders, so a carousel's
+impressions and its clicks count under one component type — and `product-detail`
+for the detail (its `view_item`, `add_to_cart` and `begin_checkout`). A host that
+lays cards out itself can set `component-template-id` on them (`product-grid`).
 
 ### Cart origins and the purchase per campaign
 
@@ -333,6 +346,47 @@ Vio.cartSlices()            // over the live cart; Vio.cartSlices(sponsorId) for
 Vio.cartSlices(undefined, { items }) // pure, over a snapshot of lines
 // → CartSlice[]: { campaignId?, sponsorId?, slot?, contentId?, items: VioItem[], value, currency?, slice, slices }
 ```
+
+### The visit and the buyer — `client` and `buyer_id` (0.25)
+
+Every event carries a **`client`** block, the standard context of the visit:
+`language` (`navigator.language`), the **landing page's** `referrer` and
+`utm_source` / `utm_medium` / `utm_campaign` / `utm_term` / `utm_content`,
+`screen_w` / `screen_h` and `tz` (IANA). The landing is read once and remembered
+for the session in `sessionStorage` (`vio.landing.v1`), so the third page of a visit
+still says it came from the newsletter — a page's own internal referrer is never
+sent. The referrer is kept as origin + path (no query string, no fragment) and
+dropped when it is this same host (a self-referral says nothing about the entry). A
+URL with utm parameters is a new landing that replaces the memory — unless it was
+reached from this same host, i.e. an internal link that propagates utm, which keeps
+the landing that was. With `requireConsent` nothing is written until
+`setConsent(true)`, and `setConsent(false)` forgets it. Device type, OS, browser and
+country are **not** sent: the collector derives them from the request itself. The
+block is computed once per page load (capped to the collector's limits) and the
+same object rides on every event. `resolveClientContext()` / `resolveLanding()` are
+exported from `/core` for hosts with their own pipeline.
+
+A `purchase` carries **`commerce.buyer_id`**: shopcart's `buyer_ref`, the keyed hash
+Commerce computes from the buyer's email — one person, one ref across orders and
+devices, nothing reversible — so a campaign can count distinct and repeat buyers.
+The SDK never sends an email and never hashes one itself: it forwards the reference
+the checkout answers (the order-number query, the Apple Pay and the Klarna native
+confirmations select `buyer_ref`; a gateway that predates the field is asked again
+without it, once per page load) and omits it otherwise. `Vio.checkout.getOrderReference(checkoutId, sponsorId?)`
+answers `{ orderNumber, buyerRef }` (never throws; concurrent asks share one
+request); `getOrderNumber` is its order-number half. The `vio:payment-success`
+detail carries it as `buyerRef`; an emitter that has to ask for it asks at once (and
+again at 1.2 s while the checkout has neither order nor reference — a webhook may
+still be writing it), waits at most 2.5 s, fires the event at once without it when the
+page hides or the element is removed, and never asks when it cannot help (the
+gateway has no `buyer_ref` yet; a confirmation that already answered). The
+confirmation screen never waits. A host with its own checkout passes `buyerRef` (or
+`buyer_ref`) in its `vio:payment-success` / `vio:checkout-open` detail, or
+`commerce.buyerId` to `Vio.analytics.track()`; anything that is not a reference
+(an email, more than 128 chars, anything outside `[A-Za-z0-9._~-]`) is dropped
+(`normalizeBuyerRef` / `buyerRefOf`, exported from `/core`). **Without consent**
+(`requireConsent` until `setConsent(true)`) `buyer_id` is not sent at all: a visit
+measured with ephemeral ids carries no stable identifier of a person.
 
 ## Theming
 

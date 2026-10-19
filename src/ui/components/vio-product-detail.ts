@@ -132,6 +132,7 @@ export class VioProductDetail extends LitElement {
     const contentTitle = (this.fromCard && this.eventContentTitle) || this.vioContentTitle
     return {
       ...base,
+      componentTemplateId: 'product-detail',
       ...(contentId ? { contentId } : {}),
       ...(contentTitle ? { contentTitle } : {}),
     }
@@ -764,7 +765,6 @@ export class VioProductDetail extends LitElement {
         Vio.analytics.track('view_item', {
           context: {
             sponsorId: this.sponsorId > 0 ? Number(this.sponsorId) : undefined,
-            componentTemplateId: 'product-detail',
             ...this.attribution(),
           },
           commerce: {

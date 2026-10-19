@@ -158,6 +158,8 @@ export interface ManifestLocation {
   displayName?: string
   /** The campaign this location belongs to when it differs from the page's (`ManifestRequest.campaignId`). */
   campaignId?: number
+  /** The kind of element the slot holds — `card` | `carousel` | `detail` for the SDK's, a host's own word otherwise. For the dashboard. */
+  kind?: string
 }
 
 /**

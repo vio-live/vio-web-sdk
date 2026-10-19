@@ -42,6 +42,8 @@ const STANDARD = {
 let mountSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)

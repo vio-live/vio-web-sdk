@@ -12,6 +12,7 @@ import { Configuration } from '../configuration.js'
 import type { BootstrapResponse } from '../types.js'
 import {
   AnalyticsManager,
+  buyerRefOf,
   purchaseFromPaymentSuccess,
   resolveCampaignId,
 } from './analytics-manager.js'
@@ -1268,5 +1269,253 @@ describe('campaign_id y la campaña de la PÁGINA (ADR-0034, enmienda 3)', () =>
     // Un sponsor que sí participa (8) y sin sponsor: la asignación de la página aplica.
     expect(resolveCampaignId({ sponsorId: 8, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(12)
     expect(resolveCampaignId({ slot: 'by-page' }, boot, {})).toBe(12)
+  })
+})
+
+// ── 0.25.0: bloque `client`, buyer_id y component_template_id ───────────────
+
+function sessionStore() {
+  const store = new Map<string, string>()
+  return {
+    store,
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  }
+}
+
+describe('bloque `client` (el contexto estándar de la visita, contrato 2026-10-19)', () => {
+  afterEach(removeFacade)
+
+  it('va en todos los eventos, se calcula una vez por carga y es el mismo objeto', async () => {
+    initVio()
+    vi.stubGlobal('navigator', { language: 'nb-NO' })
+    vi.stubGlobal('screen', { width: 1440, height: 900 })
+    ;(globalThis as Record<string, any>).document.referrer = 'https://mail.example/'
+    ;(globalThis as Record<string, any>).location.search = '?utm_source=nyhetsbrev&utm_medium=email'
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    vi.stubGlobal('navigator', { language: 'sv-SE' }) // cambia después: no se relee
+    m.track('select_item')
+    await m.flush()
+
+    const events = flushedBatches[0]!.events
+    expect(events.map((e) => e.name)).toEqual(['session_start', 'view_item', 'select_item'])
+    for (const ev of events) {
+      expect(ev.client).toMatchObject({
+        language: 'nb-NO',
+        referrer: 'https://mail.example/',
+        utm_source: 'nyhetsbrev',
+        utm_medium: 'email',
+        screen_w: 1440,
+        screen_h: 900,
+      })
+      expect(typeof (ev.client as Record<string, unknown>).tz).toBe('string')
+    }
+    // Lo que el colector deriva del User-Agent no se manda desde la web.
+    const client = events[1]!.client as Record<string, unknown>
+    for (const key of ['device_type', 'os', 'os_version', 'browser', 'browser_version']) expect(client).not.toHaveProperty(key)
+  })
+
+  it('recuerda la página de entrada (referrer + utm) en sessionStorage: la segunda página la hereda y NO manda su referrer interno', async () => {
+    initVio()
+    const session = sessionStore()
+    vi.stubGlobal('sessionStorage', session)
+    ;(globalThis as Record<string, any>).document.referrer = 'https://mail.example/'
+    ;(globalThis as Record<string, any>).location.search = '?utm_campaign=okt'
+    const first = new AnalyticsManager()
+    first.track('view_item')
+    await first.flush()
+    expect(session.store.has('vio.landing.v1')).toBe(true)
+
+    // Segunda página de la misma sesión: otro manager, referrer interno, sin utm.
+    ;(globalThis as Record<string, any>).document.referrer = 'https://host.example/article'
+    ;(globalThis as Record<string, any>).location.search = ''
+    const second = new AnalyticsManager()
+    second.track('view_item')
+    await second.flush()
+    const ev = flushedBatches.at(-1)!.events.find((e) => e.name === 'view_item')!
+    expect(ev.client).toMatchObject({ referrer: 'https://mail.example/', utm_campaign: 'okt' })
+  })
+
+  it('con requireConsent no escribe la entrada en el dispositivo hasta setConsent(true), pero igual la manda', async () => {
+    initVio()
+    const session = sessionStore()
+    vi.stubGlobal('sessionStorage', session)
+    ;(globalThis as Record<string, any>).location.search = '?utm_source=a'
+    const m = new AnalyticsManager()
+    m.start({ requireConsent: true })
+    m.track('view_item')
+    await m.flush()
+    expect(session.store.size).toBe(0)
+    expect((flushedBatches[0]!.events.at(-1)!.client as Record<string, unknown>).utm_source).toBe('a')
+    m.setConsent(true)
+    expect(JSON.parse(session.store.get('vio.landing.v1')!)).toEqual({ utm: { utm_source: 'a' } })
+    // W5: withdrawing it forgets the landing too.
+    m.setConsent(false)
+    expect(session.store.has('vio.landing.v1')).toBe(false)
+    m.stop()
+  })
+
+  it('W5: sin consentimiento (ids efímeros) tampoco sale buyer_id — un identificador estable de persona —; con setConsent(true) sí', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ requireConsent: true })
+    m.track('purchase', { commerce: { orderId: 'o1', buyerId: 'brf_1' } })
+    m.setConsent(true)
+    m.track('purchase', { commerce: { orderId: 'o2', buyerId: 'brf_1' } })
+    await m.flush()
+    const [before, after] = flushedBatches[0]!.events.filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+    expect(before!.commerce).not.toHaveProperty('buyer_id')
+    expect(after!.commerce.buyer_id).toBe('brf_1')
+    m.stop()
+  })
+})
+
+describe('buyer_id: la referencia del comprador (buyer_ref de shopcart), nunca un email', () => {
+  afterEach(removeFacade)
+
+  const fire = (type: string, detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(new CustomEvent(type, { detail }) as unknown as Event)
+
+  const fakeLine = (over: Partial<FakeLine> = {}): FakeLine => ({
+    productId: 408948,
+    name: 'Bonding Oil',
+    unitPrice: 300,
+    quantity: 1,
+    currency: 'NOK',
+    sponsorId: 4,
+    ...over,
+  })
+
+  const eventsAfter = async (type: string, detail: unknown, cart = fakeCart({ 4: [fakeLine()] })) => {
+    initVio()
+    installFacade(BOOT, cart)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire(type, detail)
+    await m.flush()
+    m.stop()
+    return flushedBatches.flatMap((b) => b.events) as Array<Record<string, any>>
+  }
+  const purchaseAfter = async (detail: unknown, cart?: ReturnType<typeof fakeCart>) => {
+    const ev = (await eventsAfter('vio:payment-success', detail, cart)).find((e) => e.name === 'purchase')
+    expect(ev).toBeDefined()
+    return ev!
+  }
+
+  it('buyerRef en el detail → commerce.buyer_id en purchase (retorno de redirect y drawer)', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1', buyerRef: 'brf_7f3a9c' })
+    expect(ev.commerce.buyer_id).toBe('brf_7f3a9c')
+    expect(ev.commerce.order_id).toBe('CHK-1')
+  })
+
+  it('también lo lee donde lo deje otro emisor: buyer_ref plano, result.buyer_ref, result.confirmation.buyerRef (Apple Pay) y result.checkout.buyer_ref', async () => {
+    expect((await purchaseAfter({ method: 'stripe', sponsorId: 4, checkoutId: 'C', buyer_ref: 'h-plain' })).commerce.buyer_id).toBe('h-plain')
+    flushedBatches.length = 0
+    expect((await purchaseAfter({ method: 'klarna', sponsorId: 4, checkoutId: 'C', result: { buyer_ref: 'h-result' } })).commerce.buyer_id).toBe('h-result')
+    flushedBatches.length = 0
+    expect(
+      (await purchaseAfter({ method: 'apple-pay', result: { confirmation: { orderId: 'ORD-1', buyerRef: 'h-apple' } } })).commerce.buyer_id,
+    ).toBe('h-apple')
+    flushedBatches.length = 0
+    expect((await purchaseAfter({ method: 'qliro', sponsorId: 4, checkoutId: 'C', result: { checkout: { buyer_ref: 'h-chk' } } })).commerce.buyer_id).toBe('h-chk')
+  })
+
+  it('sin referencia no hay buyer_id (ni clave vacía)', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-2' })
+    expect(ev.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('nunca un email, nunca más de 128 caracteres ni fuera de [A-Za-z0-9._~-]: se omite, no se hashea ni se corta', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-3', buyerRef: 'ola@nordmann.no' })
+    expect(ev.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const long = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4', buyerRef: 'x'.repeat(129) })
+    expect(long.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const odd = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4b', buyerRef: 'Ola Nordmann' })
+    expect(odd.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const fits = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4c', buyerRef: 'a'.repeat(128) })
+    expect(fits.commerce.buyer_id).toHaveLength(128)
+    flushedBatches.length = 0
+    const hostCommerce = await eventsAfter('vio:payment-success', { method: 'vipps', sponsorId: 4, orderId: 'CHK-5', result: { buyerRef: 'kari@example.com' } })
+    expect(hostCommerce.find((e) => e.name === 'purchase')!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('una compra partida por campaña lleva el mismo buyer_id en cada slice', async () => {
+    const events = await eventsAfter(
+      'vio:payment-success',
+      { method: 'apple-pay', buyerRef: 'h-split', result: { confirmation: { orderId: 'ORD-9' } } },
+      fakeCart({ 4: [fakeLine()], 7: [fakeLine({ sponsorId: 7, productId: 1 })] }),
+    )
+    const purchases = events.filter((e) => e.name === 'purchase')
+    expect(purchases.length).toBe(2)
+    for (const p of purchases) {
+      expect(p.commerce.buyer_id).toBe('h-split')
+      expect(p.commerce.order_id).toBe('ORD-9')
+    }
+  })
+
+  it('begin_checkout lo lleva solo si el detail de vio:checkout-open ya lo trae (un checkout del host); el de la SDK no', async () => {
+    const withRef = await eventsAfter('vio:checkout-open', { sponsorId: 4, buyerRef: 'h-early' })
+    expect(withRef.find((e) => e.name === 'begin_checkout')!.commerce.buyer_id).toBe('h-early')
+    flushedBatches.length = 0
+    const without = await eventsAfter('vio:checkout-open', { sponsorId: 4 })
+    expect(without.find((e) => e.name === 'begin_checkout')!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('un host que llama track() con commerce.buyerId pasa por el mismo filtro', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('purchase', { commerce: { orderId: 'o1', buyerId: ' h-host ' } })
+    m.track('purchase', { commerce: { orderId: 'o2', buyerId: 'someone@example.org' } })
+    await m.flush()
+    const [a, b] = flushedBatches[0]!.events.filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+    expect(a!.commerce.buyer_id).toBe('h-host')
+    expect(b!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('purchaseFromPaymentSuccess / buyerRefOf son puros: precedencia y filtro', () => {
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'h' })).toEqual({ orderId: 'A', buyerId: 'h' })
+    expect(purchaseFromPaymentSuccess({ buyerRef: 'h' })).toEqual({ buyerId: 'h' })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'a@b.c' })).toEqual({ orderId: 'A' })
+    expect(buyerRefOf({ buyerRef: 'top', result: { buyer_ref: 'res' } })).toBe('top')
+    expect(buyerRefOf({ buyerRef: 'x@y.z', result: { buyer_ref: 'res' } })).toBe('res')
+    expect(buyerRefOf({ result: { confirmation: { buyer_ref: 'conf' }, checkout: { buyerRef: 'chk' } } })).toBe('conf')
+    expect(buyerRefOf({ result: { checkout: { buyerRef: 'chk' } } })).toBe('chk')
+    expect(buyerRefOf({ result: null })).toBeUndefined()
+    expect(buyerRefOf(undefined)).toBeUndefined()
+  })
+})
+
+describe('component_template_id: el tipo de elemento viaja con los eventos vio:* (product-card, product-carousel, product-detail)', () => {
+  afterEach(removeFacade)
+
+  const fire = (type: string, detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(new CustomEvent(type, { detail }) as unknown as Event)
+
+  it('select_item, add_to_cart y begin_checkout lo copian del detail; sin él no se inventa', async () => {
+    initVio()
+    installFacade(BOOT)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4, componentTemplateId: 'product-card' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4, componentTemplateId: 'product-carousel' })
+    fire('vio:added-to-cart', { productId: 9, sponsorId: 4, componentTemplateId: 'product-detail' })
+    fire('vio:checkout-open', { sponsorId: 4, componentTemplateId: 'product-detail' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4 })
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events) as Array<Record<string, any>>
+    const templates = events.filter((e) => e.name !== 'session_start').map((e) => [e.name, e.context?.component_template_id])
+    expect(templates).toEqual([
+      ['select_item', 'product-card'],
+      ['select_item', 'product-carousel'],
+      ['add_to_cart', 'product-detail'],
+      ['begin_checkout', 'product-detail'],
+      ['select_item', undefined],
+    ])
   })
 })

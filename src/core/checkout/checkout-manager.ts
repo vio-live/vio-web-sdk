@@ -104,7 +104,12 @@ import {
   type AdyenDropinHandle,
 } from './payments/adyen.js'
 import { SDK_VERSION } from '../version.js'
+import { normalizeBuyerRef } from '../buyer-ref.js'
 import {
+  BUYER_REF_FIELD,
+  withBuyerRef,
+  getCheckoutReference as gqlGetCheckoutReference,
+  type CheckoutReference,
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -113,7 +118,6 @@ import {
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,
   getCheckout as gqlGetCheckout,
-  getCheckoutOrderNumber as gqlGetCheckoutOrderNumber,
   getLineItemsBySupplier as gqlGetLineItemsBySupplier,
   updateCheckout as gqlUpdateCheckout,
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
@@ -240,13 +244,14 @@ mutation CreatePaymentKlarnaNative($checkoutId: String!, $countryCode: String, $
 }
 `
 
-const CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION = `
+/** With `buyer_ref` (new on the gateway, see cart-queries `withBuyerRef`) or without it, for a gateway that predates it. */
+const confirmPaymentKlarnaNativeMutation = (withRef: boolean) => `
 mutation ConfirmPaymentKlarnaNative($checkoutId: String!, $authorizationToken: String!, $autoCapture: Boolean, $billingAddress: KlarnaNativeAddressInput, $shippingAddress: KlarnaNativeAddressInput, $customer: KlarnaNativeCustomerInput) {
   Payment {
     ConfirmPaymentKlarnaNative(checkout_id: $checkoutId, authorization_token: $authorizationToken, auto_capture: $autoCapture, billing_address: $billingAddress, shipping_address: $shippingAddress, customer: $customer) {
       order_id
       checkout_id
-      fraud_status
+      fraud_status${withRef ? `\n      ${BUYER_REF_FIELD}` : ''}
       order {
         order_id
         status
@@ -675,14 +680,37 @@ export class CheckoutManager extends EventTarget {
    * receipt, and a receipt does not fail for it.
    */
   async getOrderNumber(checkoutId: string, sponsorId?: number): Promise<number | null> {
-    if (!checkoutId) return null
-    try {
-      const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
-      return await gqlGetCheckoutOrderNumber(checkoutId, opts)
-    } catch {
-      return null
-    }
+    return (await this.getOrderReference(checkoutId, sponsorId)).orderNumber
   }
+
+  /**
+   * What a paid checkout says of itself: the order number (as above) and the
+   * buyer reference — shopcart's keyed hash of the buyer's email, what the
+   * `vio:payment-success` detail carries as `buyerRef` and analytics sends as
+   * `buyer_id`. Never throws; `null` for whatever the API does not say.
+   */
+  async getOrderReference(checkoutId: string, sponsorId?: number): Promise<CheckoutReference> {
+    if (!checkoutId) return { orderNumber: null, buyerRef: null }
+    // Concurrent asks for the same checkout (the receipt's order number and
+    // the payment event's buyer reference start together) share one request.
+    const inFlight = this.referenceInFlight.get(checkoutId)
+    if (inFlight) return inFlight
+    const request = (async (): Promise<CheckoutReference> => {
+      try {
+        const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+        return await gqlGetCheckoutReference(checkoutId, opts)
+      } catch {
+        return { orderNumber: null, buyerRef: null }
+      } finally {
+        this.referenceInFlight.delete(checkoutId)
+      }
+    })()
+    this.referenceInFlight.set(checkoutId, request)
+    return request
+  }
+
+  /** In-flight `getOrderReference` per checkout id (see there). */
+  private referenceInFlight = new Map<string, Promise<CheckoutReference>>()
 
   /**
    * Payment methods enabled for the sponsor (backend-configured). Memoised per
@@ -2079,7 +2107,9 @@ export class CheckoutManager extends EventTarget {
           `[VioCheckout] Apple Pay confirmation failed (status: ${confirmRes?.status ?? 'none'})`,
         )
       }
-      return { orderId: confirmRes?.order_id, status: confirmRes?.status }
+      // The buyer reference rides along as `result.confirmation.buyerRef` (analytics `buyer_id`).
+      const buyerRef = normalizeBuyerRef(confirmRes?.[BUYER_REF_FIELD])
+      return { orderId: confirmRes?.order_id, status: confirmRes?.status, ...(buyerRef ? { buyerRef } : {}) }
     }
   }
 
@@ -2667,16 +2697,22 @@ export class CheckoutManager extends EventTarget {
         customer: buildKlarnaCustomer(address),
       }
 
-      const json = await executeKlarnaGraphQL(
-        CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION,
-        variables,
-        ctx?.sponsorId ?? this.state?.sponsorId,
+      // Sent again without `buyer_ref` only when the gateway refused the
+      // selection (nothing ran) — a confirmation that ran is never repeated.
+      const json = await withBuyerRef((withRef) =>
+        executeKlarnaGraphQL(
+          confirmPaymentKlarnaNativeMutation(withRef),
+          variables,
+          ctx?.sponsorId ?? this.state?.sponsorId,
+        ),
       )
       const confirmRes = json?.data?.Payment?.ConfirmPaymentKlarnaNative
       if (!confirmRes) {
         throw new Error('Klarna order confirmation failed: missing response data')
       }
       const orderData = confirmRes.order || confirmRes
+      // The buyer reference (shopcart's hash of the email), for analytics `buyer_id`.
+      const buyerRef = normalizeBuyerRef(confirmRes[BUYER_REF_FIELD])
 
       // Success: only NOW is the pending context consumed (keeping it until
       // here lets the redirect path retry a confirm that never ran).
@@ -2705,6 +2741,7 @@ export class CheckoutManager extends EventTarget {
                 typeof orderData?.order_amount === 'number'
                   ? orderData.order_amount / 100
                   : ctx.orderAmount / 100,
+              ...(buyerRef ? { buyerRef } : {}),
             },
           },
         }),

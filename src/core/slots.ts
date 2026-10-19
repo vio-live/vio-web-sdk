@@ -33,7 +33,24 @@ export const MAX_LOCATIONS_PER_DECLARATION = 100
 export const MAX_DECLARATIONS_PER_LOAD = 3
 
 /** What `Vio.declareSlots()` accepts per slot. */
-export type SlotInput = string | { id: string; displayName?: string; campaignId?: number }
+export type SlotInput = string | { id: string; displayName?: string; campaignId?: number; kind?: string }
+
+/** The third argument of `Vio.registerSlot(id, displayName, …)`: the element's own campaign and what kind of element it is. */
+export interface RegisterSlotOptions {
+  campaignId?: number | string | null
+  /** `card` | `carousel` | `detail` for the SDK's elements; a host may name its own kind. */
+  kind?: string
+}
+
+/** A kind is a short word (the micro stores it from 2026-10 on; before, it ignored the key). */
+export const SLOT_KIND_MAX_LENGTH = 32
+
+/** The kind as the manifest carries it: trimmed, lower-case, cut at 32 chars; `undefined` for nothing. */
+export function normalizeSlotKind(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const kind = value.trim().toLowerCase().slice(0, SLOT_KIND_MAX_LENGTH).trim()
+  return kind || undefined
+}
 
 type BootLike = Pick<
   BootstrapResponse,
@@ -328,9 +345,11 @@ export function normalizeSlotLocations(slots: ReadonlyArray<SlotInput> | null | 
         ? raw.displayName.trim()
         : ''
     const campaignId = raw && typeof raw === 'object' ? toCampaignId(raw.campaignId) : undefined
+    const kind = raw && typeof raw === 'object' ? normalizeSlotKind(raw.kind) : undefined
     const location: ManifestLocation = { id }
     if (displayName) location.displayName = displayName
     if (campaignId !== undefined) location.campaignId = campaignId
+    if (kind) location.kind = kind
     out.push(location)
   }
   return out
@@ -398,16 +417,19 @@ export type SlotDeclarationMemory = Record<string, number>
 export const SLOT_DECLARATION_MEMORY_CAP = 500
 
 /**
- * The sortable key of one location: id, display name and the campaign it is
- * declared with (its own, else the page's) — a renamed block, or a page that
- * changed campaign, is a new key and declares again.
+ * The sortable key of one location: id, display name, the campaign it is
+ * declared with (its own, else the page's) and its kind — a renamed block, a
+ * page that changed campaign, or an id whose kind became known, is a new key
+ * and declares again.
  */
 export function slotDeclarationKey(location: ManifestLocation, pageCampaignId?: number | null): string {
   const campaignId = toCampaignId(location.campaignId) ?? toCampaignId(pageCampaignId)
+  const kind = normalizeSlotKind(location.kind)
   return (
     location.id +
     (location.displayName ? `\u001f${location.displayName}` : '') +
-    (campaignId !== undefined ? `\u001e${campaignId}` : '')
+    (campaignId !== undefined ? `\u001e${campaignId}` : '') +
+    (kind !== undefined ? `\u001d${kind}` : '')
   )
 }
 
@@ -433,9 +455,9 @@ export function pendingSlotKeys(
   })
 }
 
-/** The id part of a memory key (before the display name / campaign separators). */
+/** The id part of a memory key (before the display name / campaign / kind separators). */
 export function slotKeyId(key: string): string {
-  const cut = key.search(/[\u001f\u001e]/)
+  const cut = key.search(/[\u001f\u001e\u001d]/)
   return cut >= 0 ? key.slice(0, cut) : key
 }
 

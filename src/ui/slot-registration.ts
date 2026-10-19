@@ -141,12 +141,16 @@ export class SlotRegistration {
     this.unregister()
     if (!next) return
     try {
+      // The campaign stays positional (third argument) and the kind goes in a
+      // fourth options object: a facade from an older bundle (0.24) reads the
+      // campaign as it always did and ignores the fourth; one older still
+      // (0.23) ignores both and registers the id and name.
       this.release =
         typeof Vio.registerSlot !== 'function'
           ? null
           : next.campaignId !== undefined
-            ? Vio.registerSlot(next.id, next.displayName, next.campaignId)
-            : Vio.registerSlot(next.id, next.displayName)
+            ? Vio.registerSlot(next.id, next.displayName, next.campaignId, { kind: this.kind })
+            : Vio.registerSlot(next.id, next.displayName, { kind: this.kind })
       this.identity = next
     } catch {
       this.release = null

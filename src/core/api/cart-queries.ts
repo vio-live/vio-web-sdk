@@ -932,6 +932,7 @@ query Config {
  */
 
 import { Configuration } from '../configuration.js'
+import { normalizeBuyerRef } from '../buyer-ref.js'
 import { getGlobalCountryCode, getGlobalCurrency } from '../types.js'
 
 /** Transport options for a cart/checkout GraphQL call. */
@@ -1093,7 +1094,13 @@ export async function executeCartGraphQL(
     const json = (await Promise.race([res.json().catch(() => ({})), timedOut])) as GraphQLEnvelope
     if (!res.ok || json.errors) {
       const errMsg = json.errors?.[0]?.message || `GraphQL request failed (HTTP ${res.status})`
-      throw new Error(errMsg)
+      // What the envelope says travels with the error — whether anything ran
+      // (`data`) and the errors, never the data itself — so a caller can tell
+      // a validation error (the gateway refused the selection, nothing ran)
+      // from a failure of something that did run; see `isUnknownFieldError`.
+      throw Object.assign(new Error(errMsg), {
+        graphql: { hasData: json.data !== undefined && json.data !== null, errors: json.errors ?? [] },
+      })
     }
     return json
   } finally {
@@ -1198,31 +1205,124 @@ export async function getCheckout(checkoutId: string, options?: CartQueryOptions
   return json?.data?.Checkout?.GetCheckout
 }
 
+// ── buyer_ref: a selection the gateway may not know yet ─────────────────────
+
 /**
- * Only the Vio order number of a checkout (#4497). Apart from
- * GET_CHECKOUT_QUERY on purpose: `order_id` is new (2026-10-08), and an API
- * that does not have it yet fails the WHOLE query — here that costs a line on
- * the receipt, there it would cost the payment check.
+ * shopcart's buyer reference (`buyer_ref`, the keyed hash of the buyer's
+ * email — analytics `buyer_id`, see core/buyer-ref.ts) is new on the gateway
+ * (2026-10-19) and selected on three answers: the order number query, the
+ * Apple Pay confirmation and the Klarna native confirmation. A gateway that
+ * does not have the field yet refuses the WHOLE operation at validation —
+ * before anything runs — so each of them is sent again without the field,
+ * once, and the answer remembered for the page load. A confirmation that
+ * DID run and failed is never repeated: that would charge twice.
  */
-export const GET_CHECKOUT_ORDER_NUMBER_QUERY = `
+export const BUYER_REF_FIELD = 'buyer_ref'
+
+let gatewayKnowsBuyerRef = true
+
+/** Whether this page load still expects the gateway to know `buyer_ref` (false once it refused the selection). */
+export function gatewayHasBuyerRef(): boolean {
+  return gatewayKnowsBuyerRef
+}
+
+/** Forget what this page load learned about `buyer_ref` (tests). */
+export function resetBuyerRefSupport(): void {
+  gatewayKnowsBuyerRef = true
+}
+
+/** What `executeCartGraphQL` attaches to the error it throws. */
+export interface GraphQLErrorInfo {
+  hasData: boolean
+  errors: Array<{ message?: string }>
+}
+
+/**
+ * True when `err` is the gateway refusing a selection it does not know
+ * (`Cannot query field "buyer_ref" on type …`): a validation error, with no
+ * `data` because nothing ran — safe to send again without the field, a
+ * mutation included. Anything that ran (data present) or any other message
+ * is not.
+ */
+export function isUnknownFieldError(err: unknown, field: string): boolean {
+  if (!err || typeof err !== 'object') return false
+  const { message, graphql } = err as { message?: unknown; graphql?: Partial<GraphQLErrorInfo> }
+  if (graphql?.hasData) return false
+  const messages = [message, ...(graphql?.errors ?? []).map((e) => e?.message)]
+  return messages.some(
+    (m) => typeof m === 'string' && m.includes(`"${field}"`) && /cannot query field|unknown field/i.test(m),
+  )
+}
+
+/**
+ * Runs `request(true)` (the selection with `buyer_ref`); when the gateway does
+ * not know the field, `request(false)` (without it) — and from then on, for
+ * this page load, straight to the latter.
+ */
+export async function withBuyerRef<T>(request: (withBuyerRef: boolean) => Promise<T>): Promise<T> {
+  if (!gatewayKnowsBuyerRef) return request(false)
+  try {
+    return await request(true)
+  } catch (err) {
+    if (!isUnknownFieldError(err, BUYER_REF_FIELD)) throw err
+    gatewayKnowsBuyerRef = false
+    return request(false)
+  }
+}
+
+/**
+ * Only the Vio order number of a checkout (#4497) and its buyer reference.
+ * Apart from GET_CHECKOUT_QUERY on purpose: `order_id` is new (2026-10-08),
+ * `buyer_ref` newer (2026-10-19), and an API that does not have them yet
+ * fails the WHOLE query — here that costs a line on the receipt, there it
+ * would cost the payment check.
+ */
+const orderNumberQuery = (withRef: boolean) => `
 query GetCheckoutOrderNumber($checkoutId: String!) {
   Checkout {
     GetCheckout(checkout_id: $checkoutId) {
       id
-      order_id
+      order_id${withRef ? `\n      ${BUYER_REF_FIELD}` : ''}
     }
   }
 }
 `
+export const GET_CHECKOUT_ORDER_NUMBER_QUERY = orderNumberQuery(true)
+/** The same selection for a gateway that predates `buyer_ref`. */
+export const GET_CHECKOUT_ORDER_NUMBER_QUERY_LEGACY = orderNumberQuery(false)
+
+/** What a checkout says of itself after paying: its Vio order number, once the order exists, and its buyer reference. */
+export interface CheckoutReference {
+  orderNumber: number | null
+  buyerRef: string | null
+}
+
+/** The order number (null while the order does not exist yet) and the buyer reference (null when the API does not say it). */
+export async function getCheckoutReference(
+  checkoutId: string,
+  options?: CartQueryOptions,
+): Promise<CheckoutReference> {
+  const json = await withBuyerRef((withRef) =>
+    executeCartGraphQL(
+      withRef ? GET_CHECKOUT_ORDER_NUMBER_QUERY : GET_CHECKOUT_ORDER_NUMBER_QUERY_LEGACY,
+      { checkoutId },
+      options,
+    ),
+  )
+  const checkout = (json?.data as any)?.Checkout?.GetCheckout
+  const n = Number(checkout?.order_id)
+  return {
+    orderNumber: Number.isInteger(n) && n > 0 ? n : null,
+    buyerRef: normalizeBuyerRef(checkout?.[BUYER_REF_FIELD]) ?? null,
+  }
+}
 
 /** The Vio order number, or null while the order does not exist yet. */
 export async function getCheckoutOrderNumber(
   checkoutId: string,
   options?: CartQueryOptions,
 ): Promise<number | null> {
-  const json = await executeCartGraphQL(GET_CHECKOUT_ORDER_NUMBER_QUERY, { checkoutId }, options)
-  const n = Number((json?.data as any)?.Checkout?.GetCheckout?.order_id)
-  return Number.isInteger(n) && n > 0 ? n : null
+  return (await getCheckoutReference(checkoutId, options)).orderNumber
 }
 
 export async function getAvailablePaymentMethods(options?: CartQueryOptions): Promise<any> {
@@ -1270,24 +1370,35 @@ export async function createPaymentApplePay(
   return json?.data?.Payment?.CreatePaymentApplePay
 }
 
-export const CONFIRM_PAYMENT_APPLE_PAY_MUTATION = `
+const confirmApplePayMutation = (withRef: boolean) => `
 mutation ConfirmPaymentApplePay($checkoutId: String!, $applePayToken: String!, $email: String, $shippingAddress: ApplePayAddressInput) {
   Payment {
     ConfirmPaymentApplePay(checkout_id: $checkoutId, apple_pay_token: $applePayToken, email: $email, shipping_address: $shippingAddress) {
       order_id
-      status
+      status${withRef ? `\n      ${BUYER_REF_FIELD}` : ''}
     }
   }
 }
 `
+export const CONFIRM_PAYMENT_APPLE_PAY_MUTATION = confirmApplePayMutation(true)
+/** The same selection for a gateway that predates `buyer_ref`. */
+export const CONFIRM_PAYMENT_APPLE_PAY_MUTATION_LEGACY = confirmApplePayMutation(false)
 
 /** Confirm (charge) the Apple Pay payment server-side. Called from the sheet's
- * authorize callback BEFORE completing it — the backend does the actual charge. */
+ * authorize callback BEFORE completing it — the backend does the actual charge.
+ * Sent again without `buyer_ref` only when the gateway refused the selection
+ * (nothing ran); a confirmation that ran and failed is never repeated. */
 export async function confirmPaymentApplePay(
   variables: Record<string, unknown>,
   options?: CartQueryOptions,
 ): Promise<any> {
-  const json = await executeCartGraphQL(CONFIRM_PAYMENT_APPLE_PAY_MUTATION, variables, options)
+  const json = await withBuyerRef((withRef) =>
+    executeCartGraphQL(
+      withRef ? CONFIRM_PAYMENT_APPLE_PAY_MUTATION : CONFIRM_PAYMENT_APPLE_PAY_MUTATION_LEGACY,
+      variables,
+      options,
+    ),
+  )
   return json?.data?.Payment?.ConfirmPaymentApplePay
 }
 

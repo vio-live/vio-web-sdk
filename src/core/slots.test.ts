@@ -20,6 +20,7 @@ import {
   fnv1a,
   normalizeScope,
   normalizeSlotId,
+  normalizeSlotKind,
   normalizeSlotLocations,
   pendingSlotKeys,
   rememberSlotKeys,
@@ -27,6 +28,7 @@ import {
   slotDeclarationKey,
   slotDeclarationKeys,
   slotDeclarationStorageKey,
+  slotKeyId,
 } from './slots.js'
 
 const sponsor = (id: number) => ({ id, name: `Sponsor ${id}`, commerce: { apiKey: `key-${id}` } })
@@ -407,5 +409,51 @@ describe('page campaign: candidates, validation and page-sourced assignments', (
     expect(Object.keys(memory).sort()).toEqual(['footer', 'hero\u001fHero\u001e10'])
     // A → B → A: A is pending again after B.
     expect(pendingSlotKeys(rememberSlotKeys(memory, ['hero\u001e10'], OCT_15 + 3), ['hero\u001e12'], OCT_15 + 4)).toEqual(['hero\u001e12'])
+  })
+})
+
+describe('slot kind (ADR-0034, amendment 4)', () => {
+  it('normalizeSlotLocations keeps a kind (trimmed, cut at 32), drops an empty one', () => {
+    expect(
+      normalizeSlotLocations([
+        { id: 'hero', displayName: 'Hero', kind: ' carousel ' },
+        { id: 'a', kind: '' },
+        { id: 'b', kind: 'k'.repeat(40) },
+        { id: 'c', kind: 7 as never },
+        'd',
+      ]),
+    ).toEqual([
+      { id: 'hero', displayName: 'Hero', kind: 'carousel' },
+      { id: 'a' },
+      { id: 'b', kind: 'k'.repeat(32) },
+      { id: 'c' },
+      { id: 'd' },
+    ])
+    expect(normalizeSlotKind(undefined)).toBeUndefined()
+    expect(normalizeSlotKind('  ')).toBeUndefined()
+    expect(normalizeSlotKind(' Card')).toBe('card') // lower-case: one spelling per kind
+  })
+
+  it('W3: the memory keeps ONE state per id across kinds too — A → B → A with different kinds declares A again, once', () => {
+    const card = slotDeclarationKey({ id: 'hero', kind: 'card' })
+    const carousel = slotDeclarationKey({ id: 'hero', kind: 'carousel' })
+    expect(slotKeyId(card)).toBe('hero')
+    expect(slotKeyId('hero\u001fHero\u001e10\u001dcard')).toBe('hero')
+    let memory = rememberSlotKeys({}, ['hero'], OCT_15)
+    memory = rememberSlotKeys(memory, [card], OCT_15 + 1)
+    expect(Object.keys(memory)).toEqual([card]) // `hero` without kind forgotten
+    memory = rememberSlotKeys(memory, [carousel], OCT_15 + 2)
+    expect(Object.keys(memory)).toEqual([carousel])
+    expect(pendingSlotKeys(memory, [card], OCT_15 + 3)).toEqual([card]) // A again: pending once
+    memory = rememberSlotKeys(memory, [card], OCT_15 + 3)
+    expect(pendingSlotKeys(memory, [card], OCT_15 + 4)).toEqual([])
+    expect(Object.keys(memory)).toEqual([card])
+  })
+
+  it('the memory key carries the kind: an id whose kind becomes known declares again', () => {
+    expect(slotDeclarationKey({ id: 'hero' })).toBe('hero')
+    expect(slotDeclarationKey({ id: 'hero', kind: 'card' })).toBe('hero\u001dcard')
+    expect(slotDeclarationKey({ id: 'hero', displayName: 'Hero', campaignId: 10, kind: 'carousel' })).toBe('hero\u001fHero\u001e10\u001dcarousel')
+    expect(pendingSlotKeys({ hero: Date.now() }, [slotDeclarationKey({ id: 'hero', kind: 'card' })], Date.now())).toEqual(['hero\u001dcard'])
   })
 })

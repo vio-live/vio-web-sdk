@@ -13,6 +13,12 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice, getGlobalCurrency } from '../../core/types.js'
+import {
+  buyerRefOf,
+  type PaymentSuccessDetail,
+  type PaymentSuccessResult,
+} from '../../core/analytics/analytics-manager.js'
+import { gatewayHasBuyerRef } from '../../core/api/cart-queries.js'
 import type { CartLineItem } from '../../core/cart/types.js'
 import type {
   CheckoutChangeDetail,
@@ -1073,13 +1079,7 @@ export class VioCheckout extends LitElement {
       this.orderConfirmed = true
       this.open = true
       void this.fillOrderNumber(checkoutId, sponsorId)
-      this.dispatchEvent(
-        new CustomEvent('vio:payment-success', {
-          bubbles: true,
-          composed: true,
-          detail: { method: vioMethod, sponsorId, orderId: checkoutId },
-        }),
-      )
+      void this.emitPaymentSuccess({ method: vioMethod, sponsorId, orderId: checkoutId }, checkoutId, sponsorId)
     } else if (outcome === 'duplicate') {
       this.paymentError = CART_PAID_MESSAGE
       this.open = true
@@ -1533,6 +1533,8 @@ export class VioCheckout extends LitElement {
     this.unmountKlarna()
     this.unmountNexi()
     this.unmountAdyen()
+    // A payment event still waiting for its buyer reference goes out now, without it.
+    for (const settle of [...this.pendingSuccessEmits]) settle()
     super.disconnectedCallback()
   }
 
@@ -2207,18 +2209,140 @@ export class VioCheckout extends LitElement {
     // A redirect completion lands with the overlay closed — open it so the
     // confirmation screen is visible.
     this.open = true
-    this.dispatchEvent(
-      new CustomEvent('vio:payment-success', {
+    void this.fillOrderNumber(checkoutId, sponsorId)
+    // `checkoutId` is Vio's own reference for the purchase — what the
+    // redirect path already sends as `orderId`; analytics falls back to it
+    // when the provider's result carries no order id. The cart is cleared
+    // after the event, as always (analytics reads it from the event).
+    void this.emitPaymentSuccess(
+      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      checkoutId,
+      sponsorId,
+      () => Vio.cart.clearSponsorCart(sponsorId),
+    )
+  }
+
+  /** Longest `vio:payment-success` waits for the checkout's buyer reference, and when it asks a second time. */
+  private static readonly BUYER_REF_WAIT_MS = 2_500
+  private static readonly BUYER_REF_RETRY_AT_MS = 1_200
+
+  /** Payment events still waiting for their buyer reference: settled early (without it) when the page hides or the element leaves. */
+  private readonly pendingSuccessEmits = new Set<() => void>()
+
+  /**
+   * `vio:payment-success` for the host and analytics — with the buyer
+   * reference (`buyerRef`: shopcart's keyed hash of the email → analytics
+   * `buyer_id`) when the checkout can say it. An emitter whose own answer
+   * carried it (Apple Pay, Klarna native) sends at once; the others (a
+   * redirect return, Stripe / Adyen / Nexi in the drawer, a provider's
+   * receipt) ask the checkout — at once and, while it has neither order nor
+   * reference, again at 1.2 s, since a webhook may write the checkout a
+   * moment after the redirect — within 2.5 s, and
+   * send without it when the answer is late or empty. Nothing is asked when
+   * it cannot help (the gateway has no `buyer_ref` yet; a confirmation that
+   * already answered). Only the event waits — the screen is already the
+   * confirmation — and not past the page: when the page hides (`pagehide`,
+   * `visibilitychange`) or the element leaves, the event goes out at once
+   * without the reference. Exactly one event per call. `afterwards` runs
+   * right after the event, so a path keeps the order it always had (the cart
+   * is cleared after the event).
+   */
+  private async emitPaymentSuccess(
+    detail: PaymentSuccessDetail,
+    checkoutId: string | undefined,
+    sponsorId: number,
+    afterwards?: () => void,
+  ): Promise<void> {
+    let done = false
+    const finish = (buyerRef?: string) => {
+      if (done) return
+      done = true
+      const event = new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        // `checkoutId` is Vio's own reference for the purchase — what the
-        // redirect path already sends as `orderId`; analytics falls back to it
-        // when the provider's result carries no order id.
-        detail: { method, sponsorId, result, checkoutId },
-      }),
-    )
-    Vio.cart.clearSponsorCart(sponsorId)
-    void this.fillOrderNumber(checkoutId, sponsorId)
+        detail: buyerRef ? { ...detail, buyerRef } : detail,
+      })
+      this.dispatchEvent(event)
+      // Detached while waiting (the host removed the drawer): the event cannot
+      // bubble up to the window, where analytics listens — hand it over there.
+      if (!this.isConnected && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('vio:payment-success', { detail: event.detail }))
+      }
+      try {
+        afterwards?.()
+      } catch {
+        /* never break the confirmation */
+      }
+    }
+    const known = buyerRefOf(detail)
+    if (known || !checkoutId || !this.shouldAskBuyerRef(detail)) {
+      finish(known)
+      return
+    }
+    const settleEarly = () => finish()
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') settleEarly()
+    }
+    this.pendingSuccessEmits.add(settleEarly)
+    window.addEventListener('pagehide', settleEarly)
+    document.addEventListener('visibilitychange', onVisibility)
+    try {
+      finish(await this.askBuyerRef(checkoutId, sponsorId, () => done))
+    } catch {
+      finish()
+    } finally {
+      this.pendingSuccessEmits.delete(settleEarly)
+      window.removeEventListener('pagehide', settleEarly)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }
+
+  /** Whether asking the checkout for the buyer reference can still help. */
+  private shouldAskBuyerRef(detail: PaymentSuccessDetail): boolean {
+    if (typeof Vio.checkout.getOrderReference !== 'function') return false
+    // The gateway refused `buyer_ref` on this page load: asking cannot answer it.
+    if (!gatewayHasBuyerRef()) return false
+    // Apple Pay and Klarna native confirmations select `buyer_ref` themselves: what they did not bring, nobody has.
+    if ((detail.method === 'apple-pay' || detail.method === 'klarna') && detail.result) return false
+    return true
+  }
+
+  /**
+   * The buyer reference of a checkout: asked at once and, when that answer
+   * failed or has neither the reference nor an order yet (the webhook has not
+   * written the checkout), again at 1.2 s — all within 2.5 s. An order
+   * without a reference is a settled answer: the backend has none, asking
+   * again cannot help. `undefined` when the time is up, when the answer
+   * stopped mattering (`stopped()`) or on failure.
+   */
+  private async askBuyerRef(checkoutId: string, sponsorId: number, stopped: () => boolean): Promise<string | undefined> {
+    const started = Date.now()
+    const remaining = () => VioCheckout.BUYER_REF_WAIT_MS - (Date.now() - started)
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    const timeUp = new Promise<null>((resolve) => {
+      deadline = setTimeout(() => resolve(null), VioCheckout.BUYER_REF_WAIT_MS)
+    })
+    try {
+      for (const at of [0, VioCheckout.BUYER_REF_RETRY_AT_MS]) {
+        const wait = Math.min(at - (Date.now() - started), remaining())
+        if (wait > 0) await Promise.race([new Promise((resolve) => setTimeout(resolve, wait)), timeUp])
+        if (stopped() || remaining() <= 0) return undefined
+        try {
+          const reference = await Promise.race([
+            Vio.checkout.getOrderReference(checkoutId, sponsorId || undefined),
+            timeUp,
+          ])
+          if (reference === null) return undefined // time is up
+          if (reference.buyerRef) return reference.buyerRef
+          if (reference.orderNumber !== null) return undefined // settled without one
+        } catch {
+          /* ask again, or give up */
+        }
+      }
+      return undefined
+    } finally {
+      clearTimeout(deadline)
+    }
   }
 
   /** Waits between asks for the Vio order number: the order is often born a
@@ -2408,20 +2532,14 @@ export class VioCheckout extends LitElement {
     // from a redirect the state was re-opened without one (`Vio.checkout.open`
     // knows no checkout yet), so the return URL's id is passed in explicitly.
     const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
-    this.dispatchEvent(
-      new CustomEvent('vio:payment-success', {
-        bubbles: true,
-        composed: true,
-        detail: { method, sponsorId, result, checkoutId },
-      }),
+    void this.emitPaymentSuccess(
+      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      checkoutId,
+      sponsorId,
+      () => {
+        if (sponsorId) Vio.cart.clearSponsorCart(sponsorId)
+      },
     )
-    if (sponsorId) {
-      try {
-        Vio.cart.clearSponsorCart(sponsorId)
-      } catch {
-        /* noop */
-      }
-    }
   }
 
   /** Back from the payment page, asking whether it was paid — and nothing

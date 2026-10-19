@@ -34,7 +34,7 @@ function assertCollectorCaps(event: Record<string, unknown>): void {
   const commerce = (event.commerce ?? {}) as Record<string, unknown>
   if (typeof commerce.order_id === 'string' && commerce.order_id.length > 128) throw new Error('order_id > 128')
   if (typeof commerce.payment_method === 'string' && commerce.payment_method.length > 64) throw new Error('payment_method > 64')
-  if (typeof commerce.buyer_id === 'string' && commerce.buyer_id.length > 64) throw new Error('buyer_id > 64')
+  if (typeof commerce.buyer_id === 'string' && commerce.buyer_id.length > 128) throw new Error('buyer_id > 128')
   const client = (event.client ?? {}) as Record<string, unknown>
   for (const [field, max] of Object.entries(CLIENT_CAPS)) {
     const v = client[field]
@@ -162,13 +162,13 @@ describe('buildEvent never sends what the collector rejects', () => {
 })
 
 describe('the client block and buyer_id respect the caps too', () => {
-  it('referrer 2048, utm 128, language 16, tz 64, screen ints; buyer_id over 64 is omitted, not cut', async () => {
+  it('referrer 2048, utm 128, language 16, tz 64, screen ints; buyer_id over 128 is omitted, not cut', async () => {
     vi.stubGlobal('navigator', { language: 'l'.repeat(40) })
     vi.stubGlobal('screen', { width: 1e9, height: 10.6 })
     ;(doc as Record<string, unknown>).referrer = 'https://r.example/' + 'p'.repeat(3_000)
     loc.search = '?utm_source=' + 's'.repeat(500) + '&utm_content=c'
     const m = new AnalyticsManager()
-    m.track('purchase', { commerce: { orderId: 'o', buyerId: 'b'.repeat(65) } })
+    m.track('purchase', { commerce: { orderId: 'o', buyerId: 'b'.repeat(129) } })
     await m.flush()
     const ev = flushed.at(-1)!.events.at(-1)!
     assertCollectorCaps(ev)

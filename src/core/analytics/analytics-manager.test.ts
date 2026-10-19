@@ -1351,6 +1351,23 @@ describe('bloque `client` (el contexto estándar de la visita, contrato 2026-10-
     expect((flushedBatches[0]!.events.at(-1)!.client as Record<string, unknown>).utm_source).toBe('a')
     m.setConsent(true)
     expect(JSON.parse(session.store.get('vio.landing.v1')!)).toEqual({ utm: { utm_source: 'a' } })
+    // W5: withdrawing it forgets the landing too.
+    m.setConsent(false)
+    expect(session.store.has('vio.landing.v1')).toBe(false)
+    m.stop()
+  })
+
+  it('W5: sin consentimiento (ids efímeros) tampoco sale buyer_id — un identificador estable de persona —; con setConsent(true) sí', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ requireConsent: true })
+    m.track('purchase', { commerce: { orderId: 'o1', buyerId: 'brf_1' } })
+    m.setConsent(true)
+    m.track('purchase', { commerce: { orderId: 'o2', buyerId: 'brf_1' } })
+    await m.flush()
+    const [before, after] = flushedBatches[0]!.events.filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+    expect(before!.commerce).not.toHaveProperty('buyer_id')
+    expect(after!.commerce.buyer_id).toBe('brf_1')
     m.stop()
   })
 })
@@ -1410,12 +1427,18 @@ describe('buyer_id: la referencia del comprador (buyer_ref de shopcart), nunca u
     expect(ev.commerce).not.toHaveProperty('buyer_id')
   })
 
-  it('nunca un email, nunca más de 64 caracteres: se omite, no se hashea ni se corta', async () => {
+  it('nunca un email, nunca más de 128 caracteres ni fuera de [A-Za-z0-9._~-]: se omite, no se hashea ni se corta', async () => {
     const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-3', buyerRef: 'ola@nordmann.no' })
     expect(ev.commerce).not.toHaveProperty('buyer_id')
     flushedBatches.length = 0
-    const long = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4', buyerRef: 'x'.repeat(65) })
+    const long = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4', buyerRef: 'x'.repeat(129) })
     expect(long.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const odd = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4b', buyerRef: 'Ola Nordmann' })
+    expect(odd.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const fits = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4c', buyerRef: 'a'.repeat(128) })
+    expect(fits.commerce.buyer_id).toHaveLength(128)
     flushedBatches.length = 0
     const hostCommerce = await eventsAfter('vio:payment-success', { method: 'vipps', sponsorId: 4, orderId: 'CHK-5', result: { buyerRef: 'kari@example.com' } })
     expect(hostCommerce.find((e) => e.name === 'purchase')!.commerce).not.toHaveProperty('buyer_id')

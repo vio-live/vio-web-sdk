@@ -14,7 +14,10 @@ import {
   CLIENT_TZ_MAX_LENGTH,
   CLIENT_UTM_MAX_LENGTH,
   LANDING_KEY,
+  isSameHost,
+  landingReferrer,
   persistLanding,
+  removeLanding,
   resolveClientContext,
   resolveLanding,
   utmOf,
@@ -28,6 +31,7 @@ function fakeStorage(): StorageLike & { store: Map<string, string> } {
     store,
     getItem: (k) => store.get(k) ?? null,
     setItem: (k, v) => void store.set(k, v),
+    removeItem: (k) => void store.delete(k),
   }
 }
 
@@ -155,6 +159,48 @@ describe('the landing is remembered for the session', () => {
     storage.store.set(LANDING_KEY, '{not json')
     expect(resolveClientContext(page({ storage })).referrer).toBe('https://news.example/front')
     expect(JSON.parse(storage.store.get(LANDING_KEY)!)).toEqual({ referrer: 'https://news.example/front' })
+  })
+
+  it('W6: the referrer is kept as origin + path — no query, no fragment', () => {
+    const out = resolveClientContext(page({ document: { referrer: 'https://news.example/front/story?fbclid=abc&x=1#top' } }))
+    expect(out.referrer).toBe('https://news.example/front/story')
+    expect(landingReferrer('not a url?q=1#f')).toBe('not a url')
+    expect(landingReferrer('')).toBeUndefined()
+  })
+
+  it('W6: a referrer from this same host is a self-referral: dropped, and it never starts a new landing', () => {
+    const storage = fakeStorage()
+    // First page of the tab opened from the site itself (a new tab from the home page): no referrer kept.
+    const first = resolveClientContext(
+      page({ storage, location: { search: '', host: 'site.example' }, document: { referrer: 'https://site.example/home' } }),
+    )
+    expect(first.referrer).toBeUndefined()
+    expect(isSameHost('https://site.example/home', 'site.example')).toBe(true)
+    expect(isSameHost('https://site.example:8443/home', 'site.example')).toBe(false)
+    expect(isSameHost('https://other.example/', 'site.example')).toBe(false)
+  })
+
+  it('W6: an internal link that propagates utm keeps the landing that was; an external utm click replaces it', () => {
+    const storage = fakeStorage()
+    resolveClientContext(
+      page({ storage, location: { search: '?utm_source=nyhetsbrev', host: 'site.example' }, document: { referrer: 'https://mail.example/' } }),
+    )
+    const internal = resolveClientContext(
+      page({ storage, location: { search: '?utm_source=internal-banner', host: 'site.example' }, document: { referrer: 'https://site.example/front' } }),
+    )
+    expect(internal).toMatchObject({ referrer: 'https://mail.example/', utm_source: 'nyhetsbrev' })
+    const external = resolveClientContext(
+      page({ storage, location: { search: '?utm_source=partner', host: 'site.example' }, document: { referrer: 'https://partner.example/deal' } }),
+    )
+    expect(external).toMatchObject({ referrer: 'https://partner.example/deal', utm_source: 'partner' })
+  })
+
+  it('removeLanding forgets the memory (consent withdrawn)', () => {
+    const storage = fakeStorage()
+    resolveClientContext(page({ storage, location: { search: '?utm_source=a' } }))
+    expect(storage.store.has(LANDING_KEY)).toBe(true)
+    removeLanding(storage)
+    expect(storage.store.has(LANDING_KEY)).toBe(false)
   })
 
   it('persist=false reads the memory but writes nothing; persistLanding writes it later', () => {

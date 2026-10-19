@@ -43,6 +43,7 @@ import { SDK_VERSION } from '../version.js'
 import { normalizeBuyerRef } from '../buyer-ref.js'
 import {
   persistLanding,
+  removeLanding,
   resolveClientContext,
   resolveLanding,
   type ClientContext,
@@ -276,6 +277,7 @@ export class AnalyticsManager extends EventTarget {
     }
     safeStorageRemove(ANON_KEY)
     safeStorageRemove(SESSION_KEY)
+    removeLanding()
   }
 
   /** ¿Podemos escribir en el dispositivo? */
@@ -518,8 +520,10 @@ export class AnalyticsManager extends EventTarget {
           currency: com.currency,
           order_id: com.orderId,
           payment_method: com.paymentMethod,
-          // Only a reference survives — never an email, whatever a host passes.
-          buyer_id: normalizeBuyerRef(com.buyerId),
+          // Only a reference survives — never an email, whatever a host passes —
+          // and only with consent to persist: a visit measured with ephemeral
+          // ids does not carry a stable identifier of a person either.
+          buyer_id: this.canPersist ? normalizeBuyerRef(com.buyerId) : undefined,
         })
       : undefined
     const client = this.clientBlock()
@@ -1141,11 +1145,10 @@ function slotOf(detail: { slot?: unknown }): string | undefined {
   return typeof detail.slot === 'string' && detail.slot.trim() ? detail.slot.trim() : undefined
 }
 
-/** The `componentTemplateId` a `vio:*` event detail carries — the kind of SDK element that emitted it (`product-card`, `product-carousel`, `product-detail`). */
+/** The `componentTemplateId` a `vio:*` event detail carries — the kind of SDK element that emitted it (`product-card`, `product-carousel`, `product-detail`); omitted over the collector's 128. */
 function templateOf(detail: { componentTemplateId?: unknown }): string | undefined {
-  return typeof detail.componentTemplateId === 'string' && detail.componentTemplateId.trim()
-    ? detail.componentTemplateId.trim()
-    : undefined
+  const value = typeof detail.componentTemplateId === 'string' ? detail.componentTemplateId.trim() : ''
+  return fitsId(value || undefined)
 }
 
 /** The per-element content override a `vio:*` event detail carries (`vio-content-id` / `vio-content-title`). */

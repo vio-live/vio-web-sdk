@@ -15,10 +15,14 @@
  * Landing memory: the first page of a session writes its referrer and utm
  * parameters to `sessionStorage`; later pages read them back, so an event on
  * page three still says the visit came from the newsletter — their own
- * `document.referrer` (an internal page) is never a source. A URL with utm
- * parameters mid-session is a new landing (another campaign click) and
- * replaces the memory. Without storage, or without consent to persist, each
- * page stands alone.
+ * `document.referrer` (an internal page) is never a source. The referrer is
+ * kept as origin + path (no query, no fragment: a referrer's query is its
+ * tracking tail, not where the visit came from) and dropped altogether when
+ * it is this same host (a self-referral says nothing about the entry). A URL
+ * with utm parameters is a new landing (another campaign click) that replaces
+ * the memory — unless it was reached from this same host, i.e. an internal
+ * link that propagates utm, which keeps the landing that was. Without
+ * storage, or without consent to persist, each page stands alone.
  */
 
 export interface ClientContext {
@@ -56,13 +60,14 @@ export interface Landing {
 export interface StorageLike {
   getItem(key: string): string | null
   setItem(key: string, value: string): void
+  removeItem?(key: string): void
 }
 
 /** The globals the block is read from — injectable for tests; defaults to the real ones. */
 export interface ClientEnvironment {
   navigator?: { language?: unknown } | null
   document?: { referrer?: unknown } | null
-  location?: { search?: unknown } | null
+  location?: { search?: unknown; host?: unknown } | null
   screen?: { width?: unknown; height?: unknown } | null
   /** The session memory for the landing; `null` = none (SSR, private mode, blocked). */
   storage?: StorageLike | null
@@ -83,16 +88,20 @@ export function defaultClientEnvironment(): ClientEnvironment {
 
 /**
  * The landing of this session: what is remembered — unless this page is a
- * landing itself (utm parameters in its URL) or nothing is remembered yet,
- * when this page's referrer and utm are taken (and, with `persist`, kept).
+ * landing itself (utm parameters in its URL, reached from outside this host)
+ * or nothing is remembered yet, when this page's referrer and utm are taken
+ * (and, with `persist`, kept).
  */
 export function resolveLanding(env: ClientEnvironment = defaultClientEnvironment(), persist = true): Landing {
   try {
     const utm = utmOf(env.location?.search)
+    const raw = text(env.document?.referrer)
+    const internal = isSameHost(raw, env.location?.host)
     const stored = readLanding(env.storage)
-    if (utm === undefined && stored) return stored
+    // An internal link that carries utm is not a new entry to the site.
+    if ((utm === undefined || internal) && stored) return stored
     const landing: Landing = {}
-    const referrer = cut(text(env.document?.referrer), CLIENT_REFERRER_MAX_LENGTH)
+    const referrer = internal ? undefined : landingReferrer(raw)
     if (referrer) landing.referrer = referrer
     if (utm) landing.utm = utm
     if (persist) writeLanding(env.storage, landing)
@@ -102,12 +111,47 @@ export function resolveLanding(env: ClientEnvironment = defaultClientEnvironment
   }
 }
 
+/** A referrer as the landing keeps it: origin + path, no query, no fragment; capped. */
+export function landingReferrer(raw: unknown): string | undefined {
+  const value = text(raw)
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    return cut(`${url.origin}${url.pathname}`, CLIENT_REFERRER_MAX_LENGTH)
+  } catch {
+    // Not an absolute URL (an old engine, a scheme-less value): without its query and fragment.
+    const end = value.search(/[?#]/)
+    return cut(end >= 0 ? value.slice(0, end) : value, CLIENT_REFERRER_MAX_LENGTH)
+  }
+}
+
+/** True when the referrer's host is this page's host (`location.host`, port included). */
+export function isSameHost(referrer: unknown, host: unknown): boolean {
+  const value = text(referrer)
+  const own = text(host)
+  if (!value || !own) return false
+  try {
+    return new URL(value).host.toLowerCase() === own.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
 /** Remember a landing resolved earlier without persisting (consent granted after the first event). */
 export function persistLanding(
   landing: Landing,
   storage: StorageLike | null | undefined = defaultClientEnvironment().storage,
 ): void {
   writeLanding(storage, landing)
+}
+
+/** Forget the landing (consent withdrawn). */
+export function removeLanding(storage: StorageLike | null | undefined = defaultClientEnvironment().storage): void {
+  try {
+    storage?.removeItem?.(LANDING_KEY)
+  } catch {
+    /* blocked */
+  }
 }
 
 /** The block for the wire — read once per page load by the manager and reused on every event. */

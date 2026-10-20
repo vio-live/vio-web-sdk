@@ -542,7 +542,10 @@ class VioFacade {
           const campaign = this.campaignForSlot(name || null, { campaignId: pageCampaignId })
           const campaignId = toNumber(campaign?.id)
           if (campaignId !== undefined) out.campaignId = campaignId
-          const sponsorId = toNumber(campaign?.primarySponsor?.id)
+          // No active campaign on the surface (`campaign: null`): the page
+          // still sells, with the sponsor of the surface's channel and no
+          // campaign (campaigns micro, 21/10).
+          const sponsorId = campaign ? toNumber(campaign.primarySponsor?.id) : toNumber(boot.primarySponsor?.id)
           if (sponsorId !== undefined) out.sponsorId = sponsorId
         }
       } else if (hinted !== undefined) {

@@ -134,7 +134,15 @@ export interface BootstrapResponse {
     webSocketBase?: string
     commerceGraphQL?: string
   }
-  campaign?: BootstrapCampaign
+  /**
+   * `null` when the surface has no active campaign: a web, custom-web or Vev
+   * page then keeps selling with the sponsors of the surface's channels
+   * (`noActiveCampaign: true`, `campaigns: []`), and nothing it sells carries
+   * a campaign. Native apps get a 404 instead.
+   */
+  campaign?: BootstrapCampaign | null
+  /** True when `campaign` is null on purpose: no campaign is active on the surface. */
+  noActiveCampaign?: boolean
   primarySponsor?: Sponsor
   secondarySponsors?: Sponsor[]
   features?: {

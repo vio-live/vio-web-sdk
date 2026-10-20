@@ -283,8 +283,27 @@ describe('the buyer reference in vio:payment-success (analytics buyer_id)', () =
     }
     expect(ask).toHaveBeenCalledWith(CHECKOUT, SPONSOR)
     expect(seen).toHaveLength(1)
-    expect(seen[0]).toMatchObject({ method: 'stripe', sponsorId: SPONSOR, checkoutId: CHECKOUT, buyerRef: 'brf_7f3a9c' })
+    // The same answer named the order: it rides along, analytics need not ask again.
+    expect(seen[0]).toMatchObject({ method: 'stripe', sponsorId: SPONSOR, checkoutId: CHECKOUT, buyerRef: 'brf_7f3a9c', orderNumber: 4499 })
     expect(cleared).toHaveBeenCalledWith(SPONSOR)
+  })
+
+  it('an order without a reference is a settled answer: the event carries the order number alone', async () => {
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.state = { sponsorId: SPONSOR, subtotal: 4999, currency: 'NOK', checkoutId: CHECKOUT }
+    manager.emit()
+    vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+    vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 4415, buyerRef: null })
+    const { seen, off } = listen()
+    try {
+      el.confirmOrder('stripe', SPONSOR, { chargedTotal: 10 })
+      await settle(el)
+    } finally {
+      off()
+    }
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ checkoutId: CHECKOUT, orderNumber: 4415 })
+    expect(seen[0]).not.toHaveProperty('buyerRef')
   })
 
   it('a slow answer does not hold the event: after 2.5 s it fires without the reference', async () => {
@@ -305,6 +324,7 @@ describe('the buyer reference in vio:payment-success (analytics buyer_id)', () =
     }
     expect(seen).toHaveLength(1)
     expect(seen[0]).not.toHaveProperty('buyerRef')
+    expect(seen[0]).not.toHaveProperty('orderNumber') // no answer, no number: analytics asks on its own
     expect(seen[0]).toMatchObject({ method: 'qliro', checkoutId: CHECKOUT })
   })
 
@@ -354,7 +374,7 @@ describe('the buyer reference in vio:payment-success (analytics buyer_id)', () =
       off()
     }
     expect(ask).toHaveBeenCalledTimes(2)
-    expect(seen[0]).toMatchObject({ buyerRef: 'brf_late' })
+    expect(seen[0]).toMatchObject({ buyerRef: 'brf_late', orderNumber: 4499 })
   })
 
   it('W1a: the page hiding settles the event at once, without the reference, and the cart is cleared; the late answer and the timer add nothing', async () => {

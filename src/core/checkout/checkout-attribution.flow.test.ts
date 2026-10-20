@@ -112,7 +112,7 @@ describe('Apple Pay: the charge closure inside the authorize event', () => {
     const orderAttribution = vi.fn(() => ATTRIBUTION) // a plain value: the facade's is synchronous
     const m = new CheckoutManager(cart(), { orderAttribution }) as unknown as Authorize
     const result = await m.buildApplePayAuthorize(5)(raw)
-    expect(result).toMatchObject({ orderId: 4497, status: 'succeeded' })
+    expect(result).toMatchObject({ orderId: 4497, status: 'succeeded', checkoutId: 'CHK-1' })
     expect(cartQueries.createCheckout).toHaveBeenCalledWith('cart-1', expect.anything(), { attribution: ATTRIBUTION })
     expect(cartQueries.updateCheckout).toHaveBeenCalledWith(
       expect.objectContaining({ checkoutId: 'CHK-1', paymentMethod: 'Apple Pay', email: 'kari@example.no', attribution: ATTRIBUTION }),

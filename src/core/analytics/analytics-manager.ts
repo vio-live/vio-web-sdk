@@ -52,6 +52,7 @@ import {
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
 import type { CartLineItem } from '../cart/types.js'
+import type { CheckoutReference } from '../api/cart-queries.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 
 // ── Taxonomy (client-side subset of contract v1) ────────────────────────────
@@ -129,7 +130,14 @@ export interface AnalyticsCommerce {
   items?: AnalyticsItemInput[]
   value?: number
   currency?: string
+  /**
+   * `order_id` on the wire. On a `purchase` it is Vio's order number (`4415`,
+   * the number the dashboard and Commerce's cancellations use), else the
+   * checkout id standing in for it (`props.order_id_kind` says which).
+   */
   orderId?: string
+  /** `checkout_id` on the wire: Vio's checkout id (uuid). Always on the SDK's own `purchase`. */
+  checkoutId?: string
   paymentMethod?: string
   /**
    * The buyer reference (`buyer_id` on the wire): shopcart's `buyer_ref`, a
@@ -181,6 +189,15 @@ export interface AnalyticsStartOptions {
 }
 
 // ── Tunables (contract-aligned) ─────────────────────────────────────────────
+
+/**
+ * A `purchase` whose payment event did not bring Vio's order number (a
+ * redirect return, an order a webhook creates) waits for it: the checkout is
+ * asked at once and again after each of these waits — ~10 s in all.
+ */
+const ORDER_NUMBER_BACKOFF_MS = [500, 1_000, 2_000, 3_000, 3_000] as const
+/** Longest a `purchase` waits for its order number; then it goes out with the checkout id. */
+const ORDER_NUMBER_MAX_WAIT_MS = 10_000
 
 const SESSION_TTL_MS = 30 * 60 * 1000 // rolling 30-min session
 const FLUSH_INTERVAL_MS = 5_000
@@ -249,6 +266,13 @@ export class AnalyticsManager extends EventTarget {
   /** The landing it was read from — persisted later when consent arrives after the first event. */
   private landing: Landing | null = null
 
+  /** Checkouts (`c:<id>`) and orders (`o:<number>`) this page load reported a `purchase` for: one each. */
+  private readonly purchased = new Set<string>()
+  /** Purchases still waiting for Vio's order number: each sends at once, with what it has, when called. */
+  private readonly pendingPurchases = new Set<() => void>()
+  /** Between `pagehide` and `pageshow` (bfcache): nothing waits, it all goes out now. */
+  private pageHiding = false
+
   /** The landing this manager resolved on this page load (the first event's), or null before it; read only — for the order's entry context when nothing is stored yet. */
   get currentLanding(): Landing | null {
     return this.landing
@@ -311,17 +335,38 @@ export class AnalyticsManager extends EventTarget {
     this.flushTimer = setInterval(() => void this.flush(), FLUSH_INTERVAL_MS)
 
     const onPageHide = () => {
+      this.pageHiding = true
+      // A purchase still waiting for its order number goes out now, with the
+      // checkout id: the page will not wait for it.
+      this.settlePendingPurchases()
       this.trackSessionEnd()
       this.flushWithBeacon()
     }
+    const onPageShow = () => {
+      this.pageHiding = false
+    }
     window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
     this.teardown.push(() => window.removeEventListener('pagehide', onPageHide))
+    this.teardown.push(() => window.removeEventListener('pageshow', onPageShow))
+    // On a phone the page may never see `pagehide`: hidden is the last word it
+    // is sure to get. A waiting purchase leaves then — and only it, by beacon.
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      const onVisibility = () => {
+        if (document.visibilityState !== 'hidden' || this.pendingPurchases.size === 0) return
+        this.settlePendingPurchases()
+        this.flushWithBeacon()
+      }
+      document.addEventListener('visibilitychange', onVisibility)
+      this.teardown.push(() => document.removeEventListener('visibilitychange', onVisibility))
+    }
 
     if (this.options.autoTrack) this.installAutoListeners()
   }
 
-  /** Stop timers + listeners (tests / SPA unmount). Queue survives. */
+  /** Stop timers + listeners (tests / SPA unmount). Queue survives — a purchase still waiting for its order number joins it now. */
   stop(): void {
+    this.settlePendingPurchases()
     if (this.flushTimer) clearInterval(this.flushTimer)
     this.flushTimer = null
     for (const fn of this.teardown.splice(0)) fn()
@@ -336,7 +381,11 @@ export class AnalyticsManager extends EventTarget {
   /** Queue one event. Works pre-init and pre-start (SSR: no-op). */
   track(name: AnalyticsEventName, opts: TrackOptions = {}): void {
     if (!hasDom()) return
-    const event = this.buildEvent(name, opts)
+    this.record(this.buildEvent(name, opts))
+  }
+
+  /** The sinks and the queue for one built event — `track`'s second half. */
+  private record(event: WireEvent | null): void {
     if (!event) return
 
     if (this.options.debug) {
@@ -524,6 +573,8 @@ export class AnalyticsManager extends EventTarget {
           value: com.value,
           currency: com.currency,
           order_id: com.orderId,
+          // A uuid always fits; anything over the collector's 128 is left out, not cut.
+          checkout_id: fitsId(com.checkoutId),
           payment_method: com.paymentMethod,
           // Only a reference survives — never an email, whatever a host passes —
           // and only with consent to persist: a visit measured with ephemeral
@@ -822,35 +873,155 @@ export class AnalyticsManager extends EventTarget {
 
     on('vio:payment-success', (ev) => {
       const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
+      const ids = purchaseIdsOf(d)
+      // One purchase per checkout: another event for a checkout (or an order)
+      // this page already reported — or is waiting to — adds nothing.
+      if (!this.claimPurchase(ids)) return
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const base: AnalyticsContext = { sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
-      const { slices, explicit } = this.cartSlices(sponsorId) // falls back to the pre-clear snapshot
-      if (slices.length > 1) {
-        // Several campaigns paid in one go: one purchase per campaign — its
-        // items and value, the SAME order_id — so each campaign's revenue is
-        // its own and the order still adds up. `props.slice/slices` lets the
-        // collector count the order once.
-        for (const slice of slices) {
-          this.track('purchase', {
-            context: this.sliceContext(slice, base),
-            commerce: { ...sliceCommerce(slice), ...purchaseFromPaymentSuccess(d), paymentMethod: d.method },
-            props: { slice: slice.slice, slices: slice.slices },
-          })
-        }
-        return
-      }
-      const snap = this.cartCommerce(sponsorId)
-      this.track('purchase', {
-        context: this.singleSliceContext(slices[0], explicit, base),
-        commerce: {
-          // value / currency / items: the cart snapshot, on every path.
-          ...(snap ?? {}),
-          // order_id: Vio's id for the purchase (never the provider's).
-          ...purchaseFromPaymentSuccess(d),
-          paymentMethod: d.method,
-        },
-      })
+      // Read NOW, whenever the event leaves: the cart is cleared right after
+      // this event (the pre-clear snapshot covers the paths that clear first).
+      const { slices, explicit } = this.cartSlices(sponsorId)
+      const parts: TrackOptions[] =
+        slices.length > 1
+          ? // Several campaigns paid in one go: one purchase per campaign — its
+            // items and value, the SAME order_id — so each campaign's revenue is
+            // its own and the order still adds up. `props.slice/slices` lets the
+            // collector count the order once.
+            slices.map((slice) => ({
+              context: this.sliceContext(slice, base),
+              commerce: { ...sliceCommerce(slice), paymentMethod: d.method },
+              props: { slice: slice.slice, slices: slice.slices },
+            }))
+          : [
+              {
+                context: this.singleSliceContext(slices[0], explicit, base),
+                // value / currency / items: the cart snapshot, on every path.
+                commerce: { ...(this.cartCommerce(sponsorId) ?? {}), paymentMethod: d.method },
+              },
+            ]
+      this.reportPurchase(parts, ids, buyerRefOf(d), sponsorId)
     })
+  }
+
+  /**
+   * Claims the purchase of a payment for this page load: false when its
+   * checkout (or its order) already has one, reported or waiting.
+   */
+  private claimPurchase(ids: PurchaseIds): boolean {
+    const keys: string[] = []
+    if (ids.checkoutId) keys.push(`c:${ids.checkoutId}`)
+    if (ids.orderIdKind === 'order' && ids.orderId) keys.push(`o:${ids.orderId}`)
+    if (keys.some((key) => this.purchased.has(key))) return false
+    for (const key of keys) this.purchased.add(key)
+    return true
+  }
+
+  /**
+   * Sends the `purchase` event(s) of one payment — ONCE, with Vio's order
+   * number as `order_id` (`props.order_id_kind: 'order'`) and the checkout id
+   * as `checkout_id`. When the payment event did not bring the number (a
+   * redirect return, an order a webhook creates) the checkout is asked for it
+   * — the receipt's own path, `Vio.checkout.getOrderReference` — at once and
+   * after 0.5 / 1 / 2 / 3 / 3 s, for at most 10 s; nothing else waits for it.
+   * Unanswered, or when the page hides or `stop()` comes first, the events go
+   * out with what they have: the checkout id as `order_id`
+   * (`order_id_kind: 'checkout'`), as before — and the late number adds no
+   * second event. The events are BUILT at the payment — its moment (`ts`),
+   * `event_id`, session, page and content — and only the order number (and a
+   * buyer reference the payment did not bring) is filled in when it comes.
+   */
+  private reportPurchase(
+    parts: TrackOptions[],
+    ids: PurchaseIds,
+    buyerId: string | undefined,
+    sponsorId: number | undefined,
+  ): void {
+    const events = parts.map((part) =>
+      this.buildEvent('purchase', {
+        ...part,
+        commerce: {
+          ...part.commerce,
+          ...(ids.orderId !== undefined ? { orderId: ids.orderId } : {}),
+          ...(ids.checkoutId !== undefined ? { checkoutId: ids.checkoutId } : {}),
+          ...(buyerId !== undefined ? { buyerId } : {}),
+        },
+        ...(ids.orderIdKind ? { props: { ...part.props, order_id_kind: ids.orderIdKind } } : {}),
+      }),
+    )
+    const send = (found: OrderReferenceFound = {}) => {
+      if (found.orderNumber) this.purchased.add(`o:${found.orderNumber}`)
+      // Through the same filter as `buildEvent`: a reference, and only with consent to persist.
+      const lateBuyer = this.canPersist ? normalizeBuyerRef(found.buyerRef) : undefined
+      for (const event of events) {
+        if (!event) continue
+        if (found.orderNumber) {
+          event.commerce = { ...event.commerce, order_id: found.orderNumber }
+          event.props = { ...event.props, order_id_kind: 'order' }
+        }
+        if (lateBuyer && event.commerce && event.commerce.buyer_id === undefined) {
+          event.commerce = { ...event.commerce, buyer_id: lateBuyer }
+        }
+        this.record(event)
+      }
+    }
+    const ask = ids.orderIdKind === 'checkout' ? this.orderReferenceAsker(ids.checkoutId, sponsorId) : null
+    if (!ask) {
+      send()
+      return
+    }
+    if (this.isPageHidden()) {
+      // The page is going away (an emitter settling early on `pagehide`):
+      // nothing can wait — out now, by beacon.
+      send()
+      this.flushWithBeacon()
+      return
+    }
+    let done = false
+    const settle = (found?: OrderReferenceFound) => {
+      if (done) return
+      done = true
+      this.pendingPurchases.delete(settleNow)
+      send(found)
+    }
+    const settleNow = () => settle()
+    this.pendingPurchases.add(settleNow)
+    void waitForOrderNumber(ask, () => done).then(settle, () => settle())
+  }
+
+  /** Sends every purchase still waiting for its order number, at once, with what it has. */
+  private settlePendingPurchases(): void {
+    for (const settle of [...this.pendingPurchases]) settle()
+  }
+
+  /** Whether the page is hidden or going away (`pagehide` until `pageshow`). */
+  private isPageHidden(): boolean {
+    if (this.pageHiding) return true
+    try {
+      return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * How a purchase asks a checkout for Vio's order number: through the SDK's
+   * checkout manager (`getOrderReference`, which never throws and shares its
+   * in-flight ask with the receipt's). `null` when there is nothing to ask —
+   * no checkout id, or no checkout manager on this page.
+   */
+  private orderReferenceAsker(
+    checkoutId: string | undefined,
+    sponsorId: number | undefined,
+  ): (() => Promise<CheckoutReference>) | null {
+    if (!checkoutId) return null
+    try {
+      const checkout = vioFacade()?.checkout
+      if (!checkout || typeof checkout.getOrderReference !== 'function') return null
+      return () => checkout.getOrderReference!(checkoutId, sponsorId || undefined)
+    } catch {
+      return null
+    }
   }
 
   /** The lines of the cart (current, else the pre-clear snapshot), optionally one sponsor's. */
@@ -1031,6 +1202,10 @@ interface FacadeLike {
   bootstrapCache: BootstrapResponse | null
   cart: CartManager
   content?: () => ContentRef
+  /** The checkout manager: a purchase asks it for Vio's order number, as the receipt does. */
+  checkout?: {
+    getOrderReference?: (checkoutId: string, sponsorId?: number) => Promise<CheckoutReference>
+  }
 }
 function vioFacade(): FacadeLike | null {
   const g = globalThis as unknown as { __VIO_FACADE__?: FacadeLike }
@@ -1171,10 +1346,20 @@ export interface PaymentSuccessDetail {
   /** Per-element content override (`vio-content-id` / `vio-content-title`), when the emitter carries one. */
   contentId?: string | number
   contentTitle?: string
-  /** Redirect return: Vio's checkout id (the name predates `checkoutId`). */
+  /**
+   * Redirect return: Vio's checkout id (the name predates `checkoutId`). A
+   * value that is a whole number is read as Vio's order number instead — a
+   * checkout id is a uuid, never one.
+   */
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */
   checkoutId?: string | number
+  /**
+   * Vio's order number (`4415`), when the emitter knows it: the SDK's checkout
+   * adds it when its ask for the buyer reference already found the order.
+   * Becomes the purchase's `order_id`.
+   */
+  orderNumber?: string | number | null
   /**
    * The buyer reference the emitter learned with the payment — shopcart's
    * `buyer_ref`, a keyed hash of the email (`buyerRef` from the SDK's own
@@ -1187,8 +1372,9 @@ export interface PaymentSuccessDetail {
 }
 
 /**
- * What the checkout attaches as `result`. Only `confirmation` carries a Vio
- * id: the order `ConfirmPaymentApplePay` created. `order.orderId` / `orderId`
+ * What the checkout attaches as `result`. Only `confirmation` carries Vio
+ * ids: the order `ConfirmPaymentApplePay` created (its number) and the
+ * checkout it paid. `order.orderId` / `orderId`
  * are the PROVIDER's references (Qliro's, Walley's — the checkout itself
  * shows them as `providerRef`), and `chargedTotal` includes shipping on some
  * methods only. Analytics reads none of those.
@@ -1196,6 +1382,8 @@ export interface PaymentSuccessDetail {
 export interface PaymentSuccessResult {
   confirmation?: {
     orderId?: string | number | null
+    /** The checkout the confirmation paid (Apple Pay from the cart names no other). */
+    checkoutId?: string | null
     status?: string
     buyerRef?: string | null
     buyer_ref?: string | null
@@ -1236,25 +1424,118 @@ export function buyerRefOf(
   return undefined
 }
 
+/** The ids of a `purchase`, as a `vio:payment-success` detail gives them (`purchaseIdsOf`). */
+export interface PurchaseIds {
+  /**
+   * `commerce.order_id`: Vio's order number when the detail has it, else the
+   * checkout id standing in for it.
+   */
+  orderId?: string
+  /** `commerce.checkout_id`: Vio's checkout id (uuid), when the detail has it. */
+  checkoutId?: string
+  /** `props.order_id_kind`: what `orderId` is — `'order'` (the number) or `'checkout'` (the stand-in). */
+  orderIdKind?: 'order' | 'checkout'
+}
+
 /**
- * The `order_id` and `buyer_id` of a `purchase`. The id is ALWAYS a Vio id, never a provider's
- * reference. Normalized across every emitter: `orderId` (redirect return) →
- * `result.confirmation.orderId` (Apple Pay) → `checkoutId`. `value` and
- * `currency` are deliberately NOT read from the result: on every path they
- * come from the cart snapshot (sum of the items, no shipping), so revenue
- * stays comparable across payment methods — the charged total will arrive
- * through the server-side `order_paid` event. With nothing to say it
- * returns `{}`, so the cart snapshot keeps its keys.
+ * The ids of a `purchase` — ALWAYS Vio's, never a provider's reference. The
+ * order number: `orderNumber` (an emitter that knows it) →
+ * `result.confirmation.orderId` (Apple Pay: the order `ConfirmPaymentApplePay`
+ * created) → an `orderId` that is a whole number. The checkout id: `orderId`
+ * (the redirect return's, a uuid) → `checkoutId` → `result.confirmation.checkoutId`
+ * (Apple Pay from the cart). `orderId` is the number
+ * when there is one, else the checkout id — the SDK's own `purchase` then
+ * waits for the number (see `AnalyticsManager`); a host with its own sink can
+ * ask `Vio.checkout.getOrderReference(checkoutId)` the same way.
+ */
+export function purchaseIdsOf(d: PaymentSuccessDetail | null | undefined): PurchaseIds {
+  if (!d) return {}
+  const r = d.result ?? {}
+  const legacy = firstId(d.orderId)
+  const legacyIsNumber = legacy !== undefined && isOrderNumber(legacy)
+  const orderNumber = firstId(d.orderNumber, r.confirmation?.orderId, legacyIsNumber ? legacy : undefined)
+  const checkoutId = firstId(legacyIsNumber ? undefined : legacy, d.checkoutId, r.confirmation?.checkoutId)
+  if (orderNumber !== undefined) {
+    return { orderId: orderNumber, ...(checkoutId !== undefined ? { checkoutId } : {}), orderIdKind: 'order' }
+  }
+  if (checkoutId !== undefined) return { orderId: checkoutId, checkoutId, orderIdKind: 'checkout' }
+  return {}
+}
+
+/**
+ * The `order_id`, `checkout_id` and `buyer_id` of a `purchase`, as far as the
+ * detail says them NOW (`purchaseIdsOf`; the SDK's own `purchase` may still
+ * wait for the order number). `value` and `currency` are deliberately NOT
+ * read from the result: on every path they come from the cart snapshot (sum
+ * of the items, no shipping), so revenue stays comparable across payment
+ * methods — the charged total will arrive through the server-side
+ * `order_paid` event. With nothing to say it returns `{}`, so the cart
+ * snapshot keeps its keys.
  */
 export function purchaseFromPaymentSuccess(
   d: PaymentSuccessDetail,
-): Pick<AnalyticsCommerce, 'orderId' | 'buyerId'> {
-  const r = d.result ?? {}
-  const orderId = firstId(d.orderId, r.confirmation?.orderId, d.checkoutId)
+): Pick<AnalyticsCommerce, 'orderId' | 'checkoutId' | 'buyerId'> {
+  const { orderId, checkoutId } = purchaseIdsOf(d)
   const buyerId = buyerRefOf(d)
   return {
     ...(orderId !== undefined ? { orderId } : {}),
+    ...(checkoutId !== undefined ? { checkoutId } : {}),
     ...(buyerId !== undefined ? { buyerId } : {}),
+  }
+}
+
+/** Vio's order numbers are whole numbers (`4415`); its checkout ids are uuids. */
+function isOrderNumber(value: string): boolean {
+  return /^[1-9][0-9]*$/.test(value)
+}
+
+/** What asking the checkout found: the order number once the order exists, and the buyer reference. */
+interface OrderReferenceFound {
+  orderNumber?: string
+  buyerRef?: string
+}
+
+/**
+ * Asks (`ask`) for Vio's order number until the checkout has one: at once,
+ * then after each wait of `ORDER_NUMBER_BACKOFF_MS`, all within
+ * `ORDER_NUMBER_MAX_WAIT_MS` — a slow answer counts against it too. A failed
+ * ask is asked again. Resolves `{}` (or just the buyer reference) when the
+ * time is up or `stopped()`; never rejects.
+ */
+async function waitForOrderNumber(
+  ask: () => Promise<CheckoutReference>,
+  stopped: () => boolean,
+): Promise<OrderReferenceFound> {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  const timeUp = new Promise<null>((resolve) => {
+    deadline = setTimeout(() => resolve(null), ORDER_NUMBER_MAX_WAIT_MS)
+  })
+  let buyerRef: string | undefined
+  const found = (orderNumber?: string): OrderReferenceFound => ({
+    ...(orderNumber ? { orderNumber } : {}),
+    ...(buyerRef ? { buyerRef } : {}),
+  })
+  try {
+    for (let attempt = 0; attempt <= ORDER_NUMBER_BACKOFF_MS.length; attempt++) {
+      if (attempt > 0) {
+        const wait = ORDER_NUMBER_BACKOFF_MS[attempt - 1]!
+        const slept = await Promise.race([new Promise<true>((resolve) => setTimeout(() => resolve(true), wait)), timeUp])
+        if (slept === null) break
+      }
+      if (stopped()) break
+      try {
+        const reference = await Promise.race([ask(), timeUp])
+        if (reference === null) break // time is up
+        buyerRef ??= normalizeBuyerRef(reference?.buyerRef)
+        const orderNumber = firstId(reference?.orderNumber)
+        if (orderNumber !== undefined && isOrderNumber(orderNumber)) return found(orderNumber)
+      } catch {
+        /* ask again, or give up */
+      }
+    }
+    return found()
+  } finally {
+    clearTimeout(deadline)
   }
 }
 

@@ -2245,7 +2245,9 @@ export class VioCheckout extends LitElement {
    * `visibilitychange`) or the element leaves, the event goes out at once
    * without the reference. Exactly one event per call. `afterwards` runs
    * right after the event, so a path keeps the order it always had (the cart
-   * is cleared after the event).
+   * is cleared after the event). When that answer already has Vio's order
+   * number, the event carries it too (`orderNumber`): it is the purchase's
+   * `order_id`, and analytics need not ask again.
    */
   private async emitPaymentSuccess(
     detail: PaymentSuccessDetail,
@@ -2254,13 +2256,20 @@ export class VioCheckout extends LitElement {
     afterwards?: () => void,
   ): Promise<void> {
     let done = false
-    const finish = (buyerRef?: string) => {
+    const finish = (found: { buyerRef?: string; orderNumber?: number } = {}) => {
       if (done) return
       done = true
       const event = new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: buyerRef ? { ...detail, buyerRef } : detail,
+        detail:
+          found.buyerRef || found.orderNumber
+            ? {
+                ...detail,
+                ...(found.buyerRef ? { buyerRef: found.buyerRef } : {}),
+                ...(found.orderNumber ? { orderNumber: found.orderNumber } : {}),
+              }
+            : detail,
       })
       this.dispatchEvent(event)
       // Detached while waiting (the host removed the drawer): the event cannot
@@ -2276,7 +2285,7 @@ export class VioCheckout extends LitElement {
     }
     const known = buyerRefOf(detail)
     if (known || !checkoutId || !this.shouldAskBuyerRef(detail)) {
-      finish(known)
+      finish({ buyerRef: known })
       return
     }
     const settleEarly = () => finish()
@@ -2312,10 +2321,15 @@ export class VioCheckout extends LitElement {
    * failed or has neither the reference nor an order yet (the webhook has not
    * written the checkout), again at 1.2 s — all within 2.5 s. An order
    * without a reference is a settled answer: the backend has none, asking
-   * again cannot help. `undefined` when the time is up, when the answer
-   * stopped mattering (`stopped()`) or on failure.
+   * again cannot help. Whatever the answer said of the order number comes
+   * back with it. `{}` when the time is up, when the answer stopped mattering
+   * (`stopped()`) or on failure.
    */
-  private async askBuyerRef(checkoutId: string, sponsorId: number, stopped: () => boolean): Promise<string | undefined> {
+  private async askBuyerRef(
+    checkoutId: string,
+    sponsorId: number,
+    stopped: () => boolean,
+  ): Promise<{ buyerRef?: string; orderNumber?: number }> {
     const started = Date.now()
     const remaining = () => VioCheckout.BUYER_REF_WAIT_MS - (Date.now() - started)
     let deadline: ReturnType<typeof setTimeout> | undefined
@@ -2326,20 +2340,21 @@ export class VioCheckout extends LitElement {
       for (const at of [0, VioCheckout.BUYER_REF_RETRY_AT_MS]) {
         const wait = Math.min(at - (Date.now() - started), remaining())
         if (wait > 0) await Promise.race([new Promise((resolve) => setTimeout(resolve, wait)), timeUp])
-        if (stopped() || remaining() <= 0) return undefined
+        if (stopped() || remaining() <= 0) return {}
         try {
           const reference = await Promise.race([
             Vio.checkout.getOrderReference(checkoutId, sponsorId || undefined),
             timeUp,
           ])
-          if (reference === null) return undefined // time is up
-          if (reference.buyerRef) return reference.buyerRef
-          if (reference.orderNumber !== null) return undefined // settled without one
+          if (reference === null) return {} // time is up
+          const order = reference.orderNumber ? { orderNumber: reference.orderNumber } : {}
+          if (reference.buyerRef) return { buyerRef: reference.buyerRef, ...order }
+          if (reference.orderNumber !== null) return order // settled without one
         } catch {
           /* ask again, or give up */
         }
       }
-      return undefined
+      return {}
     } finally {
       clearTimeout(deadline)
     }

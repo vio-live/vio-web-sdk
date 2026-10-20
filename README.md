@@ -453,6 +453,45 @@ confirmation screen never waits. A host with its own checkout passes `buyerRef` 
 (`requireConsent` until `setConsent(true)`) `buyer_id` is not sent at all: a visit
 measured with ephemeral ids carries no stable identifier of a person.
 
+### The purchase — `order_id` is Vio's order number, `checkout_id` beside it
+
+A `purchase`'s **`commerce.order_id` is Vio's order number** — `4415`, the number
+on the receipt, in the dashboard and in Commerce. Commerce's cancellations and
+refunds (`order_cancelled` / `order_refunded`, ADR-0036) name the purchase they
+compensate by that number: a purchase that carried the checkout's uuid instead
+could never be netted.
+
+- **Where the number comes from.** The `vio:payment-success` detail's
+  `orderNumber` (the SDK's checkout adds it when its ask for the buyer reference
+  already found the order), Apple Pay's backend confirmation
+  (`result.confirmation.orderId`), or an `orderId` that is a whole number (a host
+  passing the number; a checkout id is a uuid, never one). A redirect return
+  (Vipps, Klarna, hosted Stripe…) or an order a webhook creates usually fires the
+  event before the order exists: the SDK then **asks the checkout** —
+  `Vio.checkout.getOrderReference(checkoutId)`, the receipt's own path — at once
+  and after 0.5 / 1 / 2 / 3 / 3 s, for at most 10 s. Only the event waits: the
+  confirmation screen, the cart and the payment flow never do. Apple Pay and the
+  embedded Stripe Element (the drawer waits for the webhook's order before it
+  confirms) have the number at once.
+- **`commerce.checkout_id`** — Vio's checkout id (uuid) — is always there when the
+  SDK knows the checkout (every SDK path, Apple Pay from the cart included): the
+  second key the collector can match a purchase by. It is new and additive; a
+  collector that predates it drops the key (its schema strips unknown fields) and
+  keeps the event.
+- **`props.order_id_kind`** says what `order_id` is: `'order'` (the number) or
+  `'checkout'` — the number did not come within the 10 s, the page was hidden or
+  closed while waiting (the event leaves at once, by beacon), or the page has no
+  checkout manager to ask; then `order_id` is the checkout id, as before.
+- **Once per checkout.** One `purchase` per checkout (or order) per page load: a
+  second `vio:payment-success` for the same one adds nothing, and a number that
+  arrives after the event left with the checkout id adds no second event. `ts`
+  and `event_id` are fixed at the payment, whenever the event leaves; a purchase
+  split per campaign waits once and every slice carries the same number.
+- **A host with its own sink** (Vev) reads the same ids from the detail with
+  `purchaseIdsOf(detail)` → `{ orderId, checkoutId, orderIdKind }` (or
+  `purchaseFromPaymentSuccess(detail)`, exported from `/core`), and waits for the
+  number the same way through `Vio.checkout.getOrderReference(checkoutId)`.
+
 ## Theming
 
 Every component reads its colors and fonts from `--vio-*` CSS custom properties

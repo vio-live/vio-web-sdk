@@ -14,6 +14,7 @@ import {
   AnalyticsManager,
   buyerRefOf,
   purchaseFromPaymentSuccess,
+  purchaseIdsOf,
   resolveCampaignId,
 } from './analytics-manager.js'
 
@@ -664,19 +665,322 @@ describe('order_id coherente en purchase (cuatro emisores de vio:payment-success
 
   it('purchaseFromPaymentSuccess es pura: solo ids de Vio, nunca del proveedor ni totales', () => {
     expect(purchaseFromPaymentSuccess({})).toEqual({})
-    expect(purchaseFromPaymentSuccess({ orderId: 'A', checkoutId: 'D' })).toEqual({ orderId: 'A' })
-    expect(purchaseFromPaymentSuccess({ orderId: '', checkoutId: 'D' })).toEqual({ orderId: 'D' })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', checkoutId: 'D' })).toEqual({ orderId: 'A', checkoutId: 'A' })
+    expect(purchaseFromPaymentSuccess({ orderId: '', checkoutId: 'D' })).toEqual({ orderId: 'D', checkoutId: 'D' })
     expect(
       purchaseFromPaymentSuccess({ result: { confirmation: { orderId: 42 } }, checkoutId: 'D' }),
-    ).toEqual({ orderId: '42' })
+    ).toEqual({ orderId: '42', checkoutId: 'D' })
     expect(
       purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } }, checkoutId: 'D' }),
-    ).toEqual({ orderId: 'D' })
+    ).toEqual({ orderId: 'D', checkoutId: 'D' })
     expect(purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } } })).toEqual({})
-    expect(purchaseFromPaymentSuccess({ checkoutId: 'D', result: null })).toEqual({ orderId: 'D' })
+    expect(purchaseFromPaymentSuccess({ checkoutId: 'D', result: null })).toEqual({ orderId: 'D', checkoutId: 'D' })
     expect(
       purchaseFromPaymentSuccess({ result: { total: '12.5', chargedTotal: 99, currency: 'NOK' } }),
     ).toEqual({})
+  })
+})
+
+describe('purchase: order_id es el número de orden de Vio, checkout_id siempre (ADR-0036)', () => {
+  /** Commerce compensa cancelaciones por el número de orden (4415): el purchase tiene que llevar ese, no el uuid del checkout. */
+  const CHK = '0b6f3c1e-2d4a-4f5b-9c8d-7e6f5a4b3c2d'
+  type Answer = { orderNumber: number | null; buyerRef?: string | null } | 'hang' | 'fail'
+
+  afterEach(removeFacade)
+
+  /**
+   * A page with the SDK's checkout manager: `getOrderReference` answers
+   * `answers` in turn (the last one from then on) — the same ask the receipt
+   * makes. Fake timers from the start, so every wait is the test's to advance.
+   */
+  const page = (answers: Answer[], cart = fakeCart({ 4: [paidLine()] })) => {
+    vi.useFakeTimers()
+    initVio()
+    let call = 0
+    const ask = vi.fn((_checkoutId: string, _sponsorId?: number) => {
+      const answer = answers[Math.min(call++, answers.length - 1)]!
+      if (answer === 'hang') return new Promise<never>(() => {})
+      if (answer === 'fail') return Promise.reject(new Error('network'))
+      return Promise.resolve({ orderNumber: answer.orderNumber, buyerRef: answer.buyerRef ?? null })
+    })
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: BOOT,
+      cart,
+      checkout: { getOrderReference: ask },
+    }
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    return { m, ask }
+  }
+
+  function paidLine(over: Partial<FakeLine> = {}): FakeLine {
+    return { productId: 408948, name: 'Bonding Oil', unitPrice: 300, quantity: 1, currency: 'NOK', sponsorId: 4, ...over }
+  }
+
+  const fire = (detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent('vio:payment-success', { detail }) as unknown as Event,
+    )
+
+  /** Every purchase sent so far (flushes the queue first). */
+  const purchases = async (m: AnalyticsManager) => {
+    await m.flush()
+    return flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+  }
+
+  it('número disponible al instante (en el detail): sale ya, sin preguntar — order_id 4415, checkout_id, order_id_kind order', async () => {
+    const { m, ask } = page([{ orderNumber: 1 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK, orderNumber: 4415 })
+    const [ev, ...rest] = await purchases(m)
+    expect(rest).toHaveLength(0)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK, value: 300, currency: 'NOK', payment_method: 'vipps' })
+    expect(ev!.props).toEqual({ order_id_kind: 'order' })
+    expect(ask).not.toHaveBeenCalled()
+    m.stop()
+  })
+
+  it('número disponible al instante (en el checkout): la primera pregunta lo trae, sin esperar ningún backoff', async () => {
+    const { m, ask } = page([{ orderNumber: 4415 }])
+    fire({ method: 'klarna', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+    expect(ev!.props).toEqual({ order_id_kind: 'order' })
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask).toHaveBeenCalledWith(CHK, 4)
+    m.stop()
+  })
+
+  it('número que llega al 3.er sondeo (0 / 0,5 / 1,5 s): nada sale antes; luego UN purchase con el número y el ts del pago', async () => {
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: null }, { orderNumber: 4415 }])
+    const paidAt = Date.now()
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK }) // retorno de redirect: el orderId es el checkout
+    // Mientras espera, la página cambia (el SDK limpia la URL del retorno, una SPA navega): el evento es el del pago.
+    const g = globalThis as Record<string, any>
+    g.location.href = 'https://host.example/otra'
+    g.document.title = 'Otra página'
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(await purchases(m)).toHaveLength(0) // ni la UI ni el pago esperan: solo el evento
+    expect(ask).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(1)
+    expect(ask).toHaveBeenCalledTimes(3)
+    expect(sent[0]!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK, value: 300 })
+    expect(sent[0]!.props).toEqual({ order_id_kind: 'order' })
+    expect(sent[0]!.ts).toBe(new Date(paidAt).toISOString())
+    expect(sent[0]!.context).toMatchObject({ content_url: 'https://host.example/article', content_title: 'Sneakers 2026 — trendy' })
+    // Ya no se pregunta más, ni sale nada más.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(ask).toHaveBeenCalledTimes(3)
+    expect(await purchases(m)).toHaveLength(1)
+    m.stop()
+  })
+
+  it('el carrito se lee al pago: vaciarlo mientras espera no cambia items ni value', async () => {
+    const cart = fakeCart({ 4: [paidLine({ unitPrice: 200, quantity: 2 })] })
+    const { m } = page([{ orderNumber: null }, { orderNumber: 4415 }], cart)
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK })
+    cart.getAllCarts().clear() // la UI vacía el carrito justo después del evento
+    await vi.advanceTimersByTimeAsync(500)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', value: 400, items: [expect.objectContaining({ product_id: '408948', quantity: 2 })] })
+    m.stop()
+  })
+
+  it('nunca llega: a los ~10 s sale igual con el checkoutId y order_id_kind checkout — tras 6 preguntas (0 / 0,5 / 1,5 / 3,5 / 6,5 / 9,5 s)', async () => {
+    const { m, ask } = page([{ orderNumber: null }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(9_499)
+    expect(await purchases(m)).toHaveLength(0)
+    expect(ask).toHaveBeenCalledTimes(5)
+    await vi.advanceTimersByTimeAsync(1)
+    const sent = await purchases(m)
+    expect(ask).toHaveBeenCalledTimes(6)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(sent[0]!.props).toEqual({ order_id_kind: 'checkout' })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(ask).toHaveBeenCalledTimes(6)
+    expect(await purchases(m)).toHaveLength(1)
+    m.stop()
+  })
+
+  it('una respuesta que no llega nunca (o falla) no retiene el evento más de 10 s', async () => {
+    const hang = page(['hang'])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(await purchases(hang.m)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    const [ev] = await purchases(hang.m)
+    expect(ev!.commerce.order_id).toBe(CHK)
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+    expect(hang.ask).toHaveBeenCalledTimes(1)
+    hang.m.stop()
+
+    flushedBatches.length = 0
+    const failing = page(['fail', 'fail', { orderNumber: 4415 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(1_500)
+    const [late] = await purchases(failing.m)
+    expect(late!.commerce.order_id).toBe('4415') // un fallo se vuelve a preguntar
+    failing.m.stop()
+  })
+
+  it('checkout_id va siempre: redirect, drawer (confirmOrder / recibo del proveedor), Apple Pay desde el checkout y desde el carrito', async () => {
+    const { m } = page([{ orderNumber: 4415 }])
+    const details = [
+      { method: 'vipps', sponsorId: 4, orderId: 'chk-redirect' },
+      { method: 'qliro', sponsorId: 4, checkoutId: 'chk-drawer', result: { order: { orderId: 3361254 } } },
+      { method: 'walley', sponsorId: 4, checkoutId: 'chk-receipt', result: { orderId: 'W-9' } },
+      { method: 'apple-pay', sponsorId: 4, checkoutId: 'chk-apple', result: { confirmation: { orderId: '4416', checkoutId: 'chk-apple' } } },
+      { method: 'apple-pay', result: { confirmation: { orderId: '4417', checkoutId: 'chk-cart', status: 'SUCCESS' } } },
+    ]
+    for (const d of details) fire(d)
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = await purchases(m)
+    // checkout_id → order_id. Apple Pay sale al instante; los demás tras la primera pregunta.
+    const byCheckout = Object.fromEntries(sent.map((e) => [e.commerce.checkout_id, e.commerce.order_id]))
+    expect(byCheckout).toEqual({
+      'chk-redirect': '4415',
+      'chk-drawer': '4415', // nunca 3361254, el id de Qliro
+      'chk-receipt': '4415', // nunca W-9, el de Walley
+      'chk-apple': '4416',
+      'chk-cart': '4417',
+    })
+    m.stop()
+  })
+
+  it('Apple Pay / Stripe embebido (sin redirección): sin espera extra', async () => {
+    // Apple Pay: la confirmación del backend YA trae el número — no se pregunta nada.
+    const apple = page([{ orderNumber: 1 }])
+    fire({ method: 'apple-pay', sponsorId: 4, checkoutId: CHK, result: { confirmation: { orderId: '4415', checkoutId: CHK } } })
+    const [a] = await purchases(apple.m)
+    expect(a!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+    expect(a!.props).toEqual({ order_id_kind: 'order' })
+    expect(apple.ask).not.toHaveBeenCalled()
+    apple.m.stop()
+
+    // Stripe embebido: el drawer espera a que el webhook cree la orden antes de
+    // confirmar, así que el número está a la primera pregunta (o ya en el detail).
+    flushedBatches.length = 0
+    const stripe = page([{ orderNumber: 4420 }])
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK, result: { chargedTotal: 350 } })
+    await vi.advanceTimersByTimeAsync(0)
+    const [s] = await purchases(stripe.m)
+    expect(s!.commerce).toMatchObject({ order_id: '4420', checkout_id: CHK })
+    expect(stripe.ask).toHaveBeenCalledTimes(1)
+    stripe.m.stop()
+  })
+
+  it('no duplica: otro vio:payment-success del mismo checkout — esperando o ya enviado — no hace un segundo purchase', async () => {
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: 4415 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    fire({ method: 'vipps', sponsorId: 4, checkoutId: CHK }) // mientras espera
+    await vi.advanceTimersByTimeAsync(500)
+    fire({ method: 'vipps', sponsorId: 4, checkoutId: CHK, orderNumber: 4415 }) // ya enviado
+    fire({ method: 'apple-pay', result: { confirmation: { orderId: '4415' } } }) // la misma orden, sin checkout
+    await vi.advanceTimersByTimeAsync(20_000)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.commerce.order_id).toBe('4415')
+    expect(ask).toHaveBeenCalledTimes(2) // una sola espera
+    m.stop()
+  })
+
+  it('el usuario cierra la página mientras espera: sale YA con el checkoutId (por beacon) y el número tardío no añade un segundo evento', async () => {
+    const beacons: Array<{ events: Array<Record<string, any>> }> = []
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: 4415 }])
+    let readBlob: Promise<void> = Promise.resolve()
+    vi.stubGlobal('navigator', {
+      sendBeacon: (_url: string, blob: Blob) => {
+        readBlob = blob.text().then((t) => void beacons.push(JSON.parse(t)))
+        return true
+      },
+    })
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    ;(globalThis as Record<string, any>).window.dispatchEvent(new Event('pagehide'))
+    await readBlob
+    const beaconed = beacons.flatMap((b) => b.events).filter((e) => e.name === 'purchase')
+    expect(beaconed).toHaveLength(1)
+    expect(beaconed[0]!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(beaconed[0]!.props).toEqual({ order_id_kind: 'checkout' })
+    // El número llega después: nada más sale, y se deja de preguntar.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(m)).toHaveLength(0)
+    expect(beacons.flatMap((b) => b.events).filter((e) => e.name === 'purchase')).toHaveLength(1)
+    expect(ask).toHaveBeenCalledTimes(1)
+    m.stop()
+  })
+
+  it('una compra partida por campaña espera UNA vez y todos sus slices llevan el mismo número, ids de evento distintos y estables', async () => {
+    const { m, ask } = page(
+      [{ orderNumber: null }, { orderNumber: 4415 }],
+      fakeCart({ 4: [paidLine()], 7: [paidLine({ sponsorId: 7, productId: 1 })] }),
+    )
+    fire({ method: 'apple-pay', checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(500)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(2)
+    expect(ask).toHaveBeenCalledTimes(2)
+    for (const p of sent) {
+      expect(p.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+      expect(p.props).toMatchObject({ slices: 2, order_id_kind: 'order' })
+    }
+    expect(new Set(sent.map((p) => p.event_id)).size).toBe(2)
+    m.stop()
+  })
+
+  it('stop() con una compra esperando: entra en la cola con el checkoutId, no se pierde', async () => {
+    const { m } = page([{ orderNumber: null }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    m.stop()
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.order_id).toBe(CHK)
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+  })
+
+  it('sin gestor de checkout en la página (un host con su propio checkout) sale al instante, como antes', async () => {
+    vi.useFakeTimers()
+    initVio()
+    installFacade(BOOT, fakeCart({ 4: [paidLine()] }))
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+    m.stop()
+  })
+
+  it('el buyer_id que el pago no trajo lo puede traer la misma respuesta del checkout', async () => {
+    const { m } = page([{ orderNumber: 4415, buyerRef: 'brf_late' }])
+    fire({ method: 'klarna', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', buyer_id: 'brf_late' })
+    m.stop()
+  })
+
+  it('purchaseIdsOf es pura: número (orderNumber → confirmation.orderId → orderId entero) y checkout (orderId uuid → checkoutId → confirmation.checkoutId)', () => {
+    expect(purchaseIdsOf({})).toEqual({})
+    expect(purchaseIdsOf(undefined)).toEqual({})
+    expect(purchaseIdsOf({ orderId: CHK })).toEqual({ orderId: CHK, checkoutId: CHK, orderIdKind: 'checkout' })
+    expect(purchaseIdsOf({ orderId: CHK, orderNumber: 4415 })).toEqual({ orderId: '4415', checkoutId: CHK, orderIdKind: 'order' })
+    expect(purchaseIdsOf({ orderId: 4415 })).toEqual({ orderId: '4415', orderIdKind: 'order' }) // un host que pasa el número
+    expect(purchaseIdsOf({ orderId: '4415', checkoutId: CHK })).toEqual({ orderId: '4415', checkoutId: CHK, orderIdKind: 'order' })
+    expect(purchaseIdsOf({ checkoutId: CHK, result: { confirmation: { orderId: 77 } } })).toEqual({
+      orderId: '77',
+      checkoutId: CHK,
+      orderIdKind: 'order',
+    })
+    expect(purchaseIdsOf({ result: { confirmation: { orderId: '', checkoutId: CHK } } })).toEqual({
+      orderId: CHK,
+      checkoutId: CHK,
+      orderIdKind: 'checkout',
+    })
+    // Los ids del proveedor nunca: ni result.orderId ni result.order.orderId.
+    expect(purchaseIdsOf({ result: { orderId: 'W-9', order: { orderId: 3361254 } } })).toEqual({})
   })
 })
 
@@ -1016,7 +1320,8 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
     expect((purchases[0]!.commerce as { items: unknown[] }).items).toHaveLength(2)
     // Un solo slice cuyos orígenes nombran la campaña: el evento la lleva, y el slot único del slice.
     expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4, location_id: 'carousel-1' })
-    expect((purchases[0]!).props).toBeUndefined()
+    // No slice props — only what its order_id is (the checkout id: this fake page has no checkout manager to ask).
+    expect((purchases[0]!).props).toEqual({ order_id_kind: 'checkout' })
   })
 
   it('un carrito SIN orígenes (0.22) sigue idéntico: un purchase, campaign_id por la regla del sponsor, sin location_id', async () => {
@@ -1065,7 +1370,10 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
       line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
       line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, quantity: 1 }] }),
     ])
-    expect(purchases.map((p) => p.props)).toEqual([{ slice: 1, slices: 2 }, { slice: 2, slices: 2 }])
+    expect(purchases.map((p) => p.props)).toEqual([
+      { slice: 1, slices: 2, order_id_kind: 'checkout' },
+      { slice: 2, slices: 2, order_id_kind: 'checkout' },
+    ])
     expect(checkouts.map((p) => p.props)).toEqual([{ slice: 1, slices: 2 }, { slice: 2, slices: 2 }])
   })
 
@@ -1482,9 +1790,9 @@ describe('buyer_id: la referencia del comprador (buyer_ref de shopcart), nunca u
   })
 
   it('purchaseFromPaymentSuccess / buyerRefOf son puros: precedencia y filtro', () => {
-    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'h' })).toEqual({ orderId: 'A', buyerId: 'h' })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'h' })).toEqual({ orderId: 'A', checkoutId: 'A', buyerId: 'h' })
     expect(purchaseFromPaymentSuccess({ buyerRef: 'h' })).toEqual({ buyerId: 'h' })
-    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'a@b.c' })).toEqual({ orderId: 'A' })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'a@b.c' })).toEqual({ orderId: 'A', checkoutId: 'A' })
     expect(buyerRefOf({ buyerRef: 'top', result: { buyer_ref: 'res' } })).toBe('top')
     expect(buyerRefOf({ buyerRef: 'x@y.z', result: { buyer_ref: 'res' } })).toBe('res')
     expect(buyerRefOf({ result: { confirmation: { buyer_ref: 'conf' }, checkout: { buyerRef: 'chk' } } })).toBe('conf')

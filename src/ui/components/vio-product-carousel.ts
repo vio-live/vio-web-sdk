@@ -26,6 +26,7 @@ import {
   type Product,
 } from '../../core/types.js'
 import { SlotRegistration } from '../slot-registration.js'
+import { resolveSponsorIdentity } from '../sponsor-identity.js'
 
 export class VioProductCarousel extends LitElement {
   /** Small uppercase label in accent color (e.g. "REDAKSJONENS FAVORITTER"). */
@@ -497,7 +498,7 @@ export class VioProductCarousel extends LitElement {
     if (this.fetched && this.fetched.length > 0) {
       return html`${this.fetched.map(({ product: p, sponsorId }) => {
         const img = primaryImageUrl(p) ?? ''
-        const retailer = sponsorNameFromBootstrap(sponsorId) ?? p.brand ?? ''
+        const retailer = resolveSponsorIdentity(sponsorId)?.name || p.brand || ''
         return html`
           <vio-product
             product-id=${String(p.id)}
@@ -563,12 +564,4 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-product-carousel': VioProductCarousel
   }
-}
-
-/** Resolve a sponsor's display name from `Vio.bootstrap()` cache. */
-function sponsorNameFromBootstrap(sponsorId: number): string | undefined {
-  const boot = Vio.bootstrapCache
-  if (!boot) return undefined
-  if (boot.primarySponsor?.id === sponsorId) return boot.primarySponsor.name
-  return boot.secondarySponsors?.find((s) => s.id === sponsorId)?.name
 }

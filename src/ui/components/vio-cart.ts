@@ -20,6 +20,7 @@ import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -560,6 +561,10 @@ export class VioCart extends LitElement {
     if (!handle || !handle.available || this.itemCount === 0) return
     // Snapshot items + total BEFORE clearing the cart (confirmation needs them).
     const snapshot = this.buildConfirmation()
+    // Who the order is with, while the cart still names it — only when one
+    // sponsor's cart is paid (the event carries no sponsorId otherwise).
+    const sponsorIds = [...this.carts.keys()]
+    const sponsor = sponsorIds.length === 1 ? sponsorDetail(sponsorIds[0]) : {}
     // Fire the sheet synchronously inside the tap (Apple gesture rule); handle
     // the result asynchronously.
     void handle.show().then((result) => {
@@ -575,7 +580,7 @@ export class VioCart extends LitElement {
         new CustomEvent('vio:payment-success', {
           bubbles: true,
           composed: true,
-          detail: { method: 'apple-pay', result, ...(buyerRef ? { buyerRef } : {}) },
+          detail: { method: 'apple-pay', result, ...(buyerRef ? { buyerRef } : {}), ...sponsor },
         }),
       )
     })
@@ -614,7 +619,7 @@ export class VioCart extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: firstSponsorId, paymentMethod: 'klarna', express: true },
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'klarna', express: true, ...sponsorDetail(firstSponsorId) },
       }),
     )
   }
@@ -636,7 +641,7 @@ export class VioCart extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: firstSponsorId, express: false },
+        detail: { sponsorId: firstSponsorId, express: false, ...sponsorDetail(firstSponsorId) },
       }),
     )
   }
@@ -679,7 +684,7 @@ export class VioCart extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId, paymentMethod: 'vipps', express: false },
+        detail: { sponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(sponsorId) },
       }),
     )
   }
@@ -693,9 +698,14 @@ export class VioCart extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: firstSponsorId, paymentMethod: 'stripe', express: false },
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'stripe', express: false, ...sponsorDetail(firstSponsorId) },
       }),
     )
+  }
+
+  /** The name over a sponsor's lines: the brand's display name by the one rule, else what the cart kept. */
+  private sponsorLabel(cart: { sponsorId: number; sponsorName?: string }): string {
+    return resolveSponsorIdentity(cart.sponsorId)?.name || cart.sponsorName || ''
   }
 
   private get totalAcrossSponsors(): number {
@@ -748,8 +758,8 @@ export class VioCart extends LitElement {
                 ${sponsorCarts.map(
                   (cart) => html`
                     <div class="sponsor-group">
-                      ${cart.sponsorName
-                        ? html`<div class="sponsor-label">${cart.sponsorName}</div>`
+                      ${this.sponsorLabel(cart)
+                        ? html`<div class="sponsor-label">${this.sponsorLabel(cart)}</div>`
                         : ''}
                       ${cart.items.map(
                         (item) => html`

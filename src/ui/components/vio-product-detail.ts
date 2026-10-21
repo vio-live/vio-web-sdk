@@ -26,7 +26,7 @@ import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/
 import { DialogFocus } from '../dialog-focus.js'
 import { SlotRegistration } from '../slot-registration.js'
 import { toCampaignId } from '../../core/slots.js'
-import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
+import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -1386,13 +1386,17 @@ export class VioProductDetail extends LitElement {
 
   /**
    * Who sells the product: the brand of the sponsor it was fetched with —
-   * its logo (the name as `alt`), or its name when it has no logo or the logo
-   * fails to load. Nothing at all when no identity is known.
+   * its logo, with the name as `alt`. Without a logo that loads, the topbar
+   * already names the seller (its Company name, else the brand), so the name
+   * goes here only when the topbar names nobody once the seller is known —
+   * never the same name twice. Nothing at all when no identity is known.
    */
   private renderSponsorHeader() {
     const identity = resolveSponsorIdentity(this.sponsorId)
+    if (!identity) return nothing
+    if (!usableLogo(identity) && (!this.sellerSettled || this.headerName())) return nothing
     const mark = renderSponsorMark(this, identity, { logo: 'sponsor-logo', name: 'sponsor-name' })
-    if (!identity || mark === nothing) return nothing
+    if (mark === nothing) return nothing
     return html`<div class="sponsor-header" part="sponsor">${mark}</div>`
   }
 

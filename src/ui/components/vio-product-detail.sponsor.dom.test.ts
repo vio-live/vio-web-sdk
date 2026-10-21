@@ -8,8 +8,9 @@ import type { BootstrapResponse } from '../../core/types.js'
 
 /**
  * The product detail says who sells the product: the logo of the sponsor it
- * was fetched with (its name as `alt`), or its name when there is no logo —
- * or when the logo does not load. Asked for by the host (Mote & Livsstil).
+ * was fetched with (its name as `alt`). Without a logo that loads, the
+ * topbar's seller name does it, and the brand header shows the name only when
+ * the topbar names nobody. Asked for by the host (Mote & Livsstil).
  */
 
 const product = {
@@ -61,10 +62,24 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  product.brand = 'SINDIG'
   unmountAll()
   facade().cachedBootstrap = null
   vi.restoreAllMocks()
 })
+
+/** The seller has no Company name and the product no brand: the topbar names nobody. */
+function noSellerName() {
+  product.brand = ''
+  vi.spyOn(Vio, 'commerceFor').mockReturnValue({
+    channel: {
+      product: {
+        getByIds: vi.fn().mockResolvedValue([product]),
+        getSellerCompany: vi.fn().mockResolvedValue(null),
+      },
+    },
+  } as any)
+}
 
 async function open(sponsorId: number) {
   const el = await mount<HTMLElement>('vio-product-detail')
@@ -86,7 +101,14 @@ describe('the brand header of the product detail', () => {
     expect(root(el).querySelector('.body')?.firstElementChild?.classList.contains('sponsor-header')).toBe(true)
   })
 
-  it('without a logo, the name as text', async () => {
+  it('without a logo, the topbar names the seller and the header adds nothing (no name twice)', async () => {
+    const el = await open(5)
+    expect(root(el).querySelector('.sponsor-header')).toBeNull()
+    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+  })
+
+  it('without a logo and with a topbar that names nobody, the name as text', async () => {
+    noSellerName()
     const el = await open(5)
     expect(root(el).querySelector('.sponsor-header .sponsor-logo')).toBeNull()
     expect(root(el).querySelector('.sponsor-header .sponsor-name')?.textContent?.trim()).toBe('Bohus')
@@ -97,7 +119,16 @@ describe('the brand header of the product detail', () => {
     expect(root(el).querySelector('.sponsor-header .sponsor-logo')?.getAttribute('alt')).toBe('Sindig')
   })
 
-  it('a logo that fails to load falls back to the name', async () => {
+  it('a logo that fails to load leaves the naming to the topbar', async () => {
+    const el = await open(4)
+    root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
+    await settle(el)
+    expect(root(el).querySelector('.sponsor-header')).toBeNull()
+    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+  })
+
+  it('a logo that fails to load, with a topbar that names nobody, falls back to the name', async () => {
+    noSellerName()
     const el = await open(4)
     root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
     await settle(el)

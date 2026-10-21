@@ -12,6 +12,13 @@
 
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
+import {
+  checkoutSponsorOf,
+  rememberCheckoutSponsor,
+  rememberedCheckoutSponsor,
+  type CheckoutSponsor,
+  type SponsorIdentity,
+} from '../sponsor-identity.js'
 import { Configuration } from '../configuration.js'
 import {
   createStripeIntent,
@@ -534,10 +541,39 @@ export interface CheckoutManagerDeps {
   orderAttribution?: (
     sponsorId: number,
   ) => Promise<CheckoutAttributionWire | undefined> | CheckoutAttributionWire | undefined
+  /**
+   * Who a sponsor is (`Vio.sponsorIdentity`): remembered per checkout when one
+   * is created, and answered with `getOrderReference`. Optional: without it
+   * the memory keeps only whose checkout it is, and the cart's name.
+   */
+  sponsorIdentity?: (
+    sponsorId: number | undefined,
+    opts?: { checkoutId?: string | null },
+  ) => SponsorIdentity | null
+}
+
+/** What `getOrderReference` answers: the checkout's reference plus, when it can be named, its sponsor. */
+export type OrderReference = CheckoutReference & {
+  /** The sponsor the order is with — the checkout's, by the `Vio.sponsorIdentity` rule. */
+  sponsor?: CheckoutSponsor
 }
 
 export class CheckoutManager extends EventTarget {
-  private state: CheckoutState | null = null
+  private currentStateValue: CheckoutState | null = null
+  /**
+   * Every write of the state goes through here: a state that names its
+   * backend checkout is remembered with its sponsor (see
+   * `rememberSponsorOfCheckout`), whatever path created the checkout.
+   */
+  private get state(): CheckoutState | null {
+    return this.currentStateValue
+  }
+  private set state(next: CheckoutState | null) {
+    this.currentStateValue = next
+    if (next?.checkoutId && next.sponsorId) this.rememberSponsorOfCheckout(next.checkoutId, next.sponsorId)
+  }
+  /** The last checkout + identity written to the memory — the state is set on every keystroke of the form. */
+  private lastRememberedSponsor = ''
   /** Counts `open()` calls — see CheckoutState.session. */
   private sessionSeq = 0
   private applePayAvailableCache: boolean | null = null
@@ -727,24 +763,90 @@ export class CheckoutManager extends EventTarget {
    * `vio:payment-success` detail carries as `buyerRef` and analytics sends as
    * `buyer_id`. Never throws; `null` for whatever the API does not say.
    */
-  async getOrderReference(checkoutId: string, sponsorId?: number): Promise<CheckoutReference> {
-    if (!checkoutId) return { orderNumber: null, buyerRef: null }
+  async getOrderReference(checkoutId: string, sponsorId?: number): Promise<OrderReference> {
+    if (!checkoutId) return this.withSponsor({ orderNumber: null, buyerRef: null }, checkoutId, sponsorId)
     // Concurrent asks for the same checkout (the receipt's order number and
     // the payment event's buyer reference start together) share one request.
-    const inFlight = this.referenceInFlight.get(checkoutId)
-    if (inFlight) return inFlight
-    const request = (async (): Promise<CheckoutReference> => {
-      try {
-        const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
-        return await gqlGetCheckoutReference(checkoutId, opts)
-      } catch {
-        return { orderNumber: null, buyerRef: null }
-      } finally {
-        this.referenceInFlight.delete(checkoutId)
+    let request = this.referenceInFlight.get(checkoutId)
+    if (!request) {
+      const asked = (async (): Promise<CheckoutReference> => {
+        try {
+          const opts = await getCartGraphQLOptions(
+            sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId,
+          )
+          return await gqlGetCheckoutReference(checkoutId, opts)
+        } catch {
+          return { orderNumber: null, buyerRef: null }
+        } finally {
+          this.referenceInFlight.delete(checkoutId)
+        }
+      })()
+      this.referenceInFlight.set(checkoutId, asked)
+      request = asked
+    }
+    // After the answer: asking awaited the bootstrap, which names the sponsor.
+    return this.withSponsor(await request, checkoutId, sponsorId)
+  }
+
+  /**
+   * The sponsor of a checkout as `getOrderReference` carries it
+   * (`{ id, name, logoUrl }`): the given sponsor, else the one this tab
+   * remembered for the checkout, else the open checkout's when it IS that
+   * checkout — named by the `Vio.sponsorIdentity` rule. `undefined` when
+   * nothing names it; never throws.
+   */
+  private checkoutSponsor(checkoutId?: string | null, sponsorId?: number | string | null): CheckoutSponsor | undefined {
+    try {
+      const id = sponsorId ?? this.sponsorIdOfCheckout(checkoutId ?? undefined)
+      const numeric = id === undefined || id === null || id === '' ? undefined : Number(id)
+      if (typeof this.deps.sponsorIdentity === 'function') {
+        return checkoutSponsorOf(this.deps.sponsorIdentity(numeric, { checkoutId: checkoutId ?? undefined }))
       }
-    })()
-    this.referenceInFlight.set(checkoutId, request)
-    return request
+      const memo = rememberedCheckoutSponsor(checkoutId ?? undefined)
+      if (memo && (numeric === undefined || memo.sponsorId === numeric) && (memo.name || memo.logoUrl)) {
+        return { id: memo.sponsorId, name: memo.name, logoUrl: memo.logoUrl }
+      }
+      return undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** The sponsor id of a checkout: this tab's memory of it, else the open checkout's when it is that one. */
+  private sponsorIdOfCheckout(checkoutId: string | undefined): number | undefined {
+    if (!checkoutId) return undefined
+    const memo = rememberedCheckoutSponsor(checkoutId)
+    if (memo) return memo.sponsorId
+    return this.state?.checkoutId === checkoutId ? this.state.sponsorId : undefined
+  }
+
+  private withSponsor(reference: CheckoutReference, checkoutId: string, sponsorId?: number): OrderReference {
+    const sponsor = this.checkoutSponsor(checkoutId || undefined, sponsorId)
+    return sponsor ? { ...reference, sponsor } : reference
+  }
+
+  /**
+   * Remember whose checkout this is (`rememberCheckoutSponsor`), with the
+   * sponsor's name and logo as known now — so a confirmation after a redirect
+   * or a reload can name the brand. Written again only when something changed.
+   */
+  private rememberSponsorOfCheckout(checkoutId: string, sponsorId: number): void {
+    try {
+      let identity: SponsorIdentity | null = null
+      try {
+        identity = this.deps.sponsorIdentity?.(sponsorId, { checkoutId }) ?? null
+      } catch {
+        identity = null
+      }
+      const name = identity?.name || this.cartManager.getCart(sponsorId)?.sponsorName || ''
+      const logoUrl = identity?.logoUrl ?? null
+      const key = JSON.stringify([checkoutId, sponsorId, name, logoUrl])
+      if (key === this.lastRememberedSponsor) return
+      this.lastRememberedSponsor = key
+      rememberCheckoutSponsor(checkoutId, { sponsorId, name, logoUrl })
+    } catch {
+      /* the memory never costs a checkout */
+    }
   }
 
   /** In-flight `getOrderReference` per checkout id (see there). */

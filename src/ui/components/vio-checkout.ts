@@ -8,7 +8,7 @@
  * non-Apple device, or no Stripe key configured).
  */
 
-import { LitElement, css, html } from 'lit'
+import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
@@ -54,6 +54,14 @@ import {
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
+import {
+  renderSponsorMark,
+  resolveSponsorIdentity,
+  sponsorDetail,
+  usableLogo,
+  whenBootstrapped,
+} from '../sponsor-identity.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -97,6 +105,16 @@ export class VioCheckout extends LitElement {
   @state() private verifyingReturn: string | null = null
   /** The checkout whose confirmation is on screen — see fillOrderNumber. */
   private confirmedCheckoutId: string | null = null
+  /**
+   * Whose order is being confirmed (or verified, back from a payment page):
+   * the CHECKOUT's sponsor — from the return URL (`vio_sponsor`,
+   * `checkout_id`) or the state it was paid in — and how it was named before
+   * the cart was cleared. The header and the confirmation name it; never the
+   * page's attribution. See checkoutSponsorIdentity.
+   */
+  @state() private orderSponsor: { sponsorId: number; checkoutId?: string; snapshot?: CheckoutSponsor } | null = null
+  /** The bootstrap that names the checkout's sponsor was asked for (once per checkout) — see watchSponsorBootstrap. */
+  private sponsorBootstrapAsked = false
   /** Snapshot of the placed order, for the confirmation screen. */
   @state() private confirmedOrder: {
     items: CartLineItem[]
@@ -341,6 +359,8 @@ export class VioCheckout extends LitElement {
       this.paymentNotice = null
       this.verifyingReturn = null
       this.confirmedCheckoutId = null
+      this.orderSponsor = null
+      this.sponsorBootstrapAsked = false
       this.express = false
       this.availableMethods = null
       this.paymentMethodsResolved = false
@@ -539,6 +559,33 @@ export class VioCheckout extends LitElement {
       font-size: 24px;
       font-weight: 400;
       margin: 0;
+    }
+    .topbar-title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    /* Who the shopper buys from — the checkout's sponsor, compact under the heading. */
+    .topbar-sponsor {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      line-height: 1.3;
+      color: var(--vio-color-text-secondary, #666);
+    }
+    .topbar-sponsor-logo {
+      display: block;
+      width: auto;
+      height: 18px;
+      max-width: 120px;
+      object-fit: contain;
+    }
+    .topbar-sponsor-name {
+      color: var(--vio-color-text, #0a0a0a);
+      font-weight: 600;
     }
     .close {
       background: none;
@@ -869,6 +916,23 @@ export class VioCheckout extends LitElement {
       font-weight: 400;
       margin: 0;
     }
+    /* The brand the order is with: its logo over the thanks, its name in it. */
+    .confirm-brand { display: flex; align-items: center; }
+    .confirm-brand-logo {
+      display: block;
+      width: auto;
+      height: auto;
+      max-height: 32px;
+      max-width: 160px;
+      object-fit: contain;
+    }
+    .confirm-sponsor {
+      font-size: 14px;
+      line-height: 1.4;
+      color: var(--vio-color-text, #0a0a0a);
+      margin: 4px 0 0;
+    }
+    .confirm-sponsor strong { font-weight: 600; }
     .confirm-text {
       font-size: 14px;
       color: var(--vio-color-text-secondary, #666);
@@ -1069,6 +1133,8 @@ export class VioCheckout extends LitElement {
     checkoutId: string,
   ): void {
     if (outcome === 'paid') {
+      // Named while the cart still can: clearing it takes its sponsorName.
+      this.setOrderSponsor(sponsorId, checkoutId)
       if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
       this.confirmedOrder = {
         items: [],
@@ -1156,6 +1222,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'kustom'
+        this.setOrderSponsor(sponsorId, kustomReturn.checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1218,6 +1285,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'qliro'
+        this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1294,6 +1362,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'walley'
+        this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1368,6 +1437,7 @@ export class VioCheckout extends LitElement {
         this.cleanReturnQueryParams(ADYEN_RETURN_QUERY_KEYS)
         if (!adyenReturn) return
         this.returningFrom = 'adyen'
+        this.setOrderSponsor(sponsorId, checkoutId)
         this.adyenSettled = true
         this.autoSelectAttempted = true
         if (!this.checkoutState) {
@@ -1438,6 +1508,9 @@ export class VioCheckout extends LitElement {
             }
           }
         }
+        // Whose checkout this is: the return URL's sponsor and checkout — not
+        // the page's, and not whichever cart happens to be first here.
+        this.setOrderSponsor(sponsorId, checkoutId)
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen med Vipps…'
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
@@ -1453,6 +1526,7 @@ export class VioCheckout extends LitElement {
         let outcome: 'paid' | 'failed' | 'pending' | 'duplicate' = 'pending'
         let sawStatus = false
         if (checkoutId) {
+          this.setOrderSponsor(sponsorId, checkoutId)
           this.open = true
           this.verifyingReturn = 'Bekrefter betalingen…'
           for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
@@ -1581,6 +1655,9 @@ export class VioCheckout extends LitElement {
       this.unmountStripe()
       this.paymentError = null
     }
+    // A return lands before the bootstrap: ask for it once, so the header
+    // and the confirmation name the sponsor when it arrives.
+    this.watchSponsorBootstrap()
     // A checkout taken out of the page (a route change, the host re-rendering
     // it) creates no payment sessions. Its own teardown unmounts the widgets,
     // and the update that follows would otherwise mount them again, detached —
@@ -2191,6 +2268,8 @@ export class VioCheckout extends LitElement {
     // An id a provider hands back is ITS order (Qliro's, say), not Vio's: it
     // is the provider's reference, under the provider's name.
     const providerOrderId = r.order?.orderId != null ? String(r.order.orderId) : ''
+    // Who the order is with, named before the cart is cleared.
+    this.setOrderSponsor(sponsorId, checkoutId)
     this.confirmedOrder = {
       items: [...this.items],
       currency: this.checkoutState?.currency ?? '',
@@ -2254,13 +2333,19 @@ export class VioCheckout extends LitElement {
     afterwards?: () => void,
   ): Promise<void> {
     let done = false
+    // The order's sponsor as named now (the cart may be cleared by the time
+    // the event goes out), and again when it does (the bootstrap may land).
+    const sponsorAtStart = this.sponsorOfOrder(sponsorId, checkoutId)
     const finish = (buyerRef?: string) => {
       if (done) return
       done = true
+      const named = this.sponsorOfOrder(sponsorId, checkoutId)
+      const sponsor = named.sponsor ? named : sponsorAtStart
+      const withSponsor: PaymentSuccessDetail = sponsor.sponsor ? { ...detail, ...sponsor } : detail
       const event = new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: buyerRef ? { ...detail, buyerRef } : detail,
+        detail: buyerRef ? { ...withSponsor, buyerRef } : withSponsor,
       })
       this.dispatchEvent(event)
       // Detached while waiting (the host removed the drawer): the event cannot
@@ -2472,7 +2557,10 @@ export class VioCheckout extends LitElement {
       >
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">
-          <h2 class="heading">${this.orderConfirmed ? 'Takk!' : this.heading}</h2>
+          <div class="topbar-title">
+            <h2 class="heading">${this.orderConfirmed ? 'Takk!' : this.heading}</h2>
+            ${this.renderTopbarSponsor()}
+          </div>
           <button class="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
@@ -2489,6 +2577,92 @@ export class VioCheckout extends LitElement {
         </div>
       </div>
     `
+  }
+
+  /**
+   * Remember whose order this is and how it is named right now, before the
+   * cart that names it is cleared. Whose: the sponsor this tab remembered for
+   * the checkout when it was created (exact for that checkout id), else the
+   * one given (the return URL's `vio_sponsor`, the state it was paid in),
+   * else the open state's — a return without `vio_sponsor` (Qliro, Walley)
+   * re-opens the state with whichever cart comes first, which is a guess.
+   */
+  private setOrderSponsor(sponsorId: number | undefined, checkoutId: string | undefined): void {
+    try {
+      const checkout = checkoutId || undefined
+      const id =
+        rememberedCheckoutSponsor(checkout)?.sponsorId ??
+        (sponsorId && sponsorId > 0 ? sponsorId : undefined) ??
+        this.checkoutState?.sponsorId
+      if (!id) return
+      const named = checkoutSponsorOf(resolveSponsorIdentity(id, checkout))
+      const previous = this.orderSponsor
+      const snapshot = named ?? (previous && previous.sponsorId === id ? previous.snapshot : undefined)
+      this.orderSponsor = { sponsorId: id, ...(checkout ? { checkoutId: checkout } : {}), ...(snapshot ? { snapshot } : {}) }
+    } catch {
+      /* naming the sponsor never costs a confirmation */
+    }
+  }
+
+  /**
+   * Who this checkout is with, as a shopper sees it: the order being
+   * confirmed / verified (`orderSponsor`), else the open checkout's own
+   * sponsor (`checkoutState.sponsorId`) — named by `Vio.sponsorIdentity`,
+   * which falls back to this tab's memory of the checkout and the cart; the
+   * name taken before the cart was cleared last. Never the page's
+   * attribution. `null` when nothing names it.
+   */
+  private checkoutSponsorIdentity(): CheckoutSponsor | null {
+    const o = this.orderSponsor
+    if (o) return checkoutSponsorOf(resolveSponsorIdentity(o.sponsorId, o.checkoutId)) ?? o.snapshot ?? null
+    const s = this.checkoutState
+    return s?.sponsorId ? (checkoutSponsorOf(resolveSponsorIdentity(s.sponsorId, s.checkoutId)) ?? null) : null
+  }
+
+  /**
+   * `{ sponsor }` for the payment event — the same sponsor the screen names
+   * (`orderSponsor`, set by every path right before it emits): named now, else
+   * as named before the cart was cleared; `{}` when nothing names it.
+   */
+  private sponsorOfOrder(sponsorId: number, checkoutId: string | undefined): { sponsor?: CheckoutSponsor } {
+    try {
+      const o = this.orderSponsor
+      const sameOrder = !!o && (o.checkoutId ?? undefined) === (checkoutId || undefined)
+      const id = sameOrder ? o!.sponsorId : sponsorId > 0 ? sponsorId : undefined
+      const live = sponsorDetail(id, checkoutId)
+      if (live.sponsor) return live
+      if (sameOrder && o!.snapshot) return { sponsor: o!.snapshot }
+    } catch {
+      /* the event goes out without it */
+    }
+    return {}
+  }
+
+  /**
+   * Ask once per checkout for the bootstrap when it is not there yet and a
+   * sponsor has to be named (a redirect return renders before it), then
+   * render again — the name and the logo appear when it lands.
+   */
+  private watchSponsorBootstrap(): void {
+    if (this.sponsorBootstrapAsked || !this.open || Vio.bootstrapCache) return
+    if (!this.orderSponsor && !this.checkoutState?.sponsorId) return
+    this.sponsorBootstrapAsked = true
+    void whenBootstrapped().then(() => this.requestUpdate())
+  }
+
+  /**
+   * The checkout's sponsor in the header — «Du handler hos <logo|name>»
+   * («Du har handlet hos» on a provider's receipt). Not on our own
+   * confirmation, which says it in its body.
+   */
+  private renderTopbarSponsor() {
+    if (this.orderConfirmed) return nothing
+    const sponsor = this.checkoutSponsorIdentity()
+    const mark = renderSponsorMark(this, sponsor, { logo: 'topbar-sponsor-logo', name: 'topbar-sponsor-name' })
+    if (mark === nothing) return nothing
+    return html`<p class="topbar-sponsor" part="sponsor">
+      <span>${this.providerReceipt ? 'Du har handlet hos' : 'Du handler hos'}</span> ${mark}
+    </p>`
   }
 
   /**
@@ -2532,6 +2706,7 @@ export class VioCheckout extends LitElement {
     // from a redirect the state was re-opened without one (`Vio.checkout.open`
     // knows no checkout yet), so the return URL's id is passed in explicitly.
     const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
+    this.setOrderSponsor(sponsorId, checkoutId)
     void this.emitPaymentSuccess(
       { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
       checkoutId,
@@ -2562,12 +2737,22 @@ export class VioCheckout extends LitElement {
     details.push(['Betalingsmåte', o?.paidWith || this.methodLabel(this.confirmedMethod)])
     if (o?.providerRef) details.push([o.providerRef.label, o.providerRef.value])
     if (email) details.push(['Kvittering til', email])
+    // Who the order is with: the checkout's sponsor (see checkoutSponsorIdentity).
+    const sponsor = this.checkoutSponsorIdentity()
     return html`
       <section class="confirmation">
+        ${usableLogo(sponsor)
+          ? html`<div class="confirm-brand" part="sponsor">
+              ${renderSponsorMark(this, sponsor, { logo: 'confirm-brand-logo', name: 'confirm-brand-name' })}
+            </div>`
+          : ''}
         <header class="confirm-head">
           <div class="confirm-check" aria-hidden="true">✓</div>
           <div>
             <h3 class="confirm-title">Takk for bestillingen!</h3>
+            ${sponsor?.name
+              ? html`<p class="confirm-sponsor">Du har handlet hos <strong>${sponsor.name}</strong>.</p>`
+              : ''}
             <p class="confirm-text">
               Betalingen er bekreftet.${email
                 ? html` Du får en ordrebekreftelse på e-post.`

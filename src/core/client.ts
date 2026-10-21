@@ -49,6 +49,15 @@ import {
   type SlotInput,
 } from './slots.js'
 import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
+import {
+  findSponsorIn,
+  rememberedCheckoutSponsor,
+  rememberedSponsor,
+  sponsorIdentityFrom,
+  toSponsorId,
+  type RememberedCheckoutSponsor,
+  type SponsorIdentity,
+} from './sponsor-identity.js'
 import type { CartLineItem } from './cart/types.js'
 import type {
   Attribution,
@@ -195,6 +204,7 @@ class VioFacade {
     if (!this.checkoutManager) {
       this.checkoutManager = new CheckoutManager(this.cart, {
         orderAttribution: (sponsorId) => this.orderAttribution(sponsorId),
+        sponsorIdentity: (sponsorId, opts) => this.sponsorIdentity(sponsorId, opts),
       })
     }
     return this.checkoutManager
@@ -268,6 +278,46 @@ class VioFacade {
 
   get bootstrapCache(): BootstrapResponse | null {
     return this.cachedBootstrap
+  }
+
+  /**
+   * Who a sponsor is to a shopper — `{ id, name, logoUrl, avatarUrl }` — by
+   * the ONE rule every element uses (`sponsorIdentityFrom`): the live
+   * bootstrap's sponsor blocks (the config's primary and secondaries, then
+   * every `campaigns[]` primary and secondaries, first match); when the
+   * bootstrap does not know the id (not loaded yet, a redirect return), what
+   * this tab remembered of the checkout (`opts.checkoutId`, else the latest
+   * checkout of that sponsor), then the cart's `sponsorName`. With only
+   * `opts.checkoutId`, the sponsor is the one remembered for that checkout.
+   * In a checkout pass the CHECKOUT's sponsor — never the page's
+   * attribution. URLs as given; an empty logo is `null`. `null` when nothing
+   * names it. Pure over local state, never throws.
+   */
+  sponsorIdentity(
+    sponsorId?: number | string | null,
+    opts: { checkoutId?: string | null } = {},
+  ): SponsorIdentity | null {
+    try {
+      // The memory is read only when needed: the bootstrap usually answers.
+      let memo: RememberedCheckoutSponsor | null | undefined
+      const memoOfCheckout = () => (memo === undefined ? (memo = rememberedCheckoutSponsor(opts?.checkoutId ?? undefined)) : memo)
+      const id = toSponsorId(sponsorId) ?? memoOfCheckout()?.sponsorId
+      if (id === undefined) return null
+      const fromBootstrap = sponsorIdentityFrom(this.cachedBootstrap, id)
+      if (fromBootstrap) return fromBootstrap
+      const ofCheckout = memoOfCheckout()
+      const remembered =
+        (ofCheckout && ofCheckout.sponsorId === id && (ofCheckout.name || ofCheckout.logoUrl) ? ofCheckout : null) ??
+        rememberedSponsor(id)
+      if (remembered) {
+        return { id, name: remembered.name, logoUrl: remembered.logoUrl, avatarUrl: null }
+      }
+      const cartName = this.cart.getCart(id)?.sponsorName
+      const name = typeof cartName === 'string' ? cartName.trim() : ''
+      return name ? { id, name, logoUrl: null, avatarUrl: null } : null
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -821,23 +871,8 @@ class VioFacade {
   }
 
   private findSponsor(sponsorId: number): Sponsor | undefined {
-    const boot = this.cachedBootstrap
-    if (!boot) return undefined
-    const id = Number(sponsorId)
-    if (Number(boot.primarySponsor?.id) === id) return boot.primarySponsor
-    const secondary = boot.secondarySponsors?.find((s) => Number(s.id) === id)
-    if (secondary) return secondary
     // A sponsor may live only in a non-default campaign (the one a slot shows).
-    const campaigns = Array.isArray(boot.campaigns) ? boot.campaigns : []
-    for (const c of campaigns) {
-      if (!c || typeof c !== 'object') continue
-      if (Number(c.primarySponsor?.id) === id) return c.primarySponsor ?? undefined
-      const s = Array.isArray(c.secondarySponsors)
-        ? c.secondarySponsors.find((x) => Number(x?.id) === id)
-        : undefined
-      if (s) return s
-    }
-    return undefined
+    return findSponsorIn(this.cachedBootstrap, sponsorId)
   }
 }
 

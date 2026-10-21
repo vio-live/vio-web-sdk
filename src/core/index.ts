@@ -63,6 +63,13 @@ export {
   type CheckoutAttributionInput,
   type EntryContextWire,
 } from './checkout/attribution.js'
+// Who sells: the sponsor's (brand's) name and logo — one rule for the elements, the checkout and the confirmation.
+export {
+  sponsorIdentityFrom,
+  CHECKOUT_SPONSOR_STORAGE_KEY,
+  type SponsorIdentity,
+  type CheckoutSponsor,
+} from './sponsor-identity.js'
 // What the commerce gateway may not know yet (a field the SDK ships ahead of).
 export {
   withGatewayFeature,
@@ -157,8 +164,9 @@ export type {
   CheckoutManagerDeps,
   PaymentSelectDetail,
   PaymentCompleteDetail,
+  OrderReference,
 } from './checkout/checkout-manager.js'
-export type { CheckoutState, CheckoutAddress, PaymentMethod } from './checkout/types.js'
+export type { CheckoutState, CheckoutAddress, PaymentMethod, CheckoutOpenDetail } from './checkout/types.js'
 
 // Payment adapters (low-level, exposed for advanced consumers)
 export {

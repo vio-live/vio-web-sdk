@@ -39,7 +39,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "playground": "vite --config vite.playground.config.ts",
+    "playground:build": "vite build --config vite.playground.config.ts",
+    "playground:deploy": "npm run playground:build && VERCEL_ORG_ID=team_j46r3Gt0kspTrVJUcwWg4Av8 VERCEL_PROJECT_ID=prj_TwmrJixxpqBqrtJoGLGzFlqDn1Xx vercel deploy dist-playground --prod",
+    "playground:preview": "npm run playground:build && VERCEL_ORG_ID=team_j46r3Gt0kspTrVJUcwWg4Av8 VERCEL_PROJECT_ID=prj_TwmrJixxpqBqrtJoGLGzFlqDn1Xx vercel deploy dist-playground"
   },
   "dependencies": {
     "graphql-request": "^7.1.0",

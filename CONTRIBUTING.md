@@ -69,6 +69,24 @@ it or whether it matches what's in git. Before deploying:
    overwritten each other's work in the past.
 
 
+## Playground — see a visual change on a deployed page, before any release
+
+`playground/` is a host page in miniature, built from `src/` (not npm): an editorial
+article with a carousel and product cards, the detail / cart / checkout overlays,
+a **theme drawer** that drives `applyVioTheme` with the same presets as Vev's Config
+block (and copies the result as JSON), and width presets (375 / 768 / 1280 / full).
+
+```bash
+npm run playground          # local, http://127.0.0.1:5174, HMR on src/
+npm run playground:preview  # Vercel preview (team tipio-2, project vio-demo; behind Vercel login)
+npm run playground:deploy   # production → https://vio-demo.vercel.app
+```
+
+Paste a **surface key** (QA by default) in the toolbar: it stays in that browser's
+localStorage, never in the bundle. The toolbar shows the SDK version and the commit
+it was built from (`+local` when `src/` or `playground/` had uncommitted changes).
+Use Node ≤ 24 (see *Commands*).
+
 ## Publishing to npm
 
 `@vio-live/web-sdk` is a SEPARATE distribution channel from the Vev package

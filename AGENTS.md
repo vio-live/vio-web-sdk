@@ -79,3 +79,8 @@ integration code).
    deploy to the shared package, check the deploy-version timeline for
    recent activity with no matching git commit — if you find any, stop and
    ask before overwriting it.
+5. **Every PR that changes behaviour adds its line to `CHANGELOG.md` → `Unreleased`**
+   (Added / Changed / Fixed, and an **⚠️ Upgrade notes** bullet when a host has to do,
+   check or watch anything). A release moves `Unreleased` under its version. Hosts
+   (Vev, Replit) read it before bumping; a version without an entry is a version they
+   upgrade blind. `CONTRIBUTING.md` → "Changelog".

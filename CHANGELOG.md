@@ -40,7 +40,9 @@ and *when*, and links there.
   between photos of different shapes; thumbnails are **one row** (swipe, arrows with a mouse,
   the selected one kept in view) instead of wrapping; sizes are **compact** (36px); **Vipps
   comes first**, above quantity and «Legg i handlekurv»; the **description folds** («Beskrivelse»
-  opens on a tap); under the buy buttons, **«Du handler direkte hos {brand}.»** On desktop the
+  opens on a tap); under the buy buttons, **«Du handler direkte hos {brand}.»**, with links to the
+  brand's «Kjøpsvilkår» and «Angrerett og retur» when its sponsor block carries `termsUrl` /
+  `refundPolicyUrl` (https only; `Vio.sponsorIdentity()` returns them too). On desktop the
   description comes before the buy zone, which stays pinned at the bottom of the panel; phones
   keep buy zone, then description.
 - The confirmation's brand logo is 40px tall (was max 32px).

@@ -79,6 +79,10 @@ export interface Sponsor {
   logoUrl?: string | null
   primaryColor?: string | null
   secondaryColor?: string | null
+  /** The brand's purchase terms (its own page, e.g. its shop's terms of service). */
+  termsUrl?: string | null
+  /** The brand's returns / refund policy page. */
+  refundPolicyUrl?: string | null
   commerce: SponsorCommerceBlock
 }
 

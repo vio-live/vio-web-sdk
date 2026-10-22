@@ -641,7 +641,8 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
 - `<vio-product-detail>`: `topbar`, `sponsor`, `close`, `gallery`, `image`, `thumbs`, `thumb`
   (+ `thumb-active`), `thumbs-arrow`, `info`, `brand`, `title`, `price`, `stock`,
   `option-group`, `option-label`, `options`, `option` (+ `option-selected`), `buy`,
-  `buy-vipps`, `quantity-row`, `add-to-cart`, `seller-note`, `description`.
+  `buy-vipps`, `quantity-row`, `add-to-cart`, `seller-note`, `seller-terms`, `seller-refund`,
+  `description`.
 - `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`.
 
 ```css
@@ -652,7 +653,9 @@ vio-product-detail::part(option-selected) { background: #2b2b2b; }
 **The detail's order:** the selling brand top left; the main image; the thumbnails;
 name, price, stock, sizes; then, **on phones**, the buy zone — **Vipps first** (when the
 channel has it), quantity + «Legg i handlekurv», then the other ways to pay, and under them
-«Du handler direkte hos {brand}.» (the product's brand, never the article's) — and the
+«Du handler direkte hos {brand}.» (the product's brand, never the article's) with links to
+the brand's «Kjøpsvilkår» and «Angrerett og retur» when it gave them (the sponsor block's
+`termsUrl` / `refundPolicyUrl`, https only, opened in a new tab) — and the
 description; **on desktop**, the description first and the buy zone pinned at the bottom
 of the panel. The description folds: «Beskrivelse» opens on a tap.
 

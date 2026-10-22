@@ -594,6 +594,9 @@ export class VioProductDetail extends LitElement {
       text-align: var(--vio-detail-seller-note-align, center);
     }
     .seller-note strong { font-weight: 600; color: var(--vio-color-text, #0a0a0a); }
+    .seller-links { display: block; margin-top: 2px; }
+    .seller-links a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .seller-links a + a::before { content: '·'; display: inline-block; margin: 0 6px; text-decoration: none; }
 
     /* Qty + CTA row */
     .qty-cta-row {
@@ -1608,9 +1611,18 @@ export class VioProductDetail extends LitElement {
    * name is known.
    */
   private renderSellerNote() {
-    const name = resolveSponsorIdentity(this.sponsorId)?.name || this.headerName()
+    const identity = resolveSponsorIdentity(this.sponsorId)
+    const name = identity?.name || this.headerName()
     if (!name) return nothing
-    return html`<p class="seller-note" part="seller-note">Du handler direkte hos <strong>${name}</strong>.</p>`
+    // The brand's own pages, when it gave them (Settings → Brand): its terms
+    // and its returns policy, opened in a new tab.
+    const links = [
+      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer" part="seller-terms">Kjøpsvilkår</a>` : null,
+      identity?.refundPolicyUrl ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer" part="seller-refund">Angrerett og retur</a>` : null,
+    ].filter(Boolean)
+    return html`<p class="seller-note" part="seller-note">
+      Du handler direkte hos <strong>${name}</strong>.${links.length ? html`<span class="seller-links">${links}</span>` : nothing}
+    </p>`
   }
 
   /** Square-ish logo (4:5 to 5:4) → the top bar shows the name beside it. */

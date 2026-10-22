@@ -230,3 +230,39 @@ describe('under the buy buttons: who the shopper buys from', () => {
     expect(note(el)).toBe('Du handler direkte hos Seller AS.')
   })
 })
+
+describe("the brand's own terms and returns pages under the seller note", () => {
+  const links = (el: HTMLElement) =>
+    [...root(el).querySelectorAll<HTMLAnchorElement>('.seller-note a')].map((a) => [a.textContent?.trim(), a.getAttribute('href'), a.target, a.rel])
+
+  it('links «Kjøpsvilkår» and «Angrerett og retur» when the brand gave them, in a new tab', async () => {
+    facade().cachedBootstrap = {
+      ...BOOT,
+      primarySponsor: {
+        ...BOOT.primarySponsor!,
+        termsUrl: 'https://careless.no/policies/terms-of-service',
+        refundPolicyUrl: 'https://careless.no/policies/refund-policy',
+      } as any,
+    }
+    const el = await open(4)
+    expect(links(el)).toEqual([
+      ['Kjøpsvilkår', 'https://careless.no/policies/terms-of-service', '_blank', 'noopener noreferrer'],
+      ['Angrerett og retur', 'https://careless.no/policies/refund-policy', '_blank', 'noopener noreferrer'],
+    ])
+  })
+
+  it('only what it has: no links at all when it gave none', async () => {
+    const el = await open(4)
+    expect(links(el)).toEqual([])
+    expect(root(el).querySelector('.seller-note')?.textContent).toContain('Du handler direkte hos')
+  })
+
+  it('never a link that is not https', async () => {
+    facade().cachedBootstrap = {
+      ...BOOT,
+      primarySponsor: { ...BOOT.primarySponsor!, termsUrl: 'javascript:alert(1)', refundPolicyUrl: 'http://careless.no/refund' } as any,
+    }
+    const el = await open(4)
+    expect(links(el)).toEqual([])
+  })
+})

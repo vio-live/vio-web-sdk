@@ -54,6 +54,7 @@ import {
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
 import {
@@ -267,6 +268,15 @@ export class VioCheckout extends LitElement {
   private readonly dialogFocus = new DialogFocus({
     host: this,
     container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    close: () => this.close(),
+    canClose: () => !this.paymentInFlight,
+  })
+  /** Phones: the page behind is locked, and the sheet closes by pulling the bar or the top bar down — not mid-payment. */
+  private readonly bottomSheet = new BottomSheet({
+    host: this,
+    sheet: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
+    dragZones: '.handle, .topbar',
     close: () => this.close(),
     canClose: () => !this.paymentInFlight,
   })
@@ -528,7 +538,10 @@ export class VioCheckout extends LitElement {
         height: 92vh;
         border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        overscroll-behavior: contain;
       }
+      /* Pulled down to close (bottom-sheet.ts): the browser must not take the gesture for a scroll. */
+      .handle, .topbar { touch-action: none; }
       .handle {
         display: flex;
         justify-content: center;
@@ -1610,11 +1623,15 @@ export class VioCheckout extends LitElement {
     this.unmountAdyen()
     // A payment event still waiting for its buyer reference goes out now, without it.
     for (const settle of [...this.pendingSuccessEmits]) settle()
+    this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has('open')) this.dialogFocus.update(this.open)
+    if (changed.has('open')) {
+      this.dialogFocus.update(this.open)
+      this.bottomSheet.update(this.open)
+    }
     // Opening the overlay: make sure the real shippings are loaded. Gated on
     // items.length — fetching shippings for an empty cart is wasted work and
     // can race the cart's own in-flight mutations.

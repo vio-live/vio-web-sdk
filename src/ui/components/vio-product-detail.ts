@@ -25,6 +25,7 @@ import {
 } from '../../core/types.js'
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { BottomSheet } from '../bottom-sheet.js'
 import { SlotRegistration } from '../slot-registration.js'
 import { toCampaignId } from '../../core/slots.js'
 import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
@@ -180,6 +181,14 @@ export class VioProductDetail extends LitElement {
     container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
     close: () => this.close(),
   })
+  /** Phones: the page behind is locked, and the sheet closes by pulling the bar or the top bar down. */
+  private readonly bottomSheet = new BottomSheet({
+    host: this,
+    sheet: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
+    dragZones: '.handle, .topbar',
+    close: () => this.close(),
+  })
 
   private boundProductClick = (e: Event): void => {
     if (!this.autoOpen) return
@@ -264,7 +273,10 @@ export class VioProductDetail extends LitElement {
         height: 92vh;
         border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        overscroll-behavior: contain;
       }
+      /* Pulled down to close (bottom-sheet.ts): the browser must not take the gesture for a scroll. */
+      .handle, .topbar { touch-action: none; }
       .handle {
         display: flex;
         justify-content: center;
@@ -841,11 +853,15 @@ export class VioProductDetail extends LitElement {
   override disconnectedCallback(): void {
     document.removeEventListener('vio:product-click', this.boundProductClick)
     this.slotRegistration.clear()
+    this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has('open')) this.dialogFocus.update(this.open)
+    if (changed.has('open')) {
+      this.dialogFocus.update(this.open)
+      this.bottomSheet.update(this.open)
+    }
     if (changed.has('product') || changed.has('open')) this.measureThumbs()
     if (changed.has('activeImageIndex')) this.revealActiveThumb()
     this.measureLogo()

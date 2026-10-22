@@ -21,6 +21,7 @@ import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { BottomSheet } from '../bottom-sheet.js'
 import { resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
@@ -71,6 +72,14 @@ export class VioCart extends LitElement {
   private readonly dialogFocus = new DialogFocus({
     host: this,
     container: () => this.renderRoot.querySelector<HTMLElement>('.drawer'),
+    close: () => this.close(),
+  })
+  /** Phones: the page behind is locked, and the sheet closes by pulling the bar or the header down. */
+  private readonly bottomSheet = new BottomSheet({
+    host: this,
+    sheet: () => this.renderRoot.querySelector<HTMLElement>('.drawer'),
+    backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
+    dragZones: '.handle, .header',
     close: () => this.close(),
   })
 
@@ -136,8 +145,11 @@ export class VioCart extends LitElement {
         border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         transform: translateY(100%);
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        overscroll-behavior: contain;
       }
       :host([open]) .drawer { transform: translateY(0); }
+      /* Pulled down to close (bottom-sheet.ts): the browser must not take the gesture for a scroll. */
+      .handle, .header { touch-action: none; }
       .handle {
         display: flex;
         justify-content: center;
@@ -459,6 +471,7 @@ export class VioCart extends LitElement {
 
   override disconnectedCallback(): void {
     Vio.cart.removeEventListener('change', this.boundOnCartChange)
+    this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
@@ -521,7 +534,10 @@ export class VioCart extends LitElement {
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has('open')) this.dialogFocus.update(this.open)
+    if (changed.has('open')) {
+      this.dialogFocus.update(this.open)
+      this.bottomSheet.update(this.open)
+    }
     // Fresh open → drop any previous confirmation, force an Apple Pay re-prep.
     if (changed.has('open') && this.open) {
       this.confirmedOrder = null

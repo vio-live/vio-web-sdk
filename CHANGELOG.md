@@ -52,6 +52,14 @@ Nothing yet.
 - The confirmation's brand logo is 40px tall (was max 32px).
 
 ### Fixed
+- **Phones: the detail, the cart and the checkout close by pulling them down**, from the grab bar
+  or the top bar (logo / title and ✕): the sheet follows the finger, and closes when let go far
+  enough or with a flick, or springs back. Before, the grab bar only answered a tap — pulling it
+  scrolled the sheet. The checkout never closes this way mid-payment.
+- **Phones: the page behind stays put while a sheet is open.** A swipe past the end of the
+  detail, cart or checkout used to scroll the article underneath. The page is locked while any
+  sheet is open and comes back to the same place when the last one closes. Desktop drawers are
+  unchanged.
 - **The `purchase` event's `commerce.order_id` is Vio's order number** (`4415`), not the
   checkout's uuid. Before, every purchase paid through a redirect (Vipps, Klarna, hosted
   Stripe) or whose order a webhook creates carried the uuid, so Commerce could never net
@@ -74,6 +82,10 @@ Nothing yet.
   for the number the same way (`Vio.checkout.getOrderReference(checkoutId)`), or your
   purchases keep the uuid.
 - **Dashboards / queries** that joined purchases by checkout uuid: use `checkout_id`.
+- **Hosts that lock the page themselves when a Vio sheet opens** (phones): the SDK does it now —
+  `position: fixed` on `<body>` at the current offset, its own inline styles restored and the
+  scroll put back on close. Drop yours, or make sure it does not undo the body's styles while a
+  sheet is still open.
 - One `purchase` per checkout per page load: a second `vio:payment-success` for the same
   checkout adds nothing.
 - **«Kjøpsvilkår · Angrerett og retur» need the backend**: the links show only when the

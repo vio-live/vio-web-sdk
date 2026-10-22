@@ -17,6 +17,7 @@ const product = {
   id: 9,
   brand: 'Careless',
   title: 'Vilde genser - Brun',
+  description: '<p>Myk genser i ull.</p>',
   quantity: 5,
   price: { amount: 599, currency_code: 'NOK' },
   images,
@@ -60,10 +61,21 @@ describe('the buy zone', () => {
     expect(buy.getAttribute('part')).toBe('buy')
   })
 
-  it('is static by default and sticky when the host says so', async () => {
+  it('is static on phones and sticky on desktop by default, the host can say otherwise', async () => {
+    await open()
+    const css = (VioProductDetail as any).styles.cssText as string
+    expect(css).toMatch(/position: var\(--vio-detail-buy-position, static\)/)
+    expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*position: var\(--vio-detail-buy-position, sticky\)/)
+  })
+
+  it('on desktop the description comes before the buy zone; on phones after it', async () => {
     const el = await open()
-    const buyCss = (VioProductDetail as any).styles.cssText as string
-    expect(buyCss).toMatch(/position: var\(--vio-detail-buy-position, static\)/)
+    const css = (VioProductDetail as any).styles.cssText as string
+    expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*\.description-block \{ order: 1; \}[\s\S]*order: 2;/)
+    // Source order (phones): buy, then the description.
+    const info = root(el).querySelector('.info')!
+    const kids = [...info.children].map((c) => c.className)
+    expect(kids.indexOf('buy')).toBeLessThan(kids.findIndex((k) => k.includes('description-block')))
   })
 })
 
@@ -138,7 +150,7 @@ describe('the layout knobs are public', () => {
     const detail = (VioProductDetail as any).styles.cssText as string
     for (const v of [
       '--vio-detail-logo-height', '--vio-detail-image-fit', '--vio-detail-image-aspect', '--vio-detail-image-max-height',
-      '--vio-detail-image-zoom', '--vio-detail-image-bleed', '--vio-detail-thumb-size', '--vio-detail-thumb-gap',
+      '--vio-detail-image-zoom', '--vio-detail-image-inset', '--vio-detail-logo-zoom', '--vio-detail-thumb-size', '--vio-detail-thumb-gap',
       '--vio-detail-option-height', '--vio-detail-option-gap', '--vio-detail-option-wrap', '--vio-detail-button-height',
       '--vio-detail-buy-position', '--vio-detail-width', '--vio-detail-title-size', '--vio-detail-price-size',
     ]) {
@@ -174,5 +186,26 @@ describe('Vipps from the detail goes through the hand-over', () => {
     for (let i = 0; i < 4; i++) await settle(el)
     for (const n of ['vio:payment-redirect-error', 'vio:checkout-open']) document.removeEventListener(n, on)
     expect(seen).toEqual(['vio:payment-redirect-error', 'vio:checkout-open'])
+  })
+})
+
+describe('the description', () => {
+  it('folds: «Beskrivelse» closed until a tap opens it', async () => {
+    const el = await open()
+    const block = root(el).querySelector<HTMLDetailsElement>('details.description-block')!
+    expect(block.open).toBe(false)
+    expect(block.querySelector('summary')?.textContent?.trim()).toBe('Beskrivelse')
+    expect(block.querySelector('.description')?.textContent).toContain('Myk genser i ull.')
+    expect(block.getAttribute('part')).toBe('description')
+  })
+})
+
+describe('the main image', () => {
+  it('one 4:5 box it fills, the same for every image (no jump), inside the padding by default', async () => {
+    await open()
+    const css = (VioProductDetail as any).styles.cssText as string
+    expect(css).toContain('aspect-ratio: var(--vio-detail-image-aspect, 4 / 5)')
+    expect(css).toContain('object-fit: var(--vio-detail-image-fit, cover)')
+    expect(css).toMatch(/margin-inline: calc\(\s*var\(--vio-detail-image-inset, var\(--vio-detail-padding-x/)
   })
 })

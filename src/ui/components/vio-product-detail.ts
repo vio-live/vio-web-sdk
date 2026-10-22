@@ -158,6 +158,8 @@ export class VioProductDetail extends LitElement {
   @state() private thumbsOverflow = false
   @state() private thumbsAtStart = true
   @state() private thumbsAtEnd = false
+  /** The top bar's logo file is square-ish: a mark, so its name goes beside it. */
+  @state() private logoSquare = false
   @state() private adding = false
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
@@ -319,16 +321,29 @@ export class VioProductDetail extends LitElement {
       z-index: 1;
     }
     /* Who sells it, top left beside the close: the sponsor's logo, else its name. */
-    .topbar-sponsor { flex: 1 1 auto; display: flex; align-items: center; min-width: 0; }
+    .topbar-sponsor { flex: 1 1 auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+    /* The logo box clips, so --vio-detail-logo-zoom can crop the white a
+       square file carries around its mark. */
+    .topbar-logo-box {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      height: var(--vio-detail-logo-height, 44px);
+      max-width: var(--vio-detail-logo-max-width, 220px);
+      overflow: hidden;
+    }
     .topbar-logo {
       display: block;
-      flex: 0 0 auto;
       width: auto;
-      height: var(--vio-detail-logo-height, 40px);
+      height: 100%;
       max-width: var(--vio-detail-logo-max-width, 220px);
       object-fit: contain;
       object-position: left center;
+      transform: scale(var(--vio-detail-logo-zoom, 1));
+      transform-origin: center;
     }
+    /* A square (or near) logo is a mark, not a wordmark: say whose it is. */
+    .topbar-sponsor:not(.is-square) .topbar-mark-name { display: none; }
     .topbar-name {
       font-size: var(--vio-detail-logo-name-size, 13px);
       text-transform: uppercase;
@@ -370,15 +385,20 @@ export class VioProductDetail extends LitElement {
       }
     }
 
-    /* Gallery. The main image runs edge to edge of the panel by default
-       (--vio-detail-image-bleed: 1; 0 keeps it inside the padding), with no
-       padding of its own. Fit, aspect, a height cap and a zoom (to crop a
-       white margin baked into the file) are the host's to set. */
+    /* Gallery. One fixed proportion for every image (4:5 by default) that the
+       image fills (cover): no white bars, and the panel never jumps between
+       photos of different shapes (Angelo, 2026-10-22). Its side margin is
+       --vio-detail-image-inset (the panel's padding by default; 0 = edge to
+       edge). Fit, proportion, a height cap and a zoom (to crop a white margin
+       baked into the file) are the host's to set. */
     .gallery { display: flex; flex-direction: column; gap: var(--vio-detail-gallery-gap, 12px); min-width: 0; }
     .gallery-main {
       position: relative;
-      margin-inline: calc(-1 * var(--vio-detail-image-bleed, 1) * var(--vio-detail-padding-x, var(--vio-space-lg, 24px)));
-      aspect-ratio: var(--vio-detail-image-aspect, auto);
+      margin-inline: calc(
+        var(--vio-detail-image-inset, var(--vio-detail-padding-x, var(--vio-space-lg, 24px))) -
+          var(--vio-detail-padding-x, var(--vio-space-lg, 24px))
+      );
+      aspect-ratio: var(--vio-detail-image-aspect, 4 / 5);
       max-height: var(--vio-detail-image-max-height, 85vh);
       background: var(--vio-detail-image-bg, var(--vio-color-surface-muted, #f2f2f2));
       border-radius: var(--vio-detail-image-radius, 0);
@@ -392,7 +412,7 @@ export class VioProductDetail extends LitElement {
       width: 100%;
       height: 100%;
       max-height: var(--vio-detail-image-max-height, 85vh);
-      object-fit: var(--vio-detail-image-fit, contain);
+      object-fit: var(--vio-detail-image-fit, cover);
       object-position: var(--vio-detail-image-position, center);
       transform: scale(var(--vio-detail-image-zoom, 1));
     }
@@ -710,19 +730,49 @@ export class VioProductDetail extends LitElement {
     .buy-applepay:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* Description */
-    .description {
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--vio-color-text-secondary, #444);
-      margin-top: 8px;
-    }
-    .description-label {
+    /* The description folds: a tap opens it, so it does not take the page. */
+    .description-block { border-top: 1px solid var(--vio-color-border, #e5e5e5); }
+    .description-block > summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
       color: var(--vio-color-text-secondary, #666);
-      font-weight: 500;
-      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .description-block > summary::-webkit-details-marker { display: none; }
+    .description-block > summary::after {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-2px);
+      transition: transform 0.15s ease;
+    }
+    .description-block[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
+    .description {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--vio-color-text-secondary, #444);
+      padding-bottom: 14px;
+      white-space: pre-line;
+    }
+    /* Desktop: the description above, the buy zone at the bottom of the panel
+       (sticky). Phones keep the order as it is: buy, then the description. */
+    @media (min-width: 601px) {
+      .description-block { order: 1; }
+      .buy {
+        order: 2;
+        position: var(--vio-detail-buy-position, sticky);
+        padding: var(--vio-detail-buy-padding, 12px 0 16px);
+        box-shadow: var(--vio-detail-buy-shadow, 0 -1px 0 var(--vio-color-border, #e5e5e5));
+      }
     }
 
     /* Skeleton loader: shimmer placeholders mirroring the product layout
@@ -786,6 +836,7 @@ export class VioProductDetail extends LitElement {
     if (changed.has('open')) this.dialogFocus.update(this.open)
     if (changed.has('product') || changed.has('open')) this.measureThumbs()
     if (changed.has('activeImageIndex')) this.revealActiveThumb()
+    this.measureLogo()
     // The React wrappers set properties after mount.
     if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
       this.slotRegistration.sync(this.slotAttributes())
@@ -1527,9 +1578,35 @@ export class VioProductDetail extends LitElement {
   private renderTopbarSponsor() {
     const identity = resolveSponsorIdentity(this.sponsorId)
     const mark = identity ? renderSponsorMark(this, identity, { logo: 'topbar-logo', name: 'topbar-name' }) : nothing
-    if (mark !== nothing) return mark
+    if (mark !== nothing) {
+      // A logo: in a clipping box (for the zoom), and — when the file turns
+      // out square, a mark rather than a wordmark — with the name beside it,
+      // so the shopper can tell whose it is.
+      if (identity && usableLogo(identity)) {
+        return html`<span class="topbar-logo-box">${mark}</span
+          ><span class="topbar-name topbar-mark-name">${identity.name}</span>`
+      }
+      return mark
+    }
     const name = this.headerName()
     return name ? html`<span class="topbar-name">${name}</span>` : nothing
+  }
+
+  /** Square-ish logo (4:5 to 5:4) → the top bar shows the name beside it. */
+  private measureLogo(): void {
+    const img = this.renderRoot.querySelector<HTMLImageElement>('.topbar-logo')
+    if (!img) {
+      if (this.logoSquare) this.logoSquare = false
+      return
+    }
+    const decide = () => {
+      if (!img.naturalWidth || !img.naturalHeight) return
+      const ratio = img.naturalWidth / img.naturalHeight
+      const square = ratio >= 0.8 && ratio <= 1.25
+      if (square !== this.logoSquare) this.logoSquare = square
+    }
+    if (img.complete) decide()
+    else img.addEventListener('load', decide, { once: true })
   }
 
   override render() {
@@ -1538,7 +1615,7 @@ export class VioProductDetail extends LitElement {
       <div class="modal" role="dialog" aria-modal="true" aria-label="Produkt" tabindex="-1">
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar" part="topbar">
-          <div class="topbar-sponsor" part="sponsor">${this.renderTopbarSponsor()}</div>
+          <div class="topbar-sponsor ${this.logoSquare ? 'is-square' : ''}" part="sponsor">${this.renderTopbarSponsor()}</div>
           <button class="close" part="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
@@ -1770,10 +1847,10 @@ export class VioProductDetail extends LitElement {
 
           ${p.description
             ? html`
-                <div>
-                  <div class="description-label">Beskrivelse</div>
-                  <div class="description" part="description">${this.stripHtml(p.description)}</div>
-                </div>
+                <details class="description-block" part="description">
+                  <summary>Beskrivelse</summary>
+                  <div class="description">${this.stripHtml(p.description)}</div>
+                </details>
               `
             : ''}
         </div>

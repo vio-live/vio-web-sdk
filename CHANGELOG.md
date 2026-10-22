@@ -17,8 +17,8 @@ and *when*, and links there.
 ## Unreleased
 
 ### Added
-- **The detail's layout is public**: 23 new `applyVioTheme` keys, each a `--vio-*` property
-  (logo height, image fit / aspect / max height / zoom / bleed, thumbnail size and gap, option
+- **The detail's layout is public**: 31 new `applyVioTheme` keys, each a `--vio-*` property
+  (logo height and zoom, image fit / aspect / max height / zoom / side margin, thumbnail size and gap, option
   height and gap, button height and radius, a sticky buy zone, cart / checkout widths,
   confirmation logo and title, the redirect overlay), plus `::part` names on every piece of
   the detail and the confirmation. The same keys serve our demo, Replit and Vev's Config block.
@@ -35,10 +35,13 @@ and *when*, and links there.
 
 ### Changed
 - **Product detail** (asked by Mote & Livsstil): the selling brand's logo (its name without
-  one) sits **top left beside ✕**, no longer above the image; the main image runs **edge to
-  edge** with no padding of its own and its own proportions, capped at 85vh; thumbnails are
-  **one row** (swipe, arrows with a mouse, the selected one kept in view) instead of wrapping;
-  sizes are **compact** (36px); **Vipps comes first**, above quantity and «Legg i handlekurv».
+  one; a square logo with the name beside it) sits **top left beside ✕**, no longer above the
+  image; every main image shows in **one 4:5 box it fills** (`cover`) — no white bars, no jump
+  between photos of different shapes; thumbnails are **one row** (swipe, arrows with a mouse,
+  the selected one kept in view) instead of wrapping; sizes are **compact** (36px); **Vipps
+  comes first**, above quantity and «Legg i handlekurv»; the **description folds** («Beskrivelse»
+  opens on a tap). On desktop the description comes before the buy zone, which stays pinned at
+  the bottom of the panel; phones keep buy zone, then description.
 - The confirmation's brand logo is 40px tall (was max 32px).
 
 ### Fixed
@@ -51,8 +54,9 @@ and *when*, and links there.
 ### ⚠️ Upgrade notes
 - **The product detail looks different** after upgrading (see *Changed*). A host that styled
   `.sponsor-header` / `.topbar-brand` from outside: they are gone — use `::part(sponsor)`.
-  Hosts that want the old look back: `detailImageBleed: '0'`, `detailImageAspect: '1 / 1'`,
-  `detailOptionHeight: '42px'`.
+  Hosts that want the old look back: `detailImageAspect: '1 / 1'`, `detailImageFit: 'contain'`,
+  `detailOptionHeight: '42px'`, `detailBuyPosition: 'static'`. The `4 / 5` box crops photos of
+  other shapes: pick the proportion that fits the catalog, or `contain`.
 - A host with its own «loading Vipps» screen: call `preventDefault()` on
   `vio:payment-redirect-start`, or the SDK's overlay shows on top of yours.
 - **The `purchase` may leave up to 10 s after `vio:payment-success`**: the SDK asks the

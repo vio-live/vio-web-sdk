@@ -205,22 +205,24 @@ export interface VioThemeOverrides {
   detailWidth?: string
   /** Side padding of the detail (default the `lg` space, `24px`). */
   detailPaddingX?: string
-  /** Height of the selling brand's logo in the detail's top bar (default `40px`; width follows its proportions). */
+  /** Height of the selling brand's logo in the detail's top bar (default `44px`; width follows its proportions). A square logo gets the brand's name beside it. */
   detailLogoHeight?: string
+  /** Zoom on that logo inside its box (default `1`); e.g. `1.8` crops the white around a mark in a square file. */
+  detailLogoZoom?: string
   /** Product name size in the detail. */
   detailTitleSize?: string
   /** Price size in the detail (default `24px`). */
   detailPriceSize?: string
-  /** How the main image fits: `contain` (whole image, default) or `cover` (fills, crops). */
+  /** How the main image fits its box: `cover` (fills it, crops the overflow — default) or `contain` (whole image, bars where the shapes differ). */
   detailImageFit?: string
-  /** Main image box proportion: `auto` (the image's own, default), `1 / 1`, `4 / 5`… */
+  /** Main image box proportion, the same for every image so the panel never jumps: `4 / 5` (default), `1 / 1`, `3 / 4`, or `auto` (each image its own). */
   detailImageAspect?: string
   /** Cap on the main image's height (default `85vh`). */
   detailImageMaxHeight?: string
   /** Zoom on the main image (default `1`); e.g. `1.15` to crop a white margin baked into the file. */
   detailImageZoom?: string
-  /** `1` (default): the main image runs edge to edge of the panel; `0`: inside the padding. */
-  detailImageBleed?: string
+  /** Side margin of the main image (default: the panel's padding, aligned with the text); `0` = edge to edge. */
+  detailImageInset?: string
   /** Background behind the main image (default the muted surface). */
   detailImageBg?: string
   /** Thumbnail size (default `64px`). One row, scrolls sideways. */
@@ -243,7 +245,7 @@ export interface VioThemeOverrides {
   detailButtonHeight?: string
   /** Corners of «Legg i handlekurv» (default `0`). */
   detailButtonRadius?: string
-  /** `static` (default) or `sticky`: the buy zone (Vipps, quantity, add to cart) stays at the bottom of the panel while scrolling. */
+  /** `sticky` or `static`: whether the buy zone (Vipps, quantity, add to cart) stays at the bottom of the panel while scrolling. Default: `static` on phones, `sticky` on desktop (with the description above it). */
   detailBuyPosition?: string
   /** Shadow over a sticky buy zone, e.g. `0 -8px 16px rgba(0,0,0,.06)`. */
   detailBuyShadow?: string
@@ -287,13 +289,14 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   detailWidth: '--vio-detail-width',
   detailPaddingX: '--vio-detail-padding-x',
   detailLogoHeight: '--vio-detail-logo-height',
+  detailLogoZoom: '--vio-detail-logo-zoom',
   detailTitleSize: '--vio-detail-title-size',
   detailPriceSize: '--vio-detail-price-size',
   detailImageFit: '--vio-detail-image-fit',
   detailImageAspect: '--vio-detail-image-aspect',
   detailImageMaxHeight: '--vio-detail-image-max-height',
   detailImageZoom: '--vio-detail-image-zoom',
-  detailImageBleed: '--vio-detail-image-bleed',
+  detailImageInset: '--vio-detail-image-inset',
   detailImageBg: '--vio-detail-image-bg',
   detailThumbSize: '--vio-detail-thumb-size',
   detailThumbGap: '--vio-detail-thumb-gap',

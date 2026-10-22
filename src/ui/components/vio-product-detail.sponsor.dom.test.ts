@@ -94,7 +94,7 @@ async function open(sponsorId: number) {
 describe('the brand in the top bar of the product detail', () => {
   const topbar = (el: HTMLElement) => root(el).querySelector('.topbar-sponsor')!
   const logo = (el: HTMLElement) => topbar(el).querySelector<HTMLImageElement>('.topbar-logo')
-  const name = (el: HTMLElement) => topbar(el).querySelector('.topbar-name')?.textContent?.trim() ?? null
+  const name = (el: HTMLElement) => topbar(el).querySelector('.topbar-name:not(.topbar-mark-name)')?.textContent?.trim() ?? null
 
   it('shows the logo of the sponsor the product was fetched with, the name as alt, beside the close', async () => {
     const el = await open(4)
@@ -186,5 +186,32 @@ describe('the cart', () => {
     el.onCheckout()
     document.removeEventListener('vio:checkout-open', listener)
     expect(seen[0]).toMatchObject({ sponsorId: 7, sponsor: { id: 7, name: 'Sindig', logoUrl: 'https://cdn.vio.live/sindig.svg' } })
+  })
+})
+
+describe('a square logo is a mark: its name goes beside it', () => {
+  const sized = (el: HTMLElement, w: number, h: number) => {
+    const img = root(el).querySelector<HTMLImageElement>('.topbar-logo')!
+    Object.defineProperty(img, 'complete', { configurable: true, value: true })
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: w })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: h })
+  }
+  const shown = (el: HTMLElement) => root(el).querySelector('.topbar-sponsor')!.classList.contains('is-square')
+
+  it('300×300 (Careless): the name shows beside the logo', async () => {
+    const el = (await open(4)) as HTMLElement & Record<string, any>
+    sized(el, 300, 300)
+    el.requestUpdate()
+    for (let i = 0; i < 3; i++) await settle(el)
+    expect(shown(el)).toBe(true)
+    expect(root(el).querySelector('.topbar-mark-name')?.textContent?.trim()).toBe('Careless')
+  })
+
+  it('a wordmark (4:1): the logo alone', async () => {
+    const el = (await open(4)) as HTMLElement & Record<string, any>
+    sized(el, 400, 100)
+    el.requestUpdate()
+    for (let i = 0; i < 3; i++) await settle(el)
+    expect(shown(el)).toBe(false)
   })
 })

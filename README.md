@@ -609,20 +609,21 @@ or on the element (`vio-product-detail { --vio-detail-logo-height: 48px; }`).
 |---|---|---|---|
 | `detailWidth` | `--vio-detail-width` | `440px` | Detail panel width (desktop) |
 | `detailPaddingX` | `--vio-detail-padding-x` | `24px` | Side padding of the detail |
-| `detailLogoHeight` | `--vio-detail-logo-height` | `40px` | Selling brand's logo, top left beside ✕ (width keeps its proportions; the name when there is no logo) |
+| `detailLogoHeight` | `--vio-detail-logo-height` | `44px` | Selling brand's logo, top left beside ✕ (width keeps its proportions; the name when there is no logo; a square logo — a mark — gets the name beside it) |
+| `detailLogoZoom` | `--vio-detail-logo-zoom` | `1` | Zoom inside the logo's box: `1.8` crops the white around a mark in a square file |
 | `detailTitleSize` / `detailPriceSize` | `--vio-detail-title-size` / `--vio-detail-price-size` | `26px` / `24px` | Name and price |
-| `detailImageFit` | `--vio-detail-image-fit` | `contain` | `contain` = whole image, `cover` = fills and crops |
-| `detailImageAspect` | `--vio-detail-image-aspect` | `auto` | Box proportion: `auto` (the image's own), `1 / 1`, `4 / 5`… |
+| `detailImageFit` | `--vio-detail-image-fit` | `cover` | `cover` = fills the box, crops the overflow; `contain` = whole image, bars where shapes differ |
+| `detailImageAspect` | `--vio-detail-image-aspect` | `4 / 5` | One proportion for every image, so the panel never jumps: `1 / 1`, `3 / 4`… or `auto` (each image its own) |
 | `detailImageMaxHeight` | `--vio-detail-image-max-height` | `85vh` | Cap on the main image's height |
 | `detailImageZoom` | `--vio-detail-image-zoom` | `1` | Zoom; e.g. `1.15` crops a white margin baked into the file |
-| `detailImageBleed` | `--vio-detail-image-bleed` | `1` | `1` edge to edge of the panel, `0` inside the padding |
+| `detailImageInset` | `--vio-detail-image-inset` | the padding | Side margin of the image; `0` = edge to edge |
 | `detailImageBg` | `--vio-detail-image-bg` | muted surface | Behind the image |
 | `detailThumbSize` / `detailThumbGap` | `--vio-detail-thumb-size` / `--vio-detail-thumb-gap` | `64px` / `8px` | Thumbnails — always one row: swipe on touch, arrows with a mouse, the selected one kept in view |
 | `detailThumbRadius` / `detailThumbActiveColor` | `--vio-detail-thumb-radius` / `--vio-detail-thumb-active-color` | `0` / text color | Thumbnail corners, selected border |
 | `detailOptionHeight` / `detailOptionGap` | `--vio-detail-option-height` / `--vio-detail-option-gap` | `36px` / `6px` | Size / option buttons (height is also their min width) |
 | `detailOptionRadius` / `detailOptionWrap` | `--vio-detail-option-radius` / `--vio-detail-option-wrap` | `0` / `wrap` | `nowrap` = one line that scrolls sideways |
 | `detailButtonHeight` / `detailButtonRadius` | `--vio-detail-button-height` / `--vio-detail-button-radius` | `52px` / `0` | Quantity stepper and «Legg i handlekurv» |
-| `detailBuyPosition` / `detailBuyShadow` | `--vio-detail-buy-position` / `--vio-detail-buy-shadow` | `static` / none | `sticky`: the buy zone (Vipps, quantity, add to cart) stays at the bottom while scrolling |
+| `detailBuyPosition` / `detailBuyShadow` | `--vio-detail-buy-position` / `--vio-detail-buy-shadow` | phones `static`, desktop `sticky` | Whether the buy zone (Vipps, quantity, add to cart) stays at the bottom of the panel while scrolling |
 | `cartWidth` / `checkoutWidth` | `--vio-cart-width` / `--vio-checkout-width` | `440px` | Drawer widths (desktop) |
 | `confirmLogoHeight` / `confirmTitleSize` / `confirmCheckBg` | `--vio-confirm-logo-height` / `--vio-confirm-title-size` / `--vio-confirm-check-bg` | `40px` / `24px` / green | The confirmation |
 | `redirectBg` / `redirectSpinner` | `--vio-redirect-bg` / `--vio-redirect-spinner` | translucent white / Vipps orange | The «Åpner Vipps …» overlay |
@@ -648,8 +649,10 @@ vio-product-detail::part(option-selected) { background: #2b2b2b; }
 ```
 
 **The detail's order:** the selling brand top left; the main image; the thumbnails;
-name, price, stock, sizes; then the buy zone — **Vipps first** (when the channel has
-it), quantity + «Legg i handlekurv», then the other ways to pay; the description last.
+name, price, stock, sizes; then, **on phones**, the buy zone — **Vipps first** (when the
+channel has it), quantity + «Legg i handlekurv», then the other ways to pay — and the
+description; **on desktop**, the description first and the buy zone pinned at the bottom
+of the panel. The description folds: «Beskrivelse» opens on a tap.
 
 ### The hand-over to Vipps (0.28)
 

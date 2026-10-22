@@ -585,6 +585,15 @@ export class VioProductDetail extends LitElement {
       box-shadow: var(--vio-detail-buy-shadow, none);
     }
     .buy > * { margin-top: 0 !important; }
+    /* Under the buttons: who the shopper is buying from. */
+    .seller-note {
+      margin: 2px 0 0;
+      font-size: var(--vio-detail-seller-note-size, 12px);
+      line-height: 1.4;
+      color: var(--vio-color-text-secondary, #666);
+      text-align: var(--vio-detail-seller-note-align, center);
+    }
+    .seller-note strong { font-weight: 600; color: var(--vio-color-text, #0a0a0a); }
 
     /* Qty + CTA row */
     .qty-cta-row {
@@ -1592,6 +1601,18 @@ export class VioProductDetail extends LitElement {
     return name ? html`<span class="topbar-name">${name}</span>` : nothing
   }
 
+  /**
+   * Under the buy buttons: «Du handler direkte hos {brand}.» — the brand the
+   * product was fetched with (the sponsor; its Company name or the product's
+   * brand when no identity is known), never the article's. Nothing when no
+   * name is known.
+   */
+  private renderSellerNote() {
+    const name = resolveSponsorIdentity(this.sponsorId)?.name || this.headerName()
+    if (!name) return nothing
+    return html`<p class="seller-note" part="seller-note">Du handler direkte hos <strong>${name}</strong>.</p>`
+  }
+
   /** Square-ish logo (4:5 to 5:4) → the top bar shows the name beside it. */
   private measureLogo(): void {
     const img = this.renderRoot.querySelector<HTMLImageElement>('.topbar-logo')
@@ -1843,6 +1864,7 @@ export class VioProductDetail extends LitElement {
               `
             : ''}
 
+          ${this.renderSellerNote()}
           </div>
 
           ${p.description

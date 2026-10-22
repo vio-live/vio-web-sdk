@@ -215,3 +215,18 @@ describe('a square logo is a mark: its name goes beside it', () => {
     expect(shown(el)).toBe(false)
   })
 })
+
+describe('under the buy buttons: who the shopper buys from', () => {
+  const note = (el: HTMLElement) => root(el).querySelector('.buy .seller-note')?.textContent?.replace(/\s+/g, ' ').trim() ?? null
+
+  it("names the product's brand (the sponsor), last in the buy zone", async () => {
+    const el = await open(4)
+    expect(note(el)).toBe('Du handler direkte hos Careless.')
+    expect(root(el).querySelector('.buy')!.lastElementChild?.classList.contains('seller-note')).toBe(true)
+  })
+
+  it("no identity: the seller's Company name", async () => {
+    const el = await open(99)
+    expect(note(el)).toBe('Du handler direkte hos Seller AS.')
+  })
+})

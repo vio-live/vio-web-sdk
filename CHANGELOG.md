@@ -16,6 +16,10 @@ and *when*, and links there.
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.28.0 — 2026-10-22
+
 ### Added
 - **The detail's layout is public**: 31 new `applyVioTheme` keys, each a `--vio-*` property
   (logo height and zoom, image fit / aspect / max height / zoom / side margin, thumbnail size and gap, option
@@ -72,6 +76,10 @@ and *when*, and links there.
 - **Dashboards / queries** that joined purchases by checkout uuid: use `checkout_id`.
 - One `purchase` per checkout per page load: a second `vio:payment-success` for the same
   checkout adds nothing.
+- **«Kjøpsvilkår · Angrerett og retur» need the backend**: the links show only when the
+  sponsor block carries `termsUrl` / `refundPolicyUrl`, which the campaigns service sends
+  once the brand fills them in (Settings → Brand → Shopper policies). Until then the
+  sentence «Du handler direkte hos {brand}.» shows alone. Nothing to do on the host.
 
 ## 0.27.0 — 2026-10-21
 

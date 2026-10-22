@@ -13,6 +13,7 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
+import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
@@ -106,7 +107,7 @@ export class VioCart extends LitElement {
       top: 0;
       right: 0;
       bottom: 0;
-      width: min(440px, 100%);
+      width: min(var(--vio-cart-width, 440px), 100%);
       background: var(--vio-color-surface, #fff);
       transform: translateX(100%);
       transition: transform 0.3s cubic-bezier(0.32, 0.72, 0, 1);
@@ -656,7 +657,8 @@ export class VioCart extends LitElement {
     if (this.itemCount === 0) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
-    void this.startVippsExpressOrCheckout(firstSponsorId)
+    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: firstSponsorId, source: 'cart' })
+    void this.startVippsExpressOrCheckout(firstSponsorId, redirect)
   }
 
   /** Vipps' own button when its script answers; our orange one otherwise. */
@@ -664,20 +666,25 @@ export class VioCart extends LitElement {
     this.vippsOfficial = await ensureVippsButton()
   }
 
-  private async startVippsExpressOrCheckout(sponsorId: number): Promise<void> {
+  private async startVippsExpressOrCheckout(sponsorId: number, redirect: PaymentRedirectHandle): Promise<void> {
     let fallback = true
     try {
       // A +/− a moment ago may still be syncing: Vipps must get the cart it produced.
       await Vio.cart.waitForCartMutations(sponsorId)
       // The seller may have switched Express off on its Vipps row: then the
       // button is an ordinary way into the checkout, with Vipps preselected.
-      if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) throw new Error('express off')
-      const res = await Vio.checkout.startVippsExpress(sponsorId)
-      fallback = !res?.payment_url
+      if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) {
+        redirect.abort('express-off')
+      } else {
+        const res = await Vio.checkout.startVippsExpress(sponsorId)
+        fallback = !res?.payment_url
+        if (fallback) redirect.abort('not-started')
+      }
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioCart] Vipps Express not started:', err)
       }
+      redirect.fail(err instanceof Error ? err.message : String(err))
     }
     if (!fallback) return
     this.dispatchEvent(

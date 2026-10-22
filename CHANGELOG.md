@@ -16,6 +16,31 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **The detail's layout is public**: 23 new `applyVioTheme` keys, each a `--vio-*` property
+  (logo height, image fit / aspect / max height / zoom / bleed, thumbnail size and gap, option
+  height and gap, button height and radius, a sticky buy zone, cart / checkout widths,
+  confirmation logo and title, the redirect overlay), plus `::part` names on every piece of
+  the detail and the confirmation. The same keys serve our demo, Replit and Vev's Config block.
+  See [README → Layout](README.md#layout-of-the-detail-cart-checkout-and-confirmation-028).
+- **The hand-over to Vipps**: a full-screen «Åpner Vipps …» with a soft fade from the tap to
+  the Vipps page (detail, cart, checkout), which also stops a second tap; events
+  `vio:payment-redirect-start` (cancelable — draw your own loader), `vio:payment-redirect-error`
+  and `vio:payment-redirect-cancel`. See [README → The hand-over to Vipps](README.md#the-hand-over-to-vipps-028).
+- `commerce.checkout_id` on every `purchase` the SDK can tie to a checkout, and
+  `props.order_id_kind` (`'order'` | `'checkout'`).
+- `vio:payment-success` may carry `orderNumber` when the checkout already knows it.
+- `purchaseIdsOf(detail)` → `{ orderId, checkoutId, orderIdKind }` (from `/core`) for
+  hosts with their own analytics sink.
+
+### Changed
+- **Product detail** (asked by Mote & Livsstil): the selling brand's logo (its name without
+  one) sits **top left beside ✕**, no longer above the image; the main image runs **edge to
+  edge** with no padding of its own and its own proportions, capped at 85vh; thumbnails are
+  **one row** (swipe, arrows with a mouse, the selected one kept in view) instead of wrapping;
+  sizes are **compact** (36px); **Vipps comes first**, above quantity and «Legg i handlekurv».
+- The confirmation's brand logo is 40px tall (was max 32px).
+
 ### Fixed
 - **The `purchase` event's `commerce.order_id` is Vio's order number** (`4415`), not the
   checkout's uuid. Before, every purchase paid through a redirect (Vipps, Klarna, hosted
@@ -23,14 +48,13 @@ and *when*, and links there.
   a cancellation or refund (`order_cancelled` / `order_refunded`, ADR-0036) against it.
   ([#88](https://github.com/vio-live/vio-web-sdk/pull/88))
 
-### Added
-- `commerce.checkout_id` on every `purchase` the SDK can tie to a checkout, and
-  `props.order_id_kind` (`'order'` | `'checkout'`).
-- `vio:payment-success` may carry `orderNumber` when the checkout already knows it.
-- `purchaseIdsOf(detail)` → `{ orderId, checkoutId, orderIdKind }` (from `/core`) for
-  hosts with their own analytics sink.
-
 ### ⚠️ Upgrade notes
+- **The product detail looks different** after upgrading (see *Changed*). A host that styled
+  `.sponsor-header` / `.topbar-brand` from outside: they are gone — use `::part(sponsor)`.
+  Hosts that want the old look back: `detailImageBleed: '0'`, `detailImageAspect: '1 / 1'`,
+  `detailOptionHeight: '42px'`.
+- A host with its own «loading Vipps» screen: call `preventDefault()` on
+  `vio:payment-redirect-start`, or the SDK's overlay shows on top of yours.
 - **The `purchase` may leave up to 10 s after `vio:payment-success`**: the SDK asks the
   checkout for the order number at once and then after 0.5, 1, 2, 3 and 3 s. The confirmation screen, the
   cart and the payment never wait — only the analytics event. If the page hides first,

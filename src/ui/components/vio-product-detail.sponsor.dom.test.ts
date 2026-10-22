@@ -7,10 +7,11 @@ import { resetFailedLogos } from '../sponsor-identity.js'
 import type { BootstrapResponse } from '../../core/types.js'
 
 /**
- * The product detail says who sells the product: the logo of the sponsor it
- * was fetched with (its name as `alt`). Without a logo that loads, the
- * topbar's seller name does it, and the brand header shows the name only when
- * the topbar names nobody. Asked for by the host (Mote & Livsstil).
+ * The product detail says who sells the product, in its top bar beside the
+ * close (Mote & Livsstil, 2026-10-22): the logo of the sponsor it was fetched
+ * with — never the article's — its name as `alt`; without a logo that loads,
+ * the sponsor's name; without any identity, the seller's Company name (or
+ * the product's brand), as before 0.28.
  */
 
 const product = {
@@ -90,62 +91,60 @@ async function open(sponsorId: number) {
   return el
 }
 
-describe('the brand header of the product detail', () => {
-  it('shows the logo of the sponsor the product was fetched with, the name as alt', async () => {
+describe('the brand in the top bar of the product detail', () => {
+  const topbar = (el: HTMLElement) => root(el).querySelector('.topbar-sponsor')!
+  const logo = (el: HTMLElement) => topbar(el).querySelector<HTMLImageElement>('.topbar-logo')
+  const name = (el: HTMLElement) => topbar(el).querySelector('.topbar-name')?.textContent?.trim() ?? null
+
+  it('shows the logo of the sponsor the product was fetched with, the name as alt, beside the close', async () => {
     const el = await open(4)
-    const img = root(el).querySelector<HTMLImageElement>('.sponsor-header .sponsor-logo')
-    expect(img?.getAttribute('src')).toBe('https://cdn.vio.live/careless.png')
-    expect(img?.getAttribute('alt')).toBe('Careless')
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')).toBeNull()
-    // At the top of the detail, before the gallery.
-    expect(root(el).querySelector('.body')?.firstElementChild?.classList.contains('sponsor-header')).toBe(true)
+    expect(logo(el)?.getAttribute('src')).toBe('https://cdn.vio.live/careless.png')
+    expect(logo(el)?.getAttribute('alt')).toBe('Careless')
+    expect(name(el)).toBeNull()
+    // In the top bar, not in the image area.
+    expect(topbar(el).parentElement?.classList.contains('topbar')).toBe(true)
+    expect(topbar(el).nextElementSibling?.classList.contains('close')).toBe(true)
+    expect(root(el).querySelector('.body .topbar-logo')).toBeNull()
   })
 
-  it('without a logo, the topbar names the seller and the header adds nothing (no name twice)', async () => {
+  it("without a logo, the sponsor's name — not the seller's Company name", async () => {
     const el = await open(5)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
-  })
-
-  it('without a logo and with a topbar that names nobody, the name as text', async () => {
-    noSellerName()
-    const el = await open(5)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')).toBeNull()
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')?.textContent?.trim()).toBe('Bohus')
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Bohus')
   })
 
   it('a sponsor that only appears in campaigns[] is named too', async () => {
     const el = await open(7)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')?.getAttribute('alt')).toBe('Sindig')
+    expect(logo(el)?.getAttribute('alt')).toBe('Sindig')
   })
 
-  it('a logo that fails to load leaves the naming to the topbar', async () => {
+  it('a logo that fails to load falls back to the name', async () => {
     const el = await open(4)
-    root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
+    logo(el)!.dispatchEvent(new Event('error'))
     await settle(el)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Careless')
   })
 
-  it('a logo that fails to load, with a topbar that names nobody, falls back to the name', async () => {
-    noSellerName()
-    const el = await open(4)
-    root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
-    await settle(el)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')).toBeNull()
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')?.textContent?.trim()).toBe('Careless')
-  })
-
-  it('no identity known: no header at all', async () => {
+  it("no identity known: the seller's Company name, as before", async () => {
     const el = await open(99)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    // The rest of the detail is there.
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Seller AS')
     expect(root(el).querySelector('.name')?.textContent).toContain('Sindig Morris')
   })
 
-  it("keeps the topbar's seller name as it was", async () => {
+  it('no identity and no seller name: the product brand', async () => {
+    noSellerName()
+    product.brand = 'SINDIG'
+    const el = await open(99)
+    expect(name(el)).toBe('SINDIG')
+  })
+
+  it('the parts a host styles are there', async () => {
     const el = await open(4)
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+    for (const part of ['topbar', 'sponsor', 'close', 'gallery', 'image', 'info', 'title', 'price', 'buy']) {
+      expect(root(el).querySelector(`[part~="${part}"]`), part).not.toBeNull()
+    }
   })
 })
 

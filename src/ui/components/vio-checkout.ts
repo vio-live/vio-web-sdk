@@ -11,6 +11,7 @@
 import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
+import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice, getGlobalCurrency } from '../../core/types.js'
 import {
@@ -473,8 +474,8 @@ export class VioCheckout extends LitElement {
        from the right instead of the full-screen overlay. */
     .modal.as-side {
       inset: 0 0 0 auto;
-      width: min(440px, 100%);
-      max-width: 440px;
+      width: min(var(--vio-checkout-width, 440px), 100%);
+      max-width: var(--vio-checkout-width, 440px);
       transform: translateX(100%);
       border-radius: 0;
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
@@ -489,8 +490,8 @@ export class VioCheckout extends LitElement {
     @media (min-width: 601px) {
       .modal {
         inset: 0 0 0 auto;
-        width: min(440px, 100%);
-        max-width: 440px;
+        width: min(var(--vio-checkout-width, 440px), 100%);
+        max-width: var(--vio-checkout-width, 440px);
         transform: translateX(100%);
         border-radius: 0;
         box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
@@ -902,7 +903,7 @@ export class VioCheckout extends LitElement {
       width: 48px;
       height: 48px;
       border-radius: 50%;
-      background: #2e7d32;
+      background: var(--vio-confirm-check-bg, #2e7d32);
       color: #fff;
       display: flex;
       align-items: center;
@@ -912,8 +913,8 @@ export class VioCheckout extends LitElement {
     }
     .confirm-title {
       font-family: var(--vio-font-serif, Georgia, serif);
-      font-size: 24px;
-      font-weight: 400;
+      font-size: var(--vio-confirm-title-size, 24px);
+      font-weight: var(--vio-confirm-title-weight, 400);
       margin: 0;
     }
     /* The brand the order is with: its logo over the thanks, its name in it. */
@@ -921,13 +922,12 @@ export class VioCheckout extends LitElement {
     .confirm-brand-logo {
       display: block;
       width: auto;
-      height: auto;
-      max-height: 32px;
-      max-width: 160px;
+      height: var(--vio-confirm-logo-height, 40px);
+      max-width: var(--vio-confirm-logo-max-width, 220px);
       object-fit: contain;
     }
     .confirm-sponsor {
-      font-size: 14px;
+      font-size: var(--vio-confirm-text-size, 14px);
       line-height: 1.4;
       color: var(--vio-color-text, #0a0a0a);
       margin: 4px 0 0;
@@ -1152,6 +1152,7 @@ export class VioCheckout extends LitElement {
     } else if (outcome === 'failed') {
       this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
       this.open = true
+      returnCancelled({ method: vioMethod, sponsorId, source: 'checkout', checkoutId })
     } else if (sawStatus) {
       // Backend reachable but the checkout is still processing (webhook not
       // landed yet). Fail-closed: keep the cart, set expectations.
@@ -2206,11 +2207,13 @@ export class VioCheckout extends LitElement {
     }
     if (method === 'vipps') {
       this.vippsLoading = true
+      const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.checkoutState?.sponsorId, source: 'checkout' })
       void this.startVippsFromCheckout()
         .catch((err: unknown) => {
           if (typeof console !== 'undefined') {
             console.warn('[VioCheckout] Vipps payment could not start:', err)
           }
+          redirect.fail(errorText(err))
           this.paymentError = friendlyPaymentError(errorText(err), 'vipps')
         })
         .finally(() => {
@@ -2755,7 +2758,7 @@ export class VioCheckout extends LitElement {
     // Who the order is with: the checkout's sponsor (see checkoutSponsorIdentity).
     const sponsor = this.checkoutSponsorIdentity()
     return html`
-      <section class="confirmation">
+      <section class="confirmation" part="confirmation">
         ${usableLogo(sponsor)
           ? html`<div class="confirm-brand" part="sponsor">
               ${renderSponsorMark(this, sponsor, { logo: 'confirm-brand-logo', name: 'confirm-brand-name' })}
@@ -2764,9 +2767,9 @@ export class VioCheckout extends LitElement {
         <header class="confirm-head">
           <div class="confirm-check" aria-hidden="true">✓</div>
           <div>
-            <h3 class="confirm-title">Takk for bestillingen!</h3>
+            <h3 class="confirm-title" part="confirm-title">Takk for bestillingen!</h3>
             ${sponsor?.name
-              ? html`<p class="confirm-sponsor">Du har handlet hos <strong>${sponsor.name}</strong>.</p>`
+              ? html`<p class="confirm-sponsor" part="confirm-sponsor">Du har handlet hos <strong>${sponsor.name}</strong>.</p>`
               : ''}
             <p class="confirm-text">
               Betalingen er bekreftet.${email
@@ -2776,7 +2779,7 @@ export class VioCheckout extends LitElement {
           </div>
         </header>
 
-        <dl class="confirm-details">
+        <dl class="confirm-details" part="confirm-details">
           ${details.map(
             ([k, v]) =>
               html`<div><dt>${k}</dt><dd class=${k === o?.providerRef?.label ? 'ref' : ''}>${v}</dd></div>`,

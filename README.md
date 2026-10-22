@@ -597,6 +597,75 @@ useful if you show multiple differently-branded sponsors on the same page:
 applyVioTheme({ colorAccent: '#ff6600' }, document.getElementById('sponsor-2'))
 ```
 
+### Layout of the detail, cart, checkout and confirmation (0.28)
+
+Beyond colors and fonts, the layout a host needs to fit its design is public too —
+**one key in `applyVioTheme`, one `--vio-*` property behind it**. Our demo, Replit and
+Vev's Config block set the same keys, so a page looks the same in the editor, the
+preview and published. Set them with `applyVioTheme` (preferred) or as CSS on `:root`
+or on the element (`vio-product-detail { --vio-detail-logo-height: 48px; }`).
+
+| `applyVioTheme` key | Property | Default | What it does |
+|---|---|---|---|
+| `detailWidth` | `--vio-detail-width` | `440px` | Detail panel width (desktop) |
+| `detailPaddingX` | `--vio-detail-padding-x` | `24px` | Side padding of the detail |
+| `detailLogoHeight` | `--vio-detail-logo-height` | `40px` | Selling brand's logo, top left beside ✕ (width keeps its proportions; the name when there is no logo) |
+| `detailTitleSize` / `detailPriceSize` | `--vio-detail-title-size` / `--vio-detail-price-size` | `26px` / `24px` | Name and price |
+| `detailImageFit` | `--vio-detail-image-fit` | `contain` | `contain` = whole image, `cover` = fills and crops |
+| `detailImageAspect` | `--vio-detail-image-aspect` | `auto` | Box proportion: `auto` (the image's own), `1 / 1`, `4 / 5`… |
+| `detailImageMaxHeight` | `--vio-detail-image-max-height` | `85vh` | Cap on the main image's height |
+| `detailImageZoom` | `--vio-detail-image-zoom` | `1` | Zoom; e.g. `1.15` crops a white margin baked into the file |
+| `detailImageBleed` | `--vio-detail-image-bleed` | `1` | `1` edge to edge of the panel, `0` inside the padding |
+| `detailImageBg` | `--vio-detail-image-bg` | muted surface | Behind the image |
+| `detailThumbSize` / `detailThumbGap` | `--vio-detail-thumb-size` / `--vio-detail-thumb-gap` | `64px` / `8px` | Thumbnails — always one row: swipe on touch, arrows with a mouse, the selected one kept in view |
+| `detailThumbRadius` / `detailThumbActiveColor` | `--vio-detail-thumb-radius` / `--vio-detail-thumb-active-color` | `0` / text color | Thumbnail corners, selected border |
+| `detailOptionHeight` / `detailOptionGap` | `--vio-detail-option-height` / `--vio-detail-option-gap` | `36px` / `6px` | Size / option buttons (height is also their min width) |
+| `detailOptionRadius` / `detailOptionWrap` | `--vio-detail-option-radius` / `--vio-detail-option-wrap` | `0` / `wrap` | `nowrap` = one line that scrolls sideways |
+| `detailButtonHeight` / `detailButtonRadius` | `--vio-detail-button-height` / `--vio-detail-button-radius` | `52px` / `0` | Quantity stepper and «Legg i handlekurv» |
+| `detailBuyPosition` / `detailBuyShadow` | `--vio-detail-buy-position` / `--vio-detail-buy-shadow` | `static` / none | `sticky`: the buy zone (Vipps, quantity, add to cart) stays at the bottom while scrolling |
+| `cartWidth` / `checkoutWidth` | `--vio-cart-width` / `--vio-checkout-width` | `440px` | Drawer widths (desktop) |
+| `confirmLogoHeight` / `confirmTitleSize` / `confirmCheckBg` | `--vio-confirm-logo-height` / `--vio-confirm-title-size` / `--vio-confirm-check-bg` | `40px` / `24px` / green | The confirmation |
+| `redirectBg` / `redirectSpinner` | `--vio-redirect-bg` / `--vio-redirect-spinner` | translucent white / Vipps orange | The «Åpner Vipps …» overlay |
+
+Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detail-image-position`,
+`--vio-detail-image-radius`, `--vio-detail-thumb-fit` (`cover`), `--vio-detail-thumb-border-width`,
+`--vio-detail-option-padding-x` (`12px`), `--vio-detail-option-font-size`, `--vio-detail-buy-gap`,
+`--vio-detail-buy-padding`, `--vio-detail-buy-bg`, `--vio-detail-info-gap`, `--vio-detail-gallery-gap`,
+`--vio-detail-title-weight`, `--vio-detail-price-weight`, `--vio-confirm-logo-max-width`,
+`--vio-confirm-title-weight`, `--vio-confirm-text-size`, `--vio-redirect-color`, `--vio-redirect-font`.
+
+**`::part` names**, for what the properties do not cover:
+
+- `<vio-product-detail>`: `topbar`, `sponsor`, `close`, `gallery`, `image`, `thumbs`, `thumb`
+  (+ `thumb-active`), `thumbs-arrow`, `info`, `brand`, `title`, `price`, `stock`,
+  `option-group`, `option-label`, `options`, `option` (+ `option-selected`), `buy`,
+  `buy-vipps`, `quantity-row`, `add-to-cart`, `description`.
+- `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`.
+
+```css
+vio-product-detail::part(add-to-cart) { letter-spacing: 0; text-transform: none; }
+vio-product-detail::part(option-selected) { background: #2b2b2b; }
+```
+
+**The detail's order:** the selling brand top left; the main image; the thumbnails;
+name, price, stock, sizes; then the buy zone — **Vipps first** (when the channel has
+it), quantity + «Legg i handlekurv», then the other ways to pay; the description last.
+
+### The hand-over to Vipps (0.28)
+
+Between the tap on Vipps (detail, cart or checkout) and the Vipps page, the SDK shows
+a full-screen «Åpner Vipps …» with a soft fade — no empty moment, and it takes every
+tap, so a second payment cannot start. Events on `document`:
+
+| Event | Detail | When |
+|---|---|---|
+| `vio:payment-redirect-start` | `{ method, sponsorId, source }` | At the tap. **Cancelable**: `preventDefault()` and the SDK draws no overlay — draw your own |
+| `vio:payment-redirect-error` | `… , reason` | It could not start. The overlay goes; the checkout opens with Vipps preselected |
+| `vio:payment-redirect-cancel` | `… , reason` | `'express-off'` / `'not-started'`: the checkout opens instead (no error). `'back'`: the shopper came back with the browser's back button. `'cancelled'`: back through Vipps' own cancel (with `checkoutId`) |
+
+`source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
+in the light DOM.
+
 ## Headless / SSR
 
 The root and `/core` entries export the framework-agnostic core with **no DOM side-effects** — SSR-safe and **tree-shakeable** (importing one helper pulls only that helper, ~0.5 kB):

@@ -24,6 +24,10 @@ export interface SponsorIdentity {
   /** The brand's logo, as the bootstrap gives it (never rewritten); `null` when it has none. */
   logoUrl: string | null
   avatarUrl: string | null
+  /** The brand's purchase terms page — https only; `null` when it has none. */
+  termsUrl?: string | null
+  /** The brand's returns / refund policy page — https only; `null` when it has none. */
+  refundPolicyUrl?: string | null
 }
 
 /** The sponsor of a checkout / an order as events and `getOrderReference` carry it. */
@@ -46,6 +50,17 @@ function urlOrNull(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const v = value.trim()
   return v ? v : null
+}
+
+/** A page link the shopper will open: an absolute https URL, or nothing. */
+function pageUrlOrNull(value: unknown): string | null {
+  const v = urlOrNull(value)
+  if (!v) return null
+  try {
+    return new URL(v).protocol === 'https:' ? v : null
+  } catch {
+    return null
+  }
 }
 
 function nameOf(value: unknown): string {
@@ -97,7 +112,17 @@ export function sponsorIdentityFrom(
     const name = nameOf(sponsor.name)
     const logoUrl = urlOrNull(sponsor.logoUrl)
     if (!name && !logoUrl) return null
-    return { id, name, logoUrl, avatarUrl: urlOrNull(sponsor.avatarUrl) }
+    // The brand's pages only when it gave them: an identity without them keeps its shape.
+    const termsUrl = pageUrlOrNull((sponsor as { termsUrl?: unknown }).termsUrl)
+    const refundPolicyUrl = pageUrlOrNull((sponsor as { refundPolicyUrl?: unknown }).refundPolicyUrl)
+    return {
+      id,
+      name,
+      logoUrl,
+      avatarUrl: urlOrNull(sponsor.avatarUrl),
+      ...(termsUrl ? { termsUrl } : {}),
+      ...(refundPolicyUrl ? { refundPolicyUrl } : {}),
+    }
   } catch {
     return null
   }

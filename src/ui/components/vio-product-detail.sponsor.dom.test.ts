@@ -7,10 +7,11 @@ import { resetFailedLogos } from '../sponsor-identity.js'
 import type { BootstrapResponse } from '../../core/types.js'
 
 /**
- * The product detail says who sells the product: the logo of the sponsor it
- * was fetched with (its name as `alt`). Without a logo that loads, the
- * topbar's seller name does it, and the brand header shows the name only when
- * the topbar names nobody. Asked for by the host (Mote & Livsstil).
+ * The product detail says who sells the product, in its top bar beside the
+ * close (Mote & Livsstil, 2026-10-22): the logo of the sponsor it was fetched
+ * with — never the article's — its name as `alt`; without a logo that loads,
+ * the sponsor's name; without any identity, the seller's Company name (or
+ * the product's brand), as before 0.28.
  */
 
 const product = {
@@ -90,62 +91,60 @@ async function open(sponsorId: number) {
   return el
 }
 
-describe('the brand header of the product detail', () => {
-  it('shows the logo of the sponsor the product was fetched with, the name as alt', async () => {
+describe('the brand in the top bar of the product detail', () => {
+  const topbar = (el: HTMLElement) => root(el).querySelector('.topbar-sponsor')!
+  const logo = (el: HTMLElement) => topbar(el).querySelector<HTMLImageElement>('.topbar-logo')
+  const name = (el: HTMLElement) => topbar(el).querySelector('.topbar-name:not(.topbar-mark-name)')?.textContent?.trim() ?? null
+
+  it('shows the logo of the sponsor the product was fetched with, the name as alt, beside the close', async () => {
     const el = await open(4)
-    const img = root(el).querySelector<HTMLImageElement>('.sponsor-header .sponsor-logo')
-    expect(img?.getAttribute('src')).toBe('https://cdn.vio.live/careless.png')
-    expect(img?.getAttribute('alt')).toBe('Careless')
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')).toBeNull()
-    // At the top of the detail, before the gallery.
-    expect(root(el).querySelector('.body')?.firstElementChild?.classList.contains('sponsor-header')).toBe(true)
+    expect(logo(el)?.getAttribute('src')).toBe('https://cdn.vio.live/careless.png')
+    expect(logo(el)?.getAttribute('alt')).toBe('Careless')
+    expect(name(el)).toBeNull()
+    // In the top bar, not in the image area.
+    expect(topbar(el).parentElement?.classList.contains('topbar')).toBe(true)
+    expect(topbar(el).nextElementSibling?.classList.contains('close')).toBe(true)
+    expect(root(el).querySelector('.body .topbar-logo')).toBeNull()
   })
 
-  it('without a logo, the topbar names the seller and the header adds nothing (no name twice)', async () => {
+  it("without a logo, the sponsor's name — not the seller's Company name", async () => {
     const el = await open(5)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
-  })
-
-  it('without a logo and with a topbar that names nobody, the name as text', async () => {
-    noSellerName()
-    const el = await open(5)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')).toBeNull()
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')?.textContent?.trim()).toBe('Bohus')
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Bohus')
   })
 
   it('a sponsor that only appears in campaigns[] is named too', async () => {
     const el = await open(7)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')?.getAttribute('alt')).toBe('Sindig')
+    expect(logo(el)?.getAttribute('alt')).toBe('Sindig')
   })
 
-  it('a logo that fails to load leaves the naming to the topbar', async () => {
+  it('a logo that fails to load falls back to the name', async () => {
     const el = await open(4)
-    root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
+    logo(el)!.dispatchEvent(new Event('error'))
     await settle(el)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Careless')
   })
 
-  it('a logo that fails to load, with a topbar that names nobody, falls back to the name', async () => {
-    noSellerName()
-    const el = await open(4)
-    root(el).querySelector('.sponsor-logo')!.dispatchEvent(new Event('error'))
-    await settle(el)
-    expect(root(el).querySelector('.sponsor-header .sponsor-logo')).toBeNull()
-    expect(root(el).querySelector('.sponsor-header .sponsor-name')?.textContent?.trim()).toBe('Careless')
-  })
-
-  it('no identity known: no header at all', async () => {
+  it("no identity known: the seller's Company name, as before", async () => {
     const el = await open(99)
-    expect(root(el).querySelector('.sponsor-header')).toBeNull()
-    // The rest of the detail is there.
+    expect(logo(el)).toBeNull()
+    expect(name(el)).toBe('Seller AS')
     expect(root(el).querySelector('.name')?.textContent).toContain('Sindig Morris')
   })
 
-  it("keeps the topbar's seller name as it was", async () => {
+  it('no identity and no seller name: the product brand', async () => {
+    noSellerName()
+    product.brand = 'SINDIG'
+    const el = await open(99)
+    expect(name(el)).toBe('SINDIG')
+  })
+
+  it('the parts a host styles are there', async () => {
     const el = await open(4)
-    expect(root(el).querySelector('.topbar-brand')?.textContent?.trim()).toBe('Seller AS')
+    for (const part of ['topbar', 'sponsor', 'close', 'gallery', 'image', 'info', 'title', 'price', 'buy']) {
+      expect(root(el).querySelector(`[part~="${part}"]`), part).not.toBeNull()
+    }
   })
 })
 
@@ -187,5 +186,83 @@ describe('the cart', () => {
     el.onCheckout()
     document.removeEventListener('vio:checkout-open', listener)
     expect(seen[0]).toMatchObject({ sponsorId: 7, sponsor: { id: 7, name: 'Sindig', logoUrl: 'https://cdn.vio.live/sindig.svg' } })
+  })
+})
+
+describe('a square logo is a mark: its name goes beside it', () => {
+  const sized = (el: HTMLElement, w: number, h: number) => {
+    const img = root(el).querySelector<HTMLImageElement>('.topbar-logo')!
+    Object.defineProperty(img, 'complete', { configurable: true, value: true })
+    Object.defineProperty(img, 'naturalWidth', { configurable: true, value: w })
+    Object.defineProperty(img, 'naturalHeight', { configurable: true, value: h })
+  }
+  const shown = (el: HTMLElement) => root(el).querySelector('.topbar-sponsor')!.classList.contains('is-square')
+
+  it('300×300 (Careless): the name shows beside the logo', async () => {
+    const el = (await open(4)) as HTMLElement & Record<string, any>
+    sized(el, 300, 300)
+    el.requestUpdate()
+    for (let i = 0; i < 3; i++) await settle(el)
+    expect(shown(el)).toBe(true)
+    expect(root(el).querySelector('.topbar-mark-name')?.textContent?.trim()).toBe('Careless')
+  })
+
+  it('a wordmark (4:1): the logo alone', async () => {
+    const el = (await open(4)) as HTMLElement & Record<string, any>
+    sized(el, 400, 100)
+    el.requestUpdate()
+    for (let i = 0; i < 3; i++) await settle(el)
+    expect(shown(el)).toBe(false)
+  })
+})
+
+describe('under the buy buttons: who the shopper buys from', () => {
+  const note = (el: HTMLElement) => root(el).querySelector('.buy .seller-note')?.textContent?.replace(/\s+/g, ' ').trim() ?? null
+
+  it("names the product's brand (the sponsor), last in the buy zone", async () => {
+    const el = await open(4)
+    expect(note(el)).toBe('Du handler direkte hos Careless.')
+    expect(root(el).querySelector('.buy')!.lastElementChild?.classList.contains('seller-note')).toBe(true)
+  })
+
+  it("no identity: the seller's Company name", async () => {
+    const el = await open(99)
+    expect(note(el)).toBe('Du handler direkte hos Seller AS.')
+  })
+})
+
+describe("the brand's own terms and returns pages under the seller note", () => {
+  const links = (el: HTMLElement) =>
+    [...root(el).querySelectorAll<HTMLAnchorElement>('.seller-note a')].map((a) => [a.textContent?.trim(), a.getAttribute('href'), a.target, a.rel])
+
+  it('links «Kjøpsvilkår» and «Angrerett og retur» when the brand gave them, in a new tab', async () => {
+    facade().cachedBootstrap = {
+      ...BOOT,
+      primarySponsor: {
+        ...BOOT.primarySponsor!,
+        termsUrl: 'https://careless.no/policies/terms-of-service',
+        refundPolicyUrl: 'https://careless.no/policies/refund-policy',
+      } as any,
+    }
+    const el = await open(4)
+    expect(links(el)).toEqual([
+      ['Kjøpsvilkår', 'https://careless.no/policies/terms-of-service', '_blank', 'noopener noreferrer'],
+      ['Angrerett og retur', 'https://careless.no/policies/refund-policy', '_blank', 'noopener noreferrer'],
+    ])
+  })
+
+  it('only what it has: no links at all when it gave none', async () => {
+    const el = await open(4)
+    expect(links(el)).toEqual([])
+    expect(root(el).querySelector('.seller-note')?.textContent).toContain('Du handler direkte hos')
+  })
+
+  it('never a link that is not https', async () => {
+    facade().cachedBootstrap = {
+      ...BOOT,
+      primarySponsor: { ...BOOT.primarySponsor!, termsUrl: 'javascript:alert(1)', refundPolicyUrl: 'http://careless.no/refund' } as any,
+    }
+    const el = await open(4)
+    expect(links(el)).toEqual([])
   })
 })

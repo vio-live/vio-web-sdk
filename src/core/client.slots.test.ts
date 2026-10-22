@@ -516,6 +516,25 @@ describe('Vio.attribution()', () => {
     expect(Vio.attribution('x', { sponsorId: 'nope' })).toEqual({ slot: 'x', campaignId: 10, sponsorId: 4 })
   })
 
+  it('a surface with no active campaign keeps selling: the channel sponsor, no campaign at all', async () => {
+    init('vev')
+    await Vio.bootstrap()
+    // What the campaigns micro answers a web/Vev page when nothing is active (21/10).
+    const g = globalThis as { __VIO_FACADE__?: { cachedBootstrap?: unknown } }
+    g.__VIO_FACADE__!.cachedBootstrap = {
+      campaign: null,
+      noActiveCampaign: true,
+      primarySponsor: sponsor(4),
+      secondarySponsors: [],
+      campaigns: [],
+      availableCampaigns: [{ id: 10, name: 'Default', status: 'paused' }],
+    }
+    expect(Vio.attribution('hero')).toEqual({ slot: 'hero', sponsorId: 4 })
+    expect(Vio.attribution()).toEqual({ sponsorId: 4 })
+    expect(Vio.attribution('carousel-1', { sponsorId: 4 })).toEqual({ slot: 'carousel-1', sponsorId: 4 })
+    expect(() => Vio.commerceFor(4)).not.toThrow()
+  })
+
   it('never throws on a broken bootstrap', async () => {
     init('web')
     await Vio.bootstrap()

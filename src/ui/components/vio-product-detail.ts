@@ -10,7 +10,7 @@
  * those are handled by the host page's direct cart logic.
  */
 
-import { LitElement, css, html } from 'lit'
+import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { Vio } from '../../core/client.js'
@@ -26,6 +26,7 @@ import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/
 import { DialogFocus } from '../dialog-focus.js'
 import { SlotRegistration } from '../slot-registration.js'
 import { toCampaignId } from '../../core/slots.js'
+import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -382,6 +383,29 @@ export class VioProductDetail extends LitElement {
       box-sizing: border-box;
     }
     .gallery-thumb.active { border-color: var(--vio-color-text, #0a0a0a); }
+
+    /* Who sells it: the sponsor's logo, or its name — small, above everything. */
+    .sponsor-header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      min-height: 24px;
+    }
+    .sponsor-logo {
+      display: block;
+      width: auto;
+      height: auto;
+      max-height: 28px;
+      max-width: 160px;
+      object-fit: contain;
+    }
+    .sponsor-name {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: var(--vio-tracking-label, 0.1em);
+      color: var(--vio-color-text-secondary, #666);
+      font-weight: 600;
+    }
 
     /* Info column */
     .info { display: flex; flex-direction: column; gap: 24px; }
@@ -1169,12 +1193,8 @@ export class VioProductDetail extends LitElement {
   private addCurrentToCart(): number | undefined {
     if (!this.product) return undefined
     const variant = this.selectedVariant()
-    const sponsor = Vio.bootstrapCache?.primarySponsor
-    const secondaries = Vio.bootstrapCache?.secondarySponsors ?? []
-    const sponsorName =
-      sponsor?.id === this.sponsorId
-        ? sponsor.name
-        : secondaries.find((s) => s.id === this.sponsorId)?.name
+    // The brand's display name by the one rule (config and campaigns[] sponsors).
+    const sponsorName = resolveSponsorIdentity(this.sponsorId)?.name || undefined
     // Where these units come from: the campaign the place showed, the place,
     // this element and the article — the purchase is split per campaign from
     // it, and Commerce writes it on the order (ADR-0035).
@@ -1230,7 +1250,7 @@ export class VioProductDetail extends LitElement {
         new CustomEvent('vio:checkout-open', {
           bubbles: true,
           composed: true,
-          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true, ...this.attribution() },
+          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
         }),
       )
     } finally {
@@ -1261,7 +1281,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, express: false, ...this.attribution() },
+        detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1303,7 +1323,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false, ...this.attribution() },
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1317,7 +1337,7 @@ export class VioProductDetail extends LitElement {
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false, ...this.attribution() },
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1364,6 +1384,22 @@ export class VioProductDetail extends LitElement {
     this.sellerSettled = true
   }
 
+  /**
+   * Who sells the product: the brand of the sponsor it was fetched with —
+   * its logo, with the name as `alt`. Without a logo that loads, the topbar
+   * already names the seller (its Company name, else the brand), so the name
+   * goes here only when the topbar names nobody once the seller is known —
+   * never the same name twice. Nothing at all when no identity is known.
+   */
+  private renderSponsorHeader() {
+    const identity = resolveSponsorIdentity(this.sponsorId)
+    if (!identity) return nothing
+    if (!usableLogo(identity) && (!this.sellerSettled || this.headerName())) return nothing
+    const mark = renderSponsorMark(this, identity, { logo: 'sponsor-logo', name: 'sponsor-name' })
+    if (mark === nothing) return nothing
+    return html`<div class="sponsor-header" part="sponsor">${mark}</div>`
+  }
+
   override render() {
     return html`
       <div class="backdrop" @click=${this.close}></div>
@@ -1406,6 +1442,7 @@ export class VioProductDetail extends LitElement {
 
     return html`
       <div class="body">
+        ${this.renderSponsorHeader()}
         <div class="gallery">
           <div class="gallery-main">
             ${activeImage?.url

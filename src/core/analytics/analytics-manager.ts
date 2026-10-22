@@ -54,6 +54,7 @@ import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/sli
 import type { CartLineItem } from '../cart/types.js'
 import type { CheckoutReference } from '../api/cart-queries.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
+import type { CheckoutSponsor } from '../sponsor-identity.js'
 
 // ── Taxonomy (client-side subset of contract v1) ────────────────────────────
 
@@ -1369,6 +1370,13 @@ export interface PaymentSuccessDetail {
   buyerRef?: string | null
   buyer_ref?: string | null
   result?: PaymentSuccessResult | null
+  /**
+   * The sponsor the order is with — the CHECKOUT's (its cart's sponsor),
+   * never the page's: `{ id, name, logoUrl }` by the `Vio.sponsorIdentity`
+   * rule, when it can be named. For the host's own receipt; analytics does
+   * not read it.
+   */
+  sponsor?: CheckoutSponsor
 }
 
 /**

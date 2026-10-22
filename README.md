@@ -492,6 +492,74 @@ could never be netted.
   `purchaseFromPaymentSuccess(detail)`, exported from `/core`), and waits for the
   number the same way through `Vio.checkout.getOrderReference(checkoutId)`.
 
+## Sponsor identity — name and logo
+
+The elements say **who sells**: the sponsor's (brand's) display name and logo.
+
+| Where | What it shows |
+|---|---|
+| `<vio-product-detail>` | a small brand header at the top of the detail — the logo (the name as its `alt`), or the name — for the sponsor the product was fetched with |
+| `<vio-checkout>` header | «Du handler hos ‹logo \| name›» — the checkout's sponsor («Du har handlet hos …» over a provider's own receipt) |
+| `<vio-checkout>` confirmation | «Takk for bestillingen! Du har handlet hos Careless.» next to the order number, with the logo above when there is one |
+| `<vio-cart>` / carousel | the sponsor label over a sponsor's lines, the `retailer` line of a carousel's cards (by name) |
+
+No logo → the name. A logo that fails to load → the name. Nothing known → nothing
+(the product detail shows no header; the confirmation keeps «Takk for bestillingen!»
+without the sentence). The marks are styled with the `--vio-*` tokens and exposed as
+`part="sponsor"` (`vio-checkout::part(sponsor)`).
+
+**One rule.** `Vio.sponsorIdentity(sponsorId, { checkoutId? })` answers
+`{ id, name, logoUrl, avatarUrl } | null` — and every element uses it:
+
+1. the live bootstrap's sponsor blocks: the config's `primarySponsor` and
+   `secondarySponsors`, then every `campaigns[]` entry's primary and secondaries,
+   first match (a surface with no active campaign still names its channel brands);
+2. when the bootstrap does not know the id (not loaded yet, a redirect return): what
+   this tab remembered of the checkout — when the SDK creates a checkout it keeps
+   `checkoutId → { sponsorId, name, logoUrl }` in `sessionStorage`
+   (`vio.checkoutSponsor.v1`, the last 20 checkouts; it works, for that page,
+   without storage) — then the latest remembered checkout of that sponsor;
+3. the cart's `sponsorName`;
+4. `null`.
+
+With only `{ checkoutId }` the sponsor is the one remembered for that checkout. URLs
+are kept as given; an empty `logoUrl` is `null`. `sponsorIdentityFrom(bootstrap,
+sponsorId)` is the pure step 1, exported from `/core`.
+
+**From the checkout, never from the page.** In the checkout and on its confirmation
+the sponsor is the **checkout's** — the cart's sponsor, the one the order is with —
+from the checkout state or the return URL (`vio_sponsor`, `checkout_id`), never
+`Vio.attribution()`: an article of one brand may sell another brand's product. Back
+from Vipps the confirmation names the brand from the memory at once, or from the
+bootstrap as soon as it lands (the thanks is shown first, the name follows).
+
+**For hosts.** `vio:checkout-open` and `vio:payment-success` carry
+`sponsor: { id, name, logoUrl }` in their detail when it can be named (the key is
+absent otherwise), and `Vio.checkout.getOrderReference(checkoutId, sponsorId?)`
+answers `{ orderNumber, buyerRef, sponsor? }` by the same rule. The SDK cleans its
+return parameters from the URL once it has used them, so its own confirmation does
+not come back on a reload — a host that wants a confirmation page that survives one
+keeps the two ids in its own URL and asks again:
+
+```ts
+// On the purchase: keep what the confirmation needs in YOUR url.
+document.addEventListener('vio:payment-success', (e) => {
+  const d = (e as CustomEvent).detail
+  const checkoutId = String(d.checkoutId ?? d.orderId ?? '')
+  history.replaceState(null, '', `/takk?checkout=${checkoutId}&sponsor=${d.sponsorId ?? ''}`)
+  render(d.sponsor)
+})
+
+// On /takk (also after a reload, or in another browser):
+const params = new URLSearchParams(location.search)
+const ref = await Vio.checkout.getOrderReference(params.get('checkout') ?? '', Number(params.get('sponsor')) || undefined)
+render(ref.sponsor, ref.orderNumber) // waits for Vio.init (up to 2 s) and the bootstrap; never throws
+
+function render(sponsor?: { name: string; logoUrl: string | null }, orderNumber?: number | null) {
+  // «Takk for bestillingen! Du har handlet hos {sponsor.name}.» — the logo when sponsor.logoUrl
+}
+```
+
 ## Theming
 
 Every component reads its colors and fonts from `--vio-*` CSS custom properties

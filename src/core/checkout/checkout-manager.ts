@@ -2253,9 +2253,16 @@ export class CheckoutManager extends EventTarget {
           `[VioCheckout] Apple Pay confirmation failed (status: ${confirmRes?.status ?? 'none'})`,
         )
       }
-      // The buyer reference rides along as `result.confirmation.buyerRef` (analytics `buyer_id`).
+      // The buyer reference rides along as `result.confirmation.buyerRef` (analytics `buyer_id`),
+      // the checkout it paid as `result.confirmation.checkoutId` (analytics `checkout_id`): the
+      // cart's express button has no checkout of its own to name.
       const buyerRef = normalizeBuyerRef(confirmRes?.[BUYER_REF_FIELD])
-      return { orderId: confirmRes?.order_id, status: confirmRes?.status, ...(buyerRef ? { buyerRef } : {}) }
+      return {
+        orderId: confirmRes?.order_id,
+        status: confirmRes?.status,
+        checkoutId,
+        ...(buyerRef ? { buyerRef } : {}),
+      }
     }
   }
 

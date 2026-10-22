@@ -143,6 +143,7 @@ export {
   AnalyticsManager,
   resolveCampaignId,
   purchaseFromPaymentSuccess,
+  purchaseIdsOf,
   buyerRefOf,
 } from './analytics/analytics-manager.js'
 export type {
@@ -154,6 +155,7 @@ export type {
   TrackOptions,
   PaymentSuccessDetail,
   PaymentSuccessResult,
+  PurchaseIds,
 } from './analytics/analytics-manager.js'
 export { SDK_VERSION } from './version.js'
 

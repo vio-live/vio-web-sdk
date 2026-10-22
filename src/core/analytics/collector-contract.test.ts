@@ -33,6 +33,8 @@ function assertCollectorCaps(event: Record<string, unknown>): void {
   }
   const commerce = (event.commerce ?? {}) as Record<string, unknown>
   if (typeof commerce.order_id === 'string' && commerce.order_id.length > 128) throw new Error('order_id > 128')
+  // New in 0.27 (optional in the collector; one that predates it strips the key — `.strip()` — and keeps the event).
+  if (typeof commerce.checkout_id === 'string' && commerce.checkout_id.length > 128) throw new Error('checkout_id > 128')
   if (typeof commerce.payment_method === 'string' && commerce.payment_method.length > 64) throw new Error('payment_method > 64')
   if (typeof commerce.buyer_id === 'string' && commerce.buyer_id.length > 128) throw new Error('buyer_id > 128')
   const client = (event.client ?? {}) as Record<string, unknown>
@@ -158,6 +160,20 @@ describe('buildEvent never sends what the collector rejects', () => {
     loc.href = 'https://host.example/' + 'p'.repeat(3_000) + '#x'
     expect((await tracked()).content_url).toHaveLength(2_048)
     expect((await tracked({ contentUrl: 'https://host.example/short?x=1' })).content_url).toBe('https://host.example/short?x=1')
+  })
+})
+
+describe('checkout_id respects the cap the collector gives it', () => {
+  it('a uuid travels; anything over 128 chars is omitted, not cut — the event still goes', async () => {
+    const m = new AnalyticsManager()
+    m.track('purchase', { commerce: { orderId: '4415', checkoutId: '0b6f3c1e-2d4a-4f5b-9c8d-7e6f5a4b3c2d' } })
+    m.track('purchase', { commerce: { orderId: '4416', checkoutId: 'c'.repeat(129) } })
+    await m.flush()
+    const [a, b] = flushed.at(-1)!.events.filter((e) => e.name === 'purchase')
+    for (const ev of [a!, b!]) assertCollectorCaps(ev)
+    expect((a!.commerce as Record<string, unknown>).checkout_id).toBe('0b6f3c1e-2d4a-4f5b-9c8d-7e6f5a4b3c2d')
+    expect(b!.commerce as Record<string, unknown>).not.toHaveProperty('checkout_id')
+    expect((b!.commerce as Record<string, unknown>).order_id).toBe('4416')
   })
 })
 

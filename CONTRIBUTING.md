@@ -69,6 +69,24 @@ it or whether it matches what's in git. Before deploying:
    overwritten each other's work in the past.
 
 
+## Changelog
+
+`CHANGELOG.md` is what a host reads before upgrading: what is new, what changed, and
+what they have to do. It ships in the npm package.
+
+- **In every PR that changes behaviour**, add a line under `## Unreleased`, in the
+  section it belongs to: **Added**, **Changed**, **Fixed**. Say it as the host sees it
+  (what happens on the page, what an event carries), link the PR, and point to the
+  README section for details instead of repeating them.
+- **⚠️ Upgrade notes** — add a bullet whenever a host has to *do* something (call a new
+  API, keep an attribute, allow a domain in a CSP), *check* something (a backend that
+  must be deployed first, data that changes meaning), or *expect* different behaviour
+  (an event that now waits, a screen that changed). When in doubt, add it.
+- Refactors, tests and internal docs with no visible effect: no entry.
+- **At release**, rename `## Unreleased` to `## X.Y.Z — YYYY-MM-DD` in the same PR as
+  the version bump (`package.json` + `src/core/version.ts`), and start a new empty
+  `## Unreleased` above it.
+
 ## Publishing to npm
 
 `@vio-live/web-sdk` is a SEPARATE distribution channel from the Vev package
@@ -81,6 +99,7 @@ frozen at 0.2.0 from 2026-06-10 to 2026-08-17 while 27 commits landed on
 git pull origin main                # publish from the tip of main, not a stale checkout
 npm run build                       # verify dist/ generates cleanly first
 npm version <patch|minor|major> --no-git-tag-version
+# CHANGELOG.md: rename "## Unreleased" to "## X.Y.Z — date" (see Changelog above)
 npm publish --access public
 git checkout -b chore/release-X.Y.Z
 git add package.json package-lock.json

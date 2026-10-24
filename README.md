@@ -487,10 +487,37 @@ could never be netted.
   arrives after the event left with the checkout id adds no second event. `ts`
   and `event_id` are fixed at the payment, whenever the event leaves; a purchase
   split per campaign waits once and every slice carries the same number.
+- **Sent at once.** A `purchase` does not wait for the queue's 5 s tick: it is
+  sent as soon as it is built, and when the page hides (`visibilitychange`, the
+  last thing a phone is sure to say before it discards a tab) whatever is still
+  queued leaves by beacon (0.29.0; order 4128 had been recorded and never sent).
 - **A host with its own sink** (Vev) reads the same ids from the detail with
   `purchaseIdsOf(detail)` → `{ orderId, checkoutId, orderIdKind }` (or
   `purchaseFromPaymentSuccess(detail)`, exported from `/core`), and waits for the
   number the same way through `Vio.checkout.getOrderReference(checkoutId)`.
+
+### `add_payment_info` — the checkout, linked to this session (0.29.0)
+
+The moment a backend checkout exists for a payment — Vipps (from the product
+detail, the cart or the checkout), a Stripe payment link or Element, Klarna, Apple
+Pay, Nexi, Kustom, Qliro, Walley, Adyen — the SDK emits **`add_payment_info`**
+(the GA4 name) with **`commerce.checkout_id`**, **`payment_method`**, the cart's
+lines (`items`, `value`, `currency`) and the same context as `begin_checkout`
+(sponsor, campaign, slot, content), split per campaign like it. Once per checkout
+per page load; nothing when the checkout could not be created. When the page is
+about to leave for the provider (Vipps, a Stripe payment link) it goes out by
+beacon first.
+
+Why (ADR-0039): Commerce's `order_paid` is what says a sale happened, and the
+browser's `purchase` can be missing (a closed tab, a phone that discards the page
+on the way back). The collector attributes an `order_paid` without a `purchase` to
+the session, page and slot of the `add_payment_info` with the same `checkout_id`.
+
+The checkout manager announces each checkout on `window` as
+**`vio:checkout-created`** — `{ sponsorId, checkoutId, paymentMethod, campaignId?,
+redirect }` — which is what analytics listens to; a host with its own sink can
+listen to it too. With `dataLayer: true` it is pushed as GA4's `add_payment_info`
+with `payment_type`.
 
 ## Sponsor identity — name and logo
 

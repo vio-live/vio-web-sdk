@@ -53,6 +53,7 @@ const FORM = {
 function manager() {
   const cart = {
     waitForCartMutations: async () => {},
+    refreshFromServer: async () => undefined,
     getCart: () => ({ cartId: 'cart-1', items: [{ id: 'armchair' }] }),
     ensureCartId: async () => 'cart-1',
     subtotalForSponsor: () => 4999,

@@ -674,6 +674,48 @@ tap, so a second payment cannot start. Events on `document`:
 `source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
 in the light DOM.
 
+**The detail's Vipps button pays the whole cart.** «Kjøp nå med Vipps» on the product
+detail adds the product to the sponsor's cart and the checkout is built on that cart —
+every line in it. It goes straight to Vipps only when the cart was **empty**; with lines
+already in it, the product is added and the checkout opens first (`vio:checkout-open`
+with `paymentMethod: 'vipps'`, no hand-over events), every line and the total on screen,
+so what the Vipps page lists is what the shopper saw. The cart's own Vipps button always
+pays the whole cart — the lines are right there. **Apple Pay on the detail follows the same
+rule**: its sheet's amount is fixed before the tap, so it opens only on an empty cart, for the
+product × the chosen quantity; otherwise the checkout opens (`paymentMethod: 'apple-pay'`).
+
+### What the shopper pays is what the page shows — the cart, the server, the other tabs
+
+The cart lives in this tab's memory and in `localStorage` (`vio.cart.v1`, one entry per
+sponsor with the backend cart id), and the checkout — and the Vipps / Stripe page — is
+built on the **backend** cart, every line of it. Three things keep the two the same:
+
+- **Before a checkout is created or a payment link minted**, and **when `<vio-cart>` or
+  `<vio-checkout>` opens**, the SDK asks the server for the cart (`GetCart`) and draws that
+  answer: a line another tab added, a cart another tab emptied. `Vio.cart.refreshFromServer(sponsorId)`
+  does the same on demand and resolves with the sponsor's cart. A `GetCart` that fails leaves
+  the cart as it was (and warns) — the checkout then goes on with the lines the last mutation
+  answered, as before.
+- **Other tabs of the site are heard.** A payment in one tab (its cart cleared) empties the
+  drawer of the others and the next add there opens a new backend cart; a line added in one
+  tab is in the others without a reload. Through the browser's `storage` event — a tab that
+  is mid-add for a sponsor keeps its own lines until its answer lands.
+- **An open checkout follows its cart**: its lines and its total are recomputed when the
+  cart changes under it (the widgets that captured an amount at mount ask to be refreshed,
+  as they already did for a changed cart).
+
+`vio:cart-updated` on `document` says when either of the first two happened:
+
+```ts
+document.addEventListener('vio:cart-updated', (e) => {
+  const { sponsorId, cartId, items, itemCount, subtotal, currency, source } = e.detail
+  // source: 'server' (GetCart, right before a checkout / on opening) | 'storage' (another tab)
+})
+```
+
+`items` are copies of the lines (`CartLineItem[]`). A host that draws its own cart or badge
+redraws it from this event; `<vio-cart>` and the badge wired to `Vio.cart`'s `change` need nothing.
+
 ## Headless / SSR
 
 The root and `/core` entries export the framework-agnostic core with **no DOM side-effects** — SSR-safe and **tree-shakeable** (importing one helper pulls only that helper, ~0.5 kB):

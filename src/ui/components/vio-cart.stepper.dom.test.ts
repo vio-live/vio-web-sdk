@@ -12,6 +12,8 @@ const gql = vi.hoisted(() => ({
   createCart: vi.fn(async () => ({ cart_id: 'cart-1', line_items: [] })),
   addItem: vi.fn(),
   updateItem: vi.fn(),
+  // Opening the drawer asks the server for the cart; nothing to answer here.
+  getCart: vi.fn(),
 }))
 
 vi.mock('../../core/api/cart-queries.js', async (importOriginal) => ({

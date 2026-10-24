@@ -23,6 +23,7 @@ const ATTRIBUTION = { surface_key: 'surface-key', campaign_id: 7, content_url: '
 const cart = () =>
   ({
     waitForCartMutations: vi.fn(async () => {}),
+    refreshFromServer: vi.fn(async () => undefined),
     getCart: () => ({ cartId: 'cart-1', currency: 'NOK', items: [{ id: 'a', quantity: 2, unitPrice: 100 }] }),
     ensureCartId: async () => 'cart-1',
     subtotalForSponsor: () => 200,

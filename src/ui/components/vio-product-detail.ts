@@ -175,6 +175,10 @@ export class VioProductDetail extends LitElement {
   private optMapCache = new WeakMap<object, { map: Record<string, string>; titleParts: string[] }>()
   /** Pre-prepared Apple Pay handle — show() fires synchronously on tap. */
   private applePayHandle: { show: () => Promise<void> } | null = null
+  /** The amount `applePayHandle`'s sheet shows (product × quantity when it was prepared). */
+  private applePayAmount: number | null = null
+  /** The amount the latest preparation was asked for — a newer one supersedes it. */
+  private applePayAskedFor: number | null = null
   /** Keyboard and focus while open: Escape closes, Tab stays inside, focus returns to the opener. */
   private readonly dialogFocus = new DialogFocus({
     host: this,
@@ -863,6 +867,11 @@ export class VioProductDetail extends LitElement {
       this.bottomSheet.update(this.open)
     }
     if (changed.has('product') || changed.has('open')) this.measureThumbs()
+    // The sheet shows an amount fixed when it is prepared: another quantity or
+    // variant (another price) prepares it again, so it shows what is bought.
+    if ((changed.has('quantity') || changed.has('selectedOptions')) && this.product && this.applePayAskedFor !== null) {
+      if (this.unitPrice * this.quantity !== this.applePayAskedFor) this.prepareApplePaySheet()
+    }
     if (changed.has('activeImageIndex')) this.revealActiveThumb()
     this.measureLogo()
     // The React wrappers set properties after mount.
@@ -1029,16 +1038,7 @@ export class VioProductDetail extends LitElement {
       // Pre-prepare Apple Pay so its sheet can open synchronously on tap
       // (Apple blocks it otherwise). The button only shows if Apple Pay actually
       // works (real Stripe account + domain registered for Apple Pay).
-      void Vio.checkout
-        .prepareApplePayFor(this.unitPrice * this.quantity, this.currency)
-        .then((handle) => {
-          this.applePayHandle = handle
-          this.applePayOk = handle.available
-        })
-        .catch(() => {
-          this.applePayHandle = null
-          this.applePayOk = false
-        })
+      this.prepareApplePaySheet()
       void this.loadAvailablePaymentMethods()
     }
     this.isLoading = false
@@ -1504,6 +1504,19 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
+    // not on this product (see buyNow). Straight to Vipps only when the cart
+    // is empty, so what the Vipps page lists is what was tapped; with lines
+    // already in it, the product is added and the checkout opens first, with
+    // every line and the total, Vipps preselected (Mote & Livsstil,
+    // 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
+    // with the product bought «nå», and only Vipps' page had said so).
+    if ((Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0) {
+      this.addCurrentToCart()
+      this.close()
+      this.openCheckoutWithVipps()
+      return
+    }
     // The overlay first, then the close: no empty moment, no second tap.
     const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.sponsorId, source: 'detail' })
     this.addCurrentToCart()
@@ -1531,11 +1544,21 @@ export class VioProductDetail extends LitElement {
       redirect.fail(err instanceof Error ? err.message : String(err))
     }
     if (!fallback) return
+    this.openCheckoutWithVipps()
+  }
+
+  /** The ordinary way in, Vipps preselected: the host opens the checkout on `vio:checkout-open`. */
+  private openCheckoutWithVipps(): void {
+    this.openCheckoutWith('vipps')
+  }
+
+  /** The ordinary way in with a method preselected: the host opens the checkout on `vio:checkout-open`. */
+  private openCheckoutWith(paymentMethod: 'vipps' | 'apple-pay'): void {
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
+        detail: { sponsorId: this.sponsorId, paymentMethod, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1554,14 +1577,51 @@ export class VioProductDetail extends LitElement {
     )
   }
 
+  /** Prepare the Apple Pay sheet for this product × quantity; the newest preparation wins. */
+  private prepareApplePaySheet(): void {
+    const amount = this.unitPrice * this.quantity
+    this.applePayAskedFor = amount
+    void Vio.checkout
+      .prepareApplePayFor(amount, this.currency)
+      .then((handle) => {
+        if (this.applePayAskedFor !== amount) return
+        this.applePayHandle = handle
+        this.applePayAmount = amount
+        this.applePayOk = handle.available
+      })
+      .catch(() => {
+        if (this.applePayAskedFor !== amount) return
+        this.applePayHandle = null
+        this.applePayAmount = null
+        this.applePayOk = false
+      })
+  }
+
   /**
    * Express buy with Apple Pay. Runs synchronously inside the click so the
    * Apple Pay sheet keeps the user gesture: add to cart → open checkout (sets
    * state) → launch the sheet. On authorize, `payment-complete` drives the
    * confirmation drawer (same path as the in-checkout Apple Pay button).
+   *
+   * The sheet's amount is fixed before the tap (Apple blocks a sheet opened
+   * after an await, so it cannot wait for the server's cart), while the
+   * charge is the sponsor's WHOLE cart. So the sheet opens only when it shows
+   * what will be charged: an empty cart, and a sheet prepared for this
+   * product × quantity. Otherwise — lines already in the cart (as with Vipps,
+   * see buyWithVipps), or a quantity whose sheet is still being prepared —
+   * the product is added and the checkout opens with Apple Pay preselected:
+   * every line and the total on screen, and its own Apple Pay button pays
+   * that total.
    */
   private buyWithApplePay(): void {
     if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
+    if (cartHasLines || this.applePayAmount !== this.unitPrice * this.quantity) {
+      this.addCurrentToCart()
+      this.close()
+      this.openCheckoutWith('apple-pay')
+      return
+    }
     this.addCurrentToCart()
     try {
       Vio.checkout.open(this.sponsorId)

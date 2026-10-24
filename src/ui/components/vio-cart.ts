@@ -542,6 +542,12 @@ export class VioCart extends LitElement {
     if (changed.has('open') && this.open) {
       this.confirmedOrder = null
       this.preparedTotal = -1
+      // The lines on screen are the server's: a line another tab added, a
+      // cart another tab paid. Asked on every opening — the `change` it
+      // emits redraws the lines (CartManager.refreshFromServer).
+      for (const cart of this.carts.values()) {
+        if (cart.cartId) void Vio.cart.refreshFromServer(cart.sponsorId)
+      }
     }
     // (Re)prepare Apple Pay whenever the open cart's total changes.
     if (this.open && this.itemCount > 0) {

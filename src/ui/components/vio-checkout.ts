@@ -1648,6 +1648,13 @@ export class VioCheckout extends LitElement {
     if (changed.has('open') && this.open) {
       this.autoSelectSoleMethod()
     }
+    // Opening on a cart: the lines and the total are the SERVER's — a line
+    // another tab added, a cart another tab paid — before the shopper reads
+    // them and pays (CartManager.refreshFromServer; the manager follows the
+    // cart and emits, which re-reads `items` and the subtotal here).
+    if (changed.has('open') && this.open && this.checkoutState?.sponsorId && !this.orderConfirmed) {
+      void Vio.cart.refreshFromServer(this.checkoutState.sponsorId)
+    }
     // A sole Klarna or Apple Pay can turn usable after the list resolved (its
     // script loads, the browser answers). One more try, only on that flip —
     // the once-per-opening guard exists to stop a livelock, not this.

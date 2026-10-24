@@ -67,6 +67,7 @@ export const ANALYTICS_EVENT_NAMES = [
   'remove_from_cart',
   'view_cart',
   'begin_checkout',
+  'add_payment_info',
   'purchase',
   // engagement
   'component_impression',
@@ -269,6 +270,8 @@ export class AnalyticsManager extends EventTarget {
 
   /** Checkouts (`c:<id>`) and orders (`o:<number>`) this page load reported a `purchase` for: one each. */
   private readonly purchased = new Set<string>()
+  /** Checkouts this page load reported an `add_payment_info` for: one each. */
+  private readonly paymentInfoReported = new Set<string>()
   /** Purchases still waiting for Vio's order number: each sends at once, with what it has, when called. */
   private readonly pendingPurchases = new Set<() => void>()
   /** Between `pagehide` and `pageshow` (bfcache): nothing waits, it all goes out now. */
@@ -351,10 +354,13 @@ export class AnalyticsManager extends EventTarget {
     this.teardown.push(() => window.removeEventListener('pagehide', onPageHide))
     this.teardown.push(() => window.removeEventListener('pageshow', onPageShow))
     // On a phone the page may never see `pagehide`: hidden is the last word it
-    // is sure to get. A waiting purchase leaves then — and only it, by beacon.
+    // is sure to get, and a hidden tab may be discarded without running another
+    // timer. A purchase still waiting for its order number goes out now, and
+    // whatever is queued leaves with it, by beacon (order 4128, 2026-10-23: a
+    // purchase already in the queue stayed there when the page hid).
     if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       const onVisibility = () => {
-        if (document.visibilityState !== 'hidden' || this.pendingPurchases.size === 0) return
+        if (document.visibilityState !== 'hidden') return
         this.settlePendingPurchases()
         this.flushWithBeacon()
       }
@@ -872,6 +878,41 @@ export class AnalyticsManager extends EventTarget {
       })
     })
 
+    // The checkout exists (ADR-0039): the one link from the order Commerce
+    // confirms (`order_paid`, by `checkout_id`) back to this session, sent
+    // before the page leaves for the provider — so a sale whose `purchase`
+    // never comes back (a closed tab, a phone that discards the page) still
+    // has its session, page and slot. Per campaign, like begin_checkout.
+    on('vio:checkout-created', (ev) => {
+      const d = (ev as CustomEvent<CheckoutCreatedDetail>).detail ?? {}
+      const checkoutId = firstId(d.checkoutId)
+      if (!checkoutId || this.paymentInfoReported.has(checkoutId)) return
+      this.paymentInfoReported.add(checkoutId)
+      const sponsorId = toNumber(d.sponsorId)
+      const base: AnalyticsContext = { sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
+      const payment: AnalyticsCommerce = {
+        checkoutId,
+        ...(typeof d.paymentMethod === 'string' && d.paymentMethod ? { paymentMethod: d.paymentMethod } : {}),
+      }
+      const { slices, explicit } = this.cartSlices(sponsorId)
+      if (slices.length > 1) {
+        for (const slice of slices) {
+          this.track('add_payment_info', {
+            context: this.sliceContext(slice, base),
+            commerce: { ...sliceCommerce(slice), ...payment },
+            props: { slice: slice.slice, slices: slice.slices },
+          })
+        }
+      } else {
+        this.track('add_payment_info', {
+          context: this.singleSliceContext(slices[0], explicit, base),
+          commerce: { ...(this.cartCommerce(sponsorId) ?? {}), ...payment },
+        })
+      }
+      // Leaving for the provider now: a beacon outlives the navigation.
+      if (d.redirect === true) this.flushWithBeacon()
+    })
+
     on('vio:payment-success', (ev) => {
       const d = (ev as CustomEvent<PaymentSuccessDetail>).detail ?? {}
       const ids = purchaseIdsOf(d)
@@ -965,6 +1006,9 @@ export class AnalyticsManager extends EventTarget {
         }
         this.record(event)
       }
+      // The purchase does not wait for the next tick: a phone may hide or
+      // discard the page first (order 4128). Hidden or going away: by beacon.
+      this.sendNow()
     }
     const ask = ids.orderIdKind === 'checkout' ? this.orderReferenceAsker(ids.checkoutId, sponsorId) : null
     if (!ask) {
@@ -973,9 +1017,8 @@ export class AnalyticsManager extends EventTarget {
     }
     if (this.isPageHidden()) {
       // The page is going away (an emitter settling early on `pagehide`):
-      // nothing can wait — out now, by beacon.
+      // nothing can wait — out now (by beacon, see `sendNow`).
       send()
-      this.flushWithBeacon()
       return
     }
     let done = false
@@ -988,6 +1031,15 @@ export class AnalyticsManager extends EventTarget {
     const settleNow = () => settle()
     this.pendingPurchases.add(settleNow)
     void waitForOrderNumber(ask, () => done).then(settle, () => settle())
+  }
+
+  /**
+   * Sends the queue now, not at the next tick: by beacon when the page is
+   * hidden or going away (a request may not survive it), else by fetch.
+   */
+  private sendNow(): void {
+    if (this.isPageHidden()) this.flushWithBeacon()
+    else void this.flush()
   }
 
   /** Sends every purchase still waiting for its order number, at once, with what it has. */
@@ -1432,6 +1484,25 @@ export function buyerRefOf(
   return undefined
 }
 
+/**
+ * `detail` of `vio:checkout-created` (the checkout manager, the moment a
+ * backend checkout exists for a payment): what `add_payment_info` says.
+ */
+export interface CheckoutCreatedDetail {
+  sponsorId?: number | string
+  /** Vio's checkout id (uuid) — `commerce.checkout_id`. */
+  checkoutId?: string
+  /** The SDK's name of the method the checkout was created for (`vipps`, `stripe`, `apple-pay`…). */
+  paymentMethod?: string
+  /** The campaign the checkout was born attributed to (ADR-0035 B), when it was. */
+  campaignId?: number
+  slot?: string
+  contentId?: string | number
+  contentTitle?: string
+  /** The page leaves for the provider right after. */
+  redirect?: boolean
+}
+
 /** The ids of a `purchase`, as a `vio:payment-success` detail gives them (`purchaseIdsOf`). */
 export interface PurchaseIds {
   /**
@@ -1566,6 +1637,7 @@ function pushGa4(event: WireEvent): void {
     'add_to_cart',
     'view_cart',
     'begin_checkout',
+    'add_payment_info',
     'purchase',
   ])
   if (!commerceNames.has(event.name)) return
@@ -1576,6 +1648,7 @@ function pushGa4(event: WireEvent): void {
     value?: number
     currency?: string
     order_id?: string
+    payment_method?: string
   }
   // GA4 best practice: clear the previous ecommerce object before each push.
   w.dataLayer.push({ ecommerce: null })
@@ -1585,6 +1658,7 @@ function pushGa4(event: WireEvent): void {
       currency: commerce.currency,
       value: commerce.value,
       transaction_id: commerce.order_id,
+      payment_type: event.name === 'add_payment_info' ? commerce.payment_method : undefined,
       items: commerce.items?.map((i) =>
         compact({
           item_id: i.product_id,

@@ -441,6 +441,16 @@ function adyenReturnUrl(params: Record<string, unknown>): string {
   return build(bare)
 }
 
+/**
+ * The SDK's own name of a payment method (`vipps`, `apple-pay`, `stripe`…):
+ * the backend's spelling ("Vipps", "Apple Pay") lowered, spaces to dashes.
+ */
+function paymentMethodName(method: unknown): string | undefined {
+  if (typeof method !== 'string') return undefined
+  const name = method.trim().toLowerCase().replace(/\s+/g, '-')
+  return name || undefined
+}
+
 function resolveHttpsReturnUrl(
   overrideUrl?: string | null,
   params: Record<string, unknown> | null = null,
@@ -574,6 +584,8 @@ export class CheckoutManager extends EventTarget {
   }
   /** The last checkout + identity written to the memory — the state is set on every keystroke of the form. */
   private lastRememberedSponsor = ''
+  /** Backend checkouts this page load announced with `vio:checkout-created`: one event each. */
+  private readonly announcedCheckouts = new Set<string>()
   /** Counts `open()` calls — see CheckoutState.session. */
   private sessionSeq = 0
   private applePayAvailableCache: boolean | null = null
@@ -706,8 +718,13 @@ export class CheckoutManager extends EventTarget {
     }
   }
 
-  /** Create the backend checkout for the sponsor's cart (auto-accepts terms); born attributed when the facade knows the attribution. */
-  async createCheckout(sponsorId: number): Promise<any> {
+  /**
+   * Create the backend checkout for the sponsor's cart (auto-accepts terms);
+   * born attributed when the facade knows the attribution. `paymentMethod` is
+   * the method it is created to pay with, when the caller knows it (else the
+   * state's): it goes on `vio:checkout-created`.
+   */
+  async createCheckout(sponsorId: number, paymentMethod?: PaymentMethod | string): Promise<any> {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
     await this.cartManager.waitForCartMutations(sponsorId)
@@ -736,6 +753,9 @@ export class CheckoutManager extends EventTarget {
         checkout,
       }
       this.emit()
+      this.announceCheckout(checkout.id, sponsorId, paymentMethod ?? this.state?.paymentMethod, {
+        campaignId: attribution?.campaign_id,
+      })
       try {
         const updated = await gqlUpdateCheckout(
           {
@@ -757,6 +777,42 @@ export class CheckoutManager extends EventTarget {
       }
     }
     return checkout
+  }
+
+  /**
+   * `vio:checkout-created` on `window` — `{ sponsorId, checkoutId,
+   * paymentMethod, campaignId?, redirect }` — the moment a backend checkout
+   * exists for a payment, before anything is asked of the provider. Analytics
+   * answers it with `add_payment_info` (ADR-0039: the one link from the
+   * order Commerce confirms back to this browser's session); `redirect: true`
+   * when the page is about to leave for the provider. Once per checkout per
+   * page load; never throws.
+   */
+  private announceCheckout(
+    checkoutId: string | undefined,
+    sponsorId: number,
+    paymentMethod: PaymentMethod | string | undefined,
+    opts: { redirect?: boolean; campaignId?: number } = {},
+  ): void {
+    if (!checkoutId || this.announcedCheckouts.has(checkoutId)) return
+    this.announcedCheckouts.add(checkoutId)
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+    const method = paymentMethodName(paymentMethod)
+    try {
+      window.dispatchEvent(
+        new CustomEvent('vio:checkout-created', {
+          detail: {
+            sponsorId,
+            checkoutId,
+            ...(method ? { paymentMethod: method } : {}),
+            ...(typeof opts.campaignId === 'number' ? { campaignId: opts.campaignId } : {}),
+            redirect: opts.redirect === true,
+          },
+        }),
+      )
+    } catch {
+      /* an event never costs a payment */
+    }
   }
 
   /** Update the backend checkout (terms are re-asserted unless overridden; the attribution rides along unless the caller gives its own). */
@@ -1033,6 +1089,8 @@ export class CheckoutManager extends EventTarget {
     sponsorId: number | undefined,
     formData: unknown,
     extraUpdateVars: Record<string, unknown> = {},
+    /** The page leaves for the provider right after (Vipps, a Stripe payment link). */
+    leaving = false,
   ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
@@ -1061,6 +1119,10 @@ export class CheckoutManager extends EventTarget {
         ? await gqlCreateCheckout(cartId, opts, { attribution })
         : await gqlCreateCheckout(cartId, opts)
       checkoutId = checkoutRes?.id
+      this.announceCheckout(checkoutId, spId, String(extraUpdateVars.paymentMethod ?? '') || this.state?.paymentMethod, {
+        redirect: leaving,
+        campaignId: attribution?.campaign_id,
+      })
     }
     if (!checkoutId) {
       throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
@@ -1151,6 +1213,7 @@ export class CheckoutManager extends EventTarget {
       sponsorId,
       formData,
       { paymentMethod: 'Stripe' },
+      true,
     )
     const successUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -1195,6 +1258,7 @@ export class CheckoutManager extends EventTarget {
       sponsorId,
       formData,
       { paymentMethod: 'Vipps' },
+      true,
     )
     const returnUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -1265,7 +1329,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'kustom')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1361,7 +1425,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'qliro')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1471,7 +1535,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'walley')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1562,7 +1626,7 @@ export class CheckoutManager extends EventTarget {
     }
     if (!checkoutId) {
       // createCheckout(), NOT the raw mutation — see mountWalleyCheckout.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'nexi')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -2236,7 +2300,7 @@ export class CheckoutManager extends EventTarget {
     return async (raw: ApplePayResult): Promise<unknown> => {
       let checkoutId = this.state?.checkoutId
       if (!checkoutId) {
-        const created = await this.createCheckout(spId)
+        const created = await this.createCheckout(spId, 'apple-pay')
         checkoutId = created?.id ?? this.state?.checkoutId
       }
       if (!checkoutId) {
@@ -2506,7 +2570,7 @@ export class CheckoutManager extends EventTarget {
     // 3. Backend checkout (CreatePaymentKlarnaNative requires a checkout_id).
     let checkoutId = ctx.checkoutId ?? this.state.checkoutId
     try {
-      const checkoutRes = await this.createCheckout(sponsorId)
+      const checkoutRes = await this.createCheckout(sponsorId, 'klarna')
       if (checkoutRes?.id) {
         checkoutId = checkoutRes.id
         ctx.checkoutId = checkoutRes.id
@@ -2561,6 +2625,7 @@ export class CheckoutManager extends EventTarget {
     if (nativeRes.checkout_id) {
       ctx.checkoutId = nativeRes.checkout_id
       this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+      this.announceCheckout(nativeRes.checkout_id, sponsorId, 'klarna')
     }
     if (nativeRes.session_id) {
       ctx.sessionId = nativeRes.session_id
@@ -2680,7 +2745,7 @@ export class CheckoutManager extends EventTarget {
     try {
       let checkoutId = ctx.checkoutId ?? this.state.checkoutId
       try {
-        const checkoutRes = await this.createCheckout(sponsorId)
+        const checkoutRes = await this.createCheckout(sponsorId, 'klarna')
         if (checkoutRes?.id) {
           checkoutId = checkoutRes.id
           ctx.checkoutId = checkoutRes.id
@@ -2728,6 +2793,7 @@ export class CheckoutManager extends EventTarget {
       if (nativeRes.checkout_id) {
         ctx.checkoutId = nativeRes.checkout_id
         this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+        this.announceCheckout(nativeRes.checkout_id, sponsorId, 'klarna')
       }
       if (nativeRes.session_id) {
         ctx.sessionId = nativeRes.session_id

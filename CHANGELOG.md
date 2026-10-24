@@ -23,6 +23,15 @@ and *when*, and links there.
   another tab of the site changed it. For hosts that draw their own cart or badge.
   `Vio.cart.refreshFromServer(sponsorId)` asks on demand. See
   [README → What the shopper pays is what the page shows](README.md#what-the-shopper-pays-is-what-the-page-shows--the-cart-the-server-the-other-tabs).
+- **`add_payment_info`** (analytics, GA4 name) the moment a backend checkout exists for a payment
+  — Vipps from the detail, the cart or the checkout, a Stripe payment link or Element, Klarna,
+  Apple Pay, Nexi, Kustom, Qliro, Walley, Adyen — with `commerce.checkout_id`, `payment_method`,
+  the cart's lines and the same context as `begin_checkout` (per campaign like it). Once per
+  checkout per page load, none when the checkout could not be created, and by beacon BEFORE the
+  page leaves for Vipps or a Stripe link. It is how a paid order whose `purchase` never came back
+  keeps its session, page and slot (ADR-0039; order 4128, 2026-10-23). The checkout manager
+  announces it on `window` as **`vio:checkout-created`** `{ sponsorId, checkoutId, paymentMethod,
+  campaignId?, redirect }`. See [README → `add_payment_info`](README.md#add_payment_info--the-checkout-linked-to-this-session-0290).
 
 ### Changed
 - **«Kjøp nå med Vipps» on the product detail goes straight to Vipps only when the cart is
@@ -56,8 +65,20 @@ and *when*, and links there.
   on the button, 1 298 kr in Vipps). With Vipps as the method and Express on for the seller,
   the summary says «Frakt: Velges i Vipps» and the total and «Betal … med Vipps» are the items.
   Vipps without Express, and every other method, still add the rate as before.
+- **The `purchase` of a paid return is sent, not left in the queue** (2026-10-24). Order 4128
+  (Careless, prod, 2026-10-23 22:40, after two abandoned trips to Vipps): the shopper
+  paid, came back, saw the confirmation, and the brand's panel never counted the sale — Commerce
+  had its `order_paid`, the collector no `purchase`. The return was read as paid; the one way the
+  code loses that purchase is the queue: it was built, with the order number, into a queue sent
+  every 5 s, and leaving the page right away (back to the Vipps app, the home screen) beaconed
+  only a purchase still waiting for its number — a phone that discards a hidden tab never runs
+  the next tick. Now the purchase is sent as soon as it is built, and when the page hides
+  everything still queued leaves by beacon.
 
 ### ⚠️ Upgrade notes
+- **The collector must accept `add_payment_info`** before it is counted: one that does not know the
+  name rejects that event alone (`202` with `rejected`), the rest of the batch is kept. Nothing to
+  do in the host.
 - A host that handles `vio:checkout-open` only from the cart: the product detail now emits it
   too when «Kjøp nå med Vipps» or Apple Pay is tapped on a non-empty cart (it already did when
   Express was off for the seller), now also with `paymentMethod: 'apple-pay'`. Check that your

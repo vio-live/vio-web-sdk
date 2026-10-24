@@ -680,7 +680,9 @@ every line in it. It goes straight to Vipps only when the cart was **empty**; wi
 already in it, the product is added and the checkout opens first (`vio:checkout-open`
 with `paymentMethod: 'vipps'`, no hand-over events), every line and the total on screen,
 so what the Vipps page lists is what the shopper saw. The cart's own Vipps button always
-pays the whole cart — the lines are right there.
+pays the whole cart — the lines are right there. **Apple Pay on the detail follows the same
+rule**: its sheet's amount is fixed before the tap, so it opens only on an empty cart, for the
+product × the chosen quantity; otherwise the checkout opens (`paymentMethod: 'apple-pay'`).
 
 ### What the shopper pays is what the page shows — the cart, the server, the other tabs
 

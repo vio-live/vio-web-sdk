@@ -31,6 +31,12 @@ and *when*, and links there.
   the total on screen. Before, the tap paid the WHOLE cart with only the Vipps page saying so
   (Mote & Livsstil, 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
   with the top bought «nå»). The cart's own Vipps button is unchanged: it pays the lines it shows.
+- **Apple Pay on the product detail shows what it charges.** The sheet's amount is fixed before
+  the tap and was the product's price, while the charge was the sponsor's whole cart. The sheet
+  now opens only on an empty cart, prepared for the product × the chosen quantity (it is prepared
+  again when the quantity or variant changes); with lines already in the cart — or while the
+  sheet for a new quantity is still being prepared — the product is added and the checkout opens
+  (`vio:checkout-open` with `paymentMethod: 'apple-pay'`), where Apple Pay charges the total shown.
 
 ### Fixed
 - **The lines the shopper pays for are the lines the page shows.** The checkout, and the
@@ -47,8 +53,9 @@ and *when*, and links there.
 
 ### ⚠️ Upgrade notes
 - A host that handles `vio:checkout-open` only from the cart: the product detail now emits it
-  too when «Kjøp nå med Vipps» is tapped on a non-empty cart (it already did when Express was
-  off for the seller). Check that your handler opens `<vio-checkout>` for the detail's event.
+  too when «Kjøp nå med Vipps» or Apple Pay is tapped on a non-empty cart (it already did when
+  Express was off for the seller), now also with `paymentMethod: 'apple-pay'`. Check that your
+  handler opens `<vio-checkout>` for the detail's event.
 - A host with its own cart drawer or badge: listen to `vio:cart-updated` (or `Vio.cart`'s
   `change`) — the lines can now change without a tap in that tab.
 - One more `GetCart` per checkout creation / payment link and per opening of the drawer or the

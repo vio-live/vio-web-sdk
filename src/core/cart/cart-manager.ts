@@ -42,6 +42,23 @@ export interface CartChangeDetail {
   itemCount: number
 }
 
+/**
+ * Detail of `vio:cart-updated` (on `document`): a sponsor's cart as it stands
+ * after this tab learned of it from somewhere other than its own taps —
+ * `source: 'server'`: GetCart, applied right before a checkout is built on it
+ * (`refreshFromServer`); `source: 'storage'`: another tab of the same site
+ * wrote it (an add there, a payment that cleared it). The lines are copies.
+ */
+export interface CartUpdatedDetail {
+  sponsorId: number
+  cartId?: string
+  items: CartLineItem[]
+  itemCount: number
+  subtotal: number
+  currency: string
+  source: 'server' | 'storage'
+}
+
 export interface AddProductOptions {
   product: Product
   sponsorId: number
@@ -169,6 +186,15 @@ export class CartManager extends EventTarget {
   constructor() {
     super()
     this.cartsBySponsor = this.loadFromStorage()
+    // The carts are shared by every tab of the site through localStorage, but
+    // each tab used to read them once, here, and never again: a payment in one
+    // tab left the others showing — and adding to — a cart that was already
+    // paid, and a line added in one tab was missing from the next until a
+    // reload. Other tabs' writes arrive as `storage` events (never this tab's
+    // own); see `onStorage`.
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', this.onStorage)
+    }
   }
 
   private nextSeq(sponsorId: number): number {
@@ -370,6 +396,9 @@ export class CartManager extends EventTarget {
    * Overwrite local cart state with the backend cart response (source of
    * truth). `opts.settling` is the mutation whose answer this is: it does not
    * count as "in flight" for the origins (see `hasMutationsInFlight`).
+   * `opts.authoritative` is a GetCart taken with nothing of this tab's in
+   * flight (`refreshFromServer`): an empty answer then means the cart IS
+   * empty, and the local lines go — not an add still on its way.
    */
   updateFromBackendCart(
     sponsorId: number,
@@ -400,7 +429,7 @@ export class CartManager extends EventTarget {
         available_shippings?: unknown[]
       }>
     },
-    opts: { settling?: Promise<unknown> } = {},
+    opts: { settling?: Promise<unknown>; authoritative?: boolean } = {},
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
@@ -418,7 +447,7 @@ export class CartManager extends EventTarget {
     const removedBeforeSync: string[] = []
     if (Array.isArray(backendCart.line_items)) {
       const existingItems = cart.items || []
-      if (backendCart.line_items.length === 0 && existingItems.length > 0) {
+      if (backendCart.line_items.length === 0 && existingItems.length > 0 && !opts.authoritative) {
         // Backend says empty while we have optimistic local lines (add still
         // in flight) — keep the local view; a later sync will reconcile.
         this.persist()
@@ -896,6 +925,91 @@ export class CartManager extends EventTarget {
     const resCart = await gqlGetCart(cart.cartId, gqlOpts)
     if (resCart) this.updateFromBackendCart(sponsorId, resCart)
     return resCart
+  }
+
+  /**
+   * The cart as the server has it, for the moment a checkout is about to be
+   * built on it: what the shopper is about to pay must be what the page shows.
+   * Waits for this tab's own mutations (their answers are the server's too),
+   * then applies GetCart as it is — a line another tab added, one it removed,
+   * an empty cart — and tells the page: `change` for the drawer, and
+   * `vio:cart-updated` on `document` (`source: 'server'`) for a host that
+   * draws its own. A mutation that starts while the server is answering makes
+   * that answer old: it is asked once more. Nothing to ask without a backend
+   * cart. A GetCart that fails leaves the local state as it was and does not
+   * throw — the checkout then goes on with the lines the last mutation
+   * answered, as it always did. Resolves with the sponsor's cart.
+   */
+  async refreshFromServer(sponsorId: number): Promise<SponsorCartState | undefined> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.waitForCartMutations(sponsorId)
+      const cart = this.cartsBySponsor.get(sponsorId)
+      if (!cart?.cartId) return cart
+      let resCart: unknown
+      try {
+        const gqlOpts = await getCartGraphQLOptions(sponsorId)
+        resCart = await gqlGetCart(cart.cartId, gqlOpts)
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CartManager] GetCart before the checkout failed — the local cart stands', err)
+        }
+        return cart
+      }
+      // Newer than this answer: a tap landed while the server was answering.
+      if (this.hasMutationsInFlight(sponsorId)) continue
+      const backendCart = resCart as { line_items?: unknown } | null | undefined
+      if (backendCart && Array.isArray(backendCart.line_items)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.updateFromBackendCart(sponsorId, backendCart as any, { authoritative: true })
+        this.emitCartUpdated(sponsorId, 'server')
+      }
+      return this.cartsBySponsor.get(sponsorId)
+    }
+    return this.cartsBySponsor.get(sponsorId)
+  }
+
+  /** `vio:cart-updated` on `document` — see `CartUpdatedDetail`. */
+  private emitCartUpdated(sponsorId: number, source: CartUpdatedDetail['source']): void {
+    if (typeof document === 'undefined') return
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const items = (cart?.items ?? []).map((item) => ({ ...item }))
+    const detail: CartUpdatedDetail = {
+      sponsorId,
+      cartId: cart?.cartId,
+      items,
+      itemCount: items.reduce((count, item) => count + item.quantity, 0),
+      subtotal: items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+      currency: cart?.currency || getGlobalCurrency(),
+      source,
+    }
+    document.dispatchEvent(new CustomEvent<CartUpdatedDetail>('vio:cart-updated', { bubbles: true, detail }))
+  }
+
+  /**
+   * Another tab of the site wrote the carts: adopt what it wrote, sponsor by
+   * sponsor — its lines and its backend cart id, or nothing when it cleared
+   * the cart (a payment) — except for a sponsor this tab is mid-write for:
+   * its own answer lands in a moment and is persisted then, over whatever
+   * the other tab had. `key` is null when the other tab cleared the whole
+   * storage. Says `change` (the drawer) and `vio:cart-updated` per sponsor
+   * that changed (`source: 'storage'`); nothing when nothing did.
+   */
+  private onStorage = (e: StorageEvent): void => {
+    if (e.key !== null && e.key !== STORAGE_KEY) return
+    const stored = this.loadFromStorage()
+    const changed: number[] = []
+    for (const sponsorId of new Set([...this.cartsBySponsor.keys(), ...stored.keys()])) {
+      if (this.hasMutationsInFlight(sponsorId) || this.cartIdPromises.has(sponsorId)) continue
+      const mine = this.cartsBySponsor.get(sponsorId)
+      const theirs = stored.get(sponsorId)
+      if (JSON.stringify(mine ?? null) === JSON.stringify(theirs ?? null)) continue
+      if (theirs) this.cartsBySponsor.set(sponsorId, theirs)
+      else this.cartsBySponsor.delete(sponsorId)
+      changed.push(sponsorId)
+    }
+    if (changed.length === 0) return
+    this.emit()
+    for (const sponsorId of changed) this.emitCartUpdated(sponsorId, 'storage')
   }
 
   /** Line items grouped by supplier (shipping is per-supplier server-side). */

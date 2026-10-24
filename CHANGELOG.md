@@ -16,7 +16,32 @@ and *when*, and links there.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- **`vio:cart-updated`** on `document` — `{ sponsorId, cartId, items, itemCount, subtotal, currency, source }`,
+  `source: 'server'` when the cart was just read from the server (right before a checkout is
+  created or a payment link minted, and when the drawer or the checkout opens), `'storage'` when
+  another tab of the site changed it. For hosts that draw their own cart or badge.
+  `Vio.cart.refreshFromServer(sponsorId)` asks on demand. See
+  [README → What the shopper pays is what the page shows](README.md#what-the-shopper-pays-is-what-the-page-shows--the-cart-the-server-the-other-tabs).
+
+### Fixed
+- **The lines the shopper pays for are the lines the page shows.** The checkout, and the
+  Vipps / Stripe page, are built on the backend cart — every line in it — while the drawer
+  and the checkout summary drew this tab's memory. Now the SDK reads the server's cart right
+  before a checkout is created or a payment link minted, and when `<vio-cart>` / `<vio-checkout>`
+  open, and draws that; an open checkout recomputes its lines and total when the cart changes
+  under it.
+- **Other tabs of the site are heard.** The carts are shared through `localStorage` but each
+  tab read them once, at load: a payment in one tab left the others showing — and adding to —
+  a cart that was already paid; a line added in one tab was missing from the others until a
+  reload. Now a tab adopts what another tab wrote (`storage` event), except for a sponsor it is
+  mid-add for.
+
+### ⚠️ Upgrade notes
+- A host with its own cart drawer or badge: listen to `vio:cart-updated` (or `Vio.cart`'s
+  `change`) — the lines can now change without a tap in that tab.
+- One more `GetCart` per checkout creation / payment link and per opening of the drawer or the
+  checkout.
 
 ## 0.28.0 — 2026-10-22
 

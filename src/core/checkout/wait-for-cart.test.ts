@@ -23,6 +23,7 @@ function cartStillSyncing() {
   const settled = new Promise<void>((r) => (release = r))
   const cart = {
     waitForCartMutations: vi.fn(() => settled),
+    refreshFromServer: vi.fn(async () => undefined),
     getCart: () => ({ cartId: 'cart-1', currency: 'NOK', items: [{ id: 'a', quantity: 2, unitPrice: 100 }] }),
     ensureCartId: async () => 'cart-1',
     subtotalForSponsor: () => 200,

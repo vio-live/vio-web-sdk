@@ -631,6 +631,36 @@ export class CheckoutManager extends EventTarget {
     // Warm Stripe.js early: Apple Pay's sheet must open synchronously inside
     // the tap gesture, so the library can't be lazy-loaded at click time.
     preloadStripeJs()
+    // The cart under an open checkout can change without a tap in it: the
+    // server's lines taken when the checkout opens and right before it is
+    // built (CartManager.refreshFromServer), a stock clamp, another tab. The
+    // state's subtotal was computed at open(); it follows the cart from here.
+    // (Tests hand in plain stubs for the cart: nothing to listen to there.)
+    if (typeof (cartManager as Partial<EventTarget>).addEventListener === 'function') {
+      cartManager.addEventListener('change', () => this.onCartChange())
+    }
+  }
+
+  /** The open checkout's lines as a signature, to tell a real change from an echo. */
+  private cartSignature(sponsorId: number): string {
+    return (this.cartManager.getCart(sponsorId)?.items ?? [])
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
+      .join('|')
+  }
+
+  /** What the open checkout's cart looked like when it was last emitted. */
+  private lastCartSignature: string | null = null
+
+  /** The open checkout follows its cart: subtotal recomputed and `change` said when the lines differ. */
+  private onCartChange(): void {
+    const state = this.state
+    if (!state) return
+    const subtotal = this.cartManager.subtotalForSponsor(state.sponsorId)
+    const signature = this.cartSignature(state.sponsorId)
+    if (subtotal === state.subtotal && signature === this.lastCartSignature) return
+    this.lastCartSignature = signature
+    this.state = { ...state, subtotal }
+    this.emit()
   }
 
   open(sponsorId: number): CheckoutState {
@@ -646,6 +676,7 @@ export class CheckoutManager extends EventTarget {
       // the host may have switched currency since the cart was created.
       currency: getGlobalCurrency(),
     }
+    this.lastCartSignature = this.cartSignature(sponsorId)
     this.emit()
     return this.state
   }
@@ -680,6 +711,10 @@ export class CheckoutManager extends EventTarget {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
     await this.cartManager.waitForCartMutations(sponsorId)
+    // And on the cart the SERVER has: the checkout takes every line of the
+    // backend cart, so the page shows those lines before anything is built on
+    // them (another tab may have added or paid; see CartManager.refreshFromServer).
+    await this.cartManager.refreshFromServer(sponsorId)
     const cart = this.cartManager.getCart(sponsorId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -1002,8 +1037,11 @@ export class CheckoutManager extends EventTarget {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
     // The payment link is minted for the cart as it is AFTER any in-flight
-    // quantity change — never for the one before it.
+    // quantity change — never for the one before it — and as the SERVER has
+    // it: the provider's page shows every line of the backend cart, so the
+    // page shows them first (see CartManager.refreshFromServer).
     await this.cartManager.waitForCartMutations(spId)
+    await this.cartManager.refreshFromServer(spId)
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {

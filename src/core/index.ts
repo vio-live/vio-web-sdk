@@ -129,6 +129,7 @@ export {
 export { CartManager } from './cart/cart-manager.js'
 export type {
   CartChangeDetail,
+  CartUpdatedDetail,
   AddProductOptions,
   AddManualOptions,
 } from './cart/cart-manager.js'

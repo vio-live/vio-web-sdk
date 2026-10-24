@@ -78,6 +78,12 @@ export class VioCheckout extends LitElement {
   @property({ type: String }) heading = 'Kasse'
   @property({ type: String, attribute: 'shipping-label' })
   shippingLabel = 'Beregnes ved kasse'
+  /**
+   * Vipps Express: the shopper picks the delivery inside Vipps, so with Vipps
+   * selected our own shipping rate is not part of the total and the summary
+   * says the shipping is chosen in Vipps (Angelo, 2026-10-24).
+   */
+  @state() private vippsShipsInApp = false
   /** Express mode — render only the Klarna widget (no address form / method grid). */
   @property({ type: Boolean, reflect: true }) express = false
 
@@ -1821,6 +1827,9 @@ export class VioCheckout extends LitElement {
         // Which Stripe: the flow travels in the method's own config, and the
         // list is memoised, so this costs nothing extra.
         this.stripeMode = await Vio.checkout.getStripeMode(spId)
+        this.vippsShipsInApp = this.availableMethods.some((m) => String(m).toLowerCase() === 'vipps')
+          ? await Vio.checkout.getVippsExpressEnabled(spId)
+          : false
       } else {
         this.availableMethods = null
       }
@@ -2550,6 +2559,7 @@ export class VioCheckout extends LitElement {
    * express always has one; the normal flow has one once the backend
    * shippings loaded (the choice IS persisted on the cart and charged). */
   private shippingMajor(): number {
+    if (this.vippsChoosesShipping()) return 0
     if (this.checkoutState?.paymentMethod === 'qliro' && typeof this.qliroShipping?.price === 'number') {
       return this.qliroShipping.price
     }
@@ -2563,6 +2573,11 @@ export class VioCheckout extends LitElement {
     const o = this.shippingOption
     if (!o) return 0
     return o.priceMajor ?? o.price / 100
+  }
+
+  /** Vipps is the method and it runs as Express: the delivery is chosen in Vipps. */
+  private vippsChoosesShipping(): boolean {
+    return this.checkoutState?.paymentMethod === 'vipps' && this.vippsShipsInApp
   }
 
   /** The rate the summary names — Qliro's own pick while Qliro is the method. */
@@ -4328,9 +4343,11 @@ export class VioCheckout extends LitElement {
                   </div>
                   <div class="order-row">
                     <span>Frakt${this.shippingMajor() > 0 && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
-                    <span>${this.shippingMajor() > 0
-                      ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
-                      : this.shippingLabel}</span>
+                    <span>${this.vippsChoosesShipping()
+                      ? 'Velges i Vipps'
+                      : this.shippingMajor() > 0
+                        ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
+                        : this.shippingLabel}</span>
                   </div>
                   <div class="order-row total">
                     <span>Totalt</span><span>${this.payTotalLabel()}</span>

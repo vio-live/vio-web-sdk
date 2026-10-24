@@ -50,6 +50,12 @@ and *when*, and links there.
   a cart that was already paid; a line added in one tab was missing from the others until a
   reload. Now a tab adopts what another tab wrote (`storage` event), except for a sponsor it is
   mid-add for.
+- **Vipps Express: the checkout no longer adds our shipping to the total.** The delivery is
+  chosen and paid inside Vipps, but with Vipps selected the checkout still added the seller's
+  first rate (Careless QA, 2026-10-24: «Frakt – Default Shipping» 10 kr, 1 308 kr on screen and
+  on the button, 1 298 kr in Vipps). With Vipps as the method and Express on for the seller,
+  the summary says «Frakt: Velges i Vipps» and the total and «Betal … med Vipps» are the items.
+  Vipps without Express, and every other method, still add the rate as before.
 
 ### ⚠️ Upgrade notes
 - A host that handles `vio:checkout-open` only from the cart: the product detail now emits it

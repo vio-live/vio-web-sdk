@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.29.0 — 2026-10-24
 
 ### Added
 - **`vio:cart-updated`** on `document` — `{ sponsorId, cartId, items, itemCount, subtotal, currency, source }`,

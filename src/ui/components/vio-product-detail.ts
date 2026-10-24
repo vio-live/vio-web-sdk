@@ -1504,6 +1504,19 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
+    // not on this product (see buyNow). Straight to Vipps only when the cart
+    // is empty, so what the Vipps page lists is what was tapped; with lines
+    // already in it, the product is added and the checkout opens first, with
+    // every line and the total, Vipps preselected (Mote & Livsstil,
+    // 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
+    // with the product bought «nå», and only Vipps' page had said so).
+    if ((Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0) {
+      this.addCurrentToCart()
+      this.close()
+      this.openCheckoutWithVipps()
+      return
+    }
     // The overlay first, then the close: no empty moment, no second tap.
     const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.sponsorId, source: 'detail' })
     this.addCurrentToCart()
@@ -1531,6 +1544,11 @@ export class VioProductDetail extends LitElement {
       redirect.fail(err instanceof Error ? err.message : String(err))
     }
     if (!fallback) return
+    this.openCheckoutWithVipps()
+  }
+
+  /** The ordinary way in, Vipps preselected: the host opens the checkout on `vio:checkout-open`. */
+  private openCheckoutWithVipps(): void {
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,

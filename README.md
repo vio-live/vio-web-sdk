@@ -674,6 +674,14 @@ tap, so a second payment cannot start. Events on `document`:
 `source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
 in the light DOM.
 
+**The detail's Vipps button pays the whole cart.** «Kjøp nå med Vipps» on the product
+detail adds the product to the sponsor's cart and the checkout is built on that cart —
+every line in it. It goes straight to Vipps only when the cart was **empty**; with lines
+already in it, the product is added and the checkout opens first (`vio:checkout-open`
+with `paymentMethod: 'vipps'`, no hand-over events), every line and the total on screen,
+so what the Vipps page lists is what the shopper saw. The cart's own Vipps button always
+pays the whole cart — the lines are right there.
+
 ### What the shopper pays is what the page shows — the cart, the server, the other tabs
 
 The cart lives in this tab's memory and in `localStorage` (`vio.cart.v1`, one entry per

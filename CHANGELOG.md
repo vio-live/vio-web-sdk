@@ -24,6 +24,14 @@ and *when*, and links there.
   `Vio.cart.refreshFromServer(sponsorId)` asks on demand. See
   [README → What the shopper pays is what the page shows](README.md#what-the-shopper-pays-is-what-the-page-shows--the-cart-the-server-the-other-tabs).
 
+### Changed
+- **«Kjøp nå med Vipps» on the product detail goes straight to Vipps only when the cart is
+  empty.** With lines already in the cart, the product is added and the checkout opens first
+  (`vio:checkout-open`, Vipps preselected, no `vio:payment-redirect-*` events), every line and
+  the total on screen. Before, the tap paid the WHOLE cart with only the Vipps page saying so
+  (Mote & Livsstil, 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
+  with the top bought «nå»). The cart's own Vipps button is unchanged: it pays the lines it shows.
+
 ### Fixed
 - **The lines the shopper pays for are the lines the page shows.** The checkout, and the
   Vipps / Stripe page, are built on the backend cart — every line in it — while the drawer
@@ -38,6 +46,9 @@ and *when*, and links there.
   mid-add for.
 
 ### ⚠️ Upgrade notes
+- A host that handles `vio:checkout-open` only from the cart: the product detail now emits it
+  too when «Kjøp nå med Vipps» is tapped on a non-empty cart (it already did when Express was
+  off for the seller). Check that your handler opens `<vio-checkout>` for the detail's event.
 - A host with its own cart drawer or badge: listen to `vio:cart-updated` (or `Vio.cart`'s
   `change`) — the lines can now change without a tap in that tab.
 - One more `GetCart` per checkout creation / payment link and per opening of the drawer or the

@@ -25,6 +25,11 @@ and *when*, and links there.
   [README → Internal traffic](README.md#internal-traffic--mark-your-browser-as-a-tester-unreleased).
 
 ### Changed
+- **Stripe.js (~300 KB) is downloaded only for a brand that uses Stripe.** It used to load on
+  every page as soon as the SDK started, to have Apple Pay ready. Now it loads when the brand's
+  payment methods come back with a Stripe key (or when the host passes `stripePublishableKey`
+  to `Vio.init`). A brand that only takes Vipps never downloads it. Apple Pay still has it before
+  the tap: its button waits for the same key.
 - **`component_impression` of `<vio-product-carousel>` carries `commerce.items`** — the products
   shown, like its `view_item_list` — so the collector can count per-product impressions
   (ADR-0041). The impression is observed once the products have loaded (the 1 s dwell starts

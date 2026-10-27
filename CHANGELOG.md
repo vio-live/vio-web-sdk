@@ -14,6 +14,15 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Changed
+- **Stripe.js (~300 KB) is downloaded only for a brand that uses Stripe.** It used to load on
+  every page as soon as the SDK started, to have Apple Pay ready. Now it loads when the brand's
+  payment methods come back with a Stripe key (or when the host passes `stripePublishableKey`
+  to `Vio.init`). A brand that only takes Vipps never downloads it. Apple Pay still has it before
+  the tap: its button waits for the same key.
+
 ## 0.29.0 — 2026-10-24
 
 ### Added

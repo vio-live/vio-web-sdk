@@ -568,6 +568,20 @@ export type OrderReference = CheckoutReference & {
   sponsor?: CheckoutSponsor
 }
 
+/**
+ * Whether a brand's payment methods include Stripe with a publishable key —
+ * the only case where the page needs Stripe.js (cards, Apple Pay).
+ */
+export function usesStripe(methods: unknown): boolean {
+  if (!Array.isArray(methods)) return false
+  return methods.some((m) => {
+    if (String(m?.name ?? '').toLowerCase() !== 'stripe') return false
+    const config = Array.isArray(m?.config) ? m.config : []
+    const key = config.find((c: { name?: string }) => c?.name === 'publishableKey')?.value
+    return typeof key === 'string' && key.startsWith('pk_')
+  })
+}
+
 export class CheckoutManager extends EventTarget {
   private currentStateValue: CheckoutState | null = null
   /**
@@ -640,9 +654,14 @@ export class CheckoutManager extends EventTarget {
     private readonly deps: CheckoutManagerDeps = {},
   ) {
     super()
-    // Warm Stripe.js early: Apple Pay's sheet must open synchronously inside
-    // the tap gesture, so the library can't be lazy-loaded at click time.
-    preloadStripeJs()
+    // Stripe.js (~300 KB) is warmed only for a brand that uses it: here when
+    // the host configured a key, otherwise when the brand's payment methods
+    // come back with one (getAvailablePaymentMethods). Apple Pay's sheet must
+    // open synchronously inside the tap, and its button waits for that same
+    // key, so the library is still there before the tap.
+    if (Configuration.isInitialized && Configuration.get()?.stripePublishableKey) {
+      preloadStripeJs()
+    }
     // The cart under an open checkout can change without a tap in it: the
     // server's lines taken when the checkout opens and right before it is
     // built (CartManager.refreshFromServer), a stock clamp, another tab. The
@@ -964,6 +983,7 @@ export class CheckoutManager extends EventTarget {
         // Never cache empty/failed responses — a transient blip would freeze
         // the payment grid for the whole page session.
         if (res) this.paymentMethodsCache.set(spId, res)
+        if (usesStripe(res)) preloadStripeJs()
         return res
       } finally {
         this.paymentMethodsPromises.delete(spId)

@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.30.0 — 2026-10-27
 
 ### Added
 - **Internal traffic** (ADR-0041): opening any page with **`?vio_internal=1`** marks the browser

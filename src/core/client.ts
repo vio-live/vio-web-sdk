@@ -151,6 +151,13 @@ class VioFacade {
     this.surfaceMode = null
     this.surfaceRequest = null
     this.preloadPrivacyMode()
+    // Internal traffic (ADR-0041): a page opened with `?vio_internal=1|0`
+    // marks or clears this browser now, whether or not it starts analytics.
+    try {
+      this.analytics.syncInternal(true)
+    } catch {
+      /* never breaks init */
+    }
     // A new key/environment invalidates the per-sponsor payment methods too.
     this.checkoutManager?.clearPaymentMethodsCache()
     // The page's slots stay; they are declared again once the NEW key has

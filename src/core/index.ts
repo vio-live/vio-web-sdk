@@ -44,6 +44,8 @@ export {
   type Landing,
 } from './analytics/client-context.js'
 export { normalizeBuyerRef, BUYER_REF_MAX_LENGTH } from './buyer-ref.js'
+// Internal traffic (ADR-0041): `?vio_internal=1|0` / `Vio.analytics.setInternal()` → `client.internal`.
+export { resolveInternal, readInternal, writeInternal, INTERNAL_KEY, INTERNAL_PARAM } from './analytics/internal-traffic.js'
 
 // The attribution of the order (ADR-0035 phase B): what the cart lines and the checkout send to Commerce.
 export {

@@ -519,6 +519,49 @@ redirect }` — which is what analytics listens to; a host with its own sink can
 listen to it too. With `dataLayer: true` it is pushed as GA4's `add_payment_info`
 with `payment_type`.
 
+### Impressions carry the products shown (unreleased)
+
+`<vio-product-carousel>`'s **`component_impression`** (≥50% visible for ≥1 s, once
+per session and carousel) carries the products it shows in **`commerce.items`**
+(`product_id`, `name`, `price`) and `commerce.currency` — the same lines as its
+`view_item_list`. The collector counts the per-product "saw" step of the funnel
+from them (ADR-0041). While the products load nothing is observed: the 1 s dwell
+starts once they are on screen. A carousel whose fetch failed (slotted fallback)
+still counts its impression, without items. A host calling
+`Vio.analytics.observeImpression(el, context, { commerce: () => ({ items, currency }) })`
+does the same for its own elements: the getter is read when the impression fires.
+
+### Internal traffic — mark your browser as a tester (unreleased)
+
+Our own visits (testers, the team, agents) must not count in the dashboard. Mark
+**each browser you test with** once:
+
+1. Open any page of the site that runs the SDK with **`?vio_internal=1`** added to
+   the URL — e.g. `https://example.com/article?vio_internal=1` (or
+   `…?utm_source=x&vio_internal=1` when the URL already has a query).
+2. Open the browser's console: the SDK says once
+   `[Vio.analytics] this browser is marked as internal traffic …`.
+3. That's it. The mark is remembered in this browser (`localStorage`,
+   `vio.internal.v1`, per site) for every page and every later visit, and every
+   analytics event it sends carries **`client.internal: true`**; the collector's
+   reads leave those events out.
+
+To **undo** it, open any page with **`?vio_internal=0`**. Things to know:
+
+- The mark is per browser and per site: Safari and Chrome on the same phone, a
+  private window, or another site are marked separately. Clearing the site's data
+  clears the mark.
+- In-app browsers (Instagram, Facebook) and private windows may not keep
+  `localStorage`: there, only the page opened with `?vio_internal=1` is marked.
+  Prefer a regular browser for testing.
+- The URL is read once per page load (at `Vio.init()`), not on client-side
+  navigation.
+- The mark is the tester's own choice, not a tracking id: it is written even
+  before consent (`requireConsent`).
+- A host can mark from code: **`Vio.analytics.setInternal(true | false)`**
+  (`Vio.analytics.isInternal` reads it). `resolveInternal()` / `INTERNAL_KEY` are
+  exported from `/core`.
+
 ## Sponsor identity — name and logo
 
 The elements say **who sells**: the sponsor's (brand's) display name and logo.

@@ -20,6 +20,7 @@
 import { LitElement, css, html } from 'lit'
 import { property, query, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
+import type { AnalyticsCommerce } from '../../core/analytics/analytics-manager.js'
 import {
   displayPrice,
   primaryImageUrl,
@@ -280,10 +281,11 @@ export class VioProductCarousel extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback()
     this.slotRegistration.connect(this.slotAttributes())
-    this.observeForAnalytics()
     if (this.productRefs.trim() || this.productIds.trim()) {
       void this.autoFetch()
     }
+    // After the fetch has started: while products load, the impression waits for them.
+    this.observeForAnalytics()
   }
 
   override disconnectedCallback(): void {
@@ -331,6 +333,12 @@ export class VioProductCarousel extends LitElement {
     }
     this.isLoading = true
     this.fetchError = ''
+    // The impression carries the products shown: one not counted yet starts
+    // again once they are here (the dwell counts on what the reader sees).
+    if (!this.impressed) {
+      this.unobserveImpression?.()
+      this.unobserveImpression = null
+    }
     try {
       // Without a sponsor-id the slot's campaign supplies the sponsor — that
       // needs the bootstrap, which the host may still be fetching.
@@ -395,19 +403,24 @@ export class VioProductCarousel extends LitElement {
       // Keep `fetched` null so slotted fallback can still render.
     } finally {
       this.isLoading = false
+      this.observeForAnalytics()
     }
   }
 
   // ── Analytics (auto) ──────────────────────────────────────────────
   // component_impression on the contract rule (≥50% visible ≥1s, once per
-  // session) + view_item_list with the rendered products. No-ops unless
+  // session) with the products shown in `commerce.items` (ADR-0041: the
+  // collector counts per-product impressions from them) + view_item_list with
+  // the rendered products. While products load the impression is not
+  // observed: it starts once they are here (or the fetch failed — slotted
+  // fallback is still an impression, without items). No-ops unless
   // Vio.analytics.start() ran.
   private unobserveImpression: (() => void) | null = null
   private impressed = false
   private listTracked = false
 
   private observeForAnalytics(): void {
-    if (this.unobserveImpression) return
+    if (this.unobserveImpression || this.isLoading || !this.isConnected) return
     try {
       this.unobserveImpression = Vio.analytics.observeImpression(
         this,
@@ -423,6 +436,7 @@ export class VioProductCarousel extends LitElement {
             this.impressed = true
             this.maybeTrackList()
           },
+          commerce: () => this.listCommerce(),
         },
       )
     } catch {
@@ -445,18 +459,25 @@ export class VioProductCarousel extends LitElement {
           locationId: this.effectiveSlot || this.label || undefined,
           ...this.attribution(),
         },
-        commerce: {
-          items: entries.map(({ product, sponsorId }) => ({
-            productId: product.id,
-            name: product.title,
-            price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
-          })),
-          currency: entries[0]?.product.price?.currency_code,
-        },
+        commerce: this.listCommerce() ?? undefined,
         props: this.label ? { list_name: this.label } : undefined,
       })
     } catch {
       /* never break rendering */
+    }
+  }
+
+  /** The products on show as analytics lines (impression and view_item_list); null before they load. */
+  private listCommerce(): AnalyticsCommerce | null {
+    const entries = this.fetched ?? []
+    if (entries.length === 0) return null
+    return {
+      items: entries.map(({ product }) => ({
+        productId: product.id,
+        name: product.title,
+        price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
+      })),
+      currency: entries[0]?.product.price?.currency_code,
     }
   }
 

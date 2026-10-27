@@ -49,6 +49,7 @@ import {
   type ClientContext,
   type Landing,
 } from './client-context.js'
+import { readInternal, resolveInternal, writeInternal } from './internal-traffic.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
 import type { CartLineItem } from '../cart/types.js'
@@ -207,6 +208,8 @@ const FLUSH_AT_COUNT = 20
 const MAX_QUEUE = 500 // drop-oldest beyond this
 const RETRY_BACKOFF_MS = [2_000, 4_000, 8_000]
 const ANON_KEY = 'vio.anon.v1'
+/** The collector's cap on commerce lines per event (`ANALYTICS_LIMITS.MAX_ITEMS`). */
+const MAX_ITEMS = 100
 const SESSION_KEY = 'vio.session.v1'
 
 /** Impression rule: ≥50% visible for ≥1s, once per (session, component). */
@@ -267,6 +270,14 @@ export class AnalyticsManager extends EventTarget {
   private client: ClientContext | null = null
   /** The landing it was read from — persisted later when consent arrives after the first event. */
   private landing: Landing | null = null
+  /**
+   * Internal traffic (ADR-0041): `client.internal: true` on every event while
+   * set. Read once (`?vio_internal=1|0`, else `localStorage`) at `Vio.init()`
+   * or on the first event; `setInternal()` changes it. `null` = not read yet.
+   */
+  private internal: boolean | null = null
+  /** The console line for testers goes out once per page load. */
+  private internalAnnounced = false
 
   /** Checkouts (`c:<id>`) and orders (`o:<number>`) this page load reported a `purchase` for: one each. */
   private readonly purchased = new Set<string>()
@@ -385,6 +396,48 @@ export class AnalyticsManager extends EventTarget {
     this.externalUserId = externalUserId ?? undefined
   }
 
+  /**
+   * Mark (or unmark) this browser as Vio's own traffic (ADR-0041): while
+   * marked, every event carries `client.internal: true` and the collector's
+   * reads leave it out. Remembered in `localStorage` (`vio.internal.v1`) —
+   * the same mark `?vio_internal=1` / `?vio_internal=0` sets on any page.
+   */
+  setInternal(internal: boolean): void {
+    this.internal = internal === true
+    writeInternal(this.internal)
+    this.announceInternal()
+  }
+
+  /** Whether this browser is marked as internal traffic (reads the mark the first time). */
+  get isInternal(): boolean {
+    return this.syncInternal()
+  }
+
+  /**
+   * Read the mark: the page's `?vio_internal=1|0` (remembered), else what the
+   * browser remembers. Once per page load — `Vio.init()` calls it so a page
+   * with the parameter marks the browser even if it never starts analytics;
+   * `force` reads again.
+   */
+  syncInternal(force = false): boolean {
+    if (this.internal === null || force) {
+      this.internal = hasDom() ? resolveInternal() : readInternal(null)
+      this.announceInternal()
+    }
+    return this.internal
+  }
+
+  /** One console line when marked, so a tester can see the mark took. */
+  private announceInternal(): void {
+    if (!this.internal || this.internalAnnounced) return
+    this.internalAnnounced = true
+    try {
+      console.info('[Vio.analytics] this browser is marked as internal traffic (vio_internal=1): its events are not counted. Open any page with ?vio_internal=0 to undo.')
+    } catch {
+      /* no console */
+    }
+  }
+
   /** Queue one event. Works pre-init and pre-start (SSR: no-op). */
   track(name: AnalyticsEventName, opts: TrackOptions = {}): void {
     if (!hasDom()) return
@@ -428,6 +481,11 @@ export class AnalyticsManager extends EventTarget {
       /** Called the one time the impression is tracked (e.g. to fire a
        *  companion view_item_list). */
       onImpression?: () => void
+      /** What the element shows, read when the impression fires: its
+       *  products go out as `commerce.items` (the collector counts a
+       *  per-product impression from them, ADR-0041). Nothing when it
+       *  answers no items. */
+      commerce?: () => AnalyticsCommerce | null | undefined
     } = {},
   ): () => void {
     if (!hasDom() || typeof IntersectionObserver === 'undefined') return () => {}
@@ -452,7 +510,7 @@ export class AnalyticsManager extends EventTarget {
               this.ensureSession()
               if (this.impressedComponents.has(key)) return
               this.impressedComponents.add(key)
-              this.track(name, { context })
+              this.track(name, { context, commerce: impressionCommerce(opts.commerce) })
               opts.onImpression?.()
               observer.disconnect()
             }, IMPRESSION_DWELL_MS)
@@ -567,7 +625,8 @@ export class AnalyticsManager extends EventTarget {
     const com = opts.commerce
     const commerce = com
       ? compact({
-          items: com.items?.map((i) =>
+          // The collector rejects an event with more lines than its cap, whole.
+          items: com.items?.slice(0, MAX_ITEMS).map((i) =>
             compact({
               product_id: String(i.productId),
               name: i.name,
@@ -589,7 +648,9 @@ export class AnalyticsManager extends EventTarget {
           buyer_id: this.canPersist ? normalizeBuyerRef(com.buyerId) : undefined,
         })
       : undefined
-    const client = this.clientBlock()
+    const base = this.clientBlock()
+    // Internal traffic rides in the `client` block, as `client.internal`.
+    const client = this.syncInternal() ? { ...(base ?? {}), internal: true } : base
 
     return {
       event_id: uuid(),
@@ -1233,6 +1294,19 @@ function safeStorageSet(key: string, value: string): void {
     window.localStorage.setItem(key, value)
   } catch {
     /* private mode / blocked — ephemeral ids are acceptable */
+  }
+}
+
+/** An impression's commerce: what the element shows when it fires — only when it has items. */
+function impressionCommerce(
+  read: (() => AnalyticsCommerce | null | undefined) | undefined,
+): AnalyticsCommerce | undefined {
+  if (!read) return undefined
+  try {
+    const commerce = read()
+    return commerce?.items?.length ? commerce : undefined
+  } catch {
+    return undefined // analytics never breaks the page
   }
 }
 

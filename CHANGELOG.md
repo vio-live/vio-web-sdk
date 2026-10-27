@@ -14,6 +14,30 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **Internal traffic** (ADR-0041): opening any page with **`?vio_internal=1`** marks the browser
+  (`localStorage`, `vio.internal.v1`) and `?vio_internal=0` clears it; read once at `Vio.init()`.
+  While marked, every analytics event carries **`client.internal: true`** and the collector's
+  reads leave it out. **`Vio.analytics.setInternal(boolean)`** / `Vio.analytics.isInternal` for
+  hosts; one `console.info` when marked. See
+  [README → Internal traffic](README.md#internal-traffic--mark-your-browser-as-a-tester-unreleased).
+
+### Changed
+- **`component_impression` of `<vio-product-carousel>` carries `commerce.items`** — the products
+  shown, like its `view_item_list` — so the collector can count per-product impressions
+  (ADR-0041). The impression is observed once the products have loaded (the 1 s dwell starts
+  then); a failed fetch still counts it, without items. `Vio.analytics.observeImpression()` takes
+  a `commerce` getter, read when the impression fires. See
+  [README → Impressions carry the products shown](README.md#impressions-carry-the-products-shown-unreleased).
+- Events never carry more than 100 `commerce.items` (the collector rejects the whole event above
+  its cap).
+
+### ⚠️ Upgrade notes
+- `client.internal` needs the collector that knows the field; an older one strips it (the event is
+  kept, just not marked). Nothing to do on the host.
+
 ## 0.29.0 — 2026-10-24
 
 ### Added

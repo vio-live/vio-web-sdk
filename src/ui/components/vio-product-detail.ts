@@ -1588,6 +1588,8 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    // Nothing to pay for: no Vipps payment of 0 kr (CheckoutManager refuses it too).
+    if (!(this.unitPrice > 0)) return
     if (!this.requireSelection()) return
     // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
     // not on this product (see buyNow). Straight to Vipps only when the cart
@@ -1701,6 +1703,7 @@ export class VioProductDetail extends LitElement {
    */
   private buyWithApplePay(): void {
     if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    if (!(this.unitPrice > 0)) return
     if (!this.requireSelection()) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
     if (cartHasLines || this.applePayAmount !== this.unitPrice * this.quantity) {
@@ -1909,7 +1912,7 @@ export class VioProductDetail extends LitElement {
           ${this.renderOptionPickers(p.options)}
 
           <div class="buy" part="buy">
-          ${this.availableQuantity > 0 && this.methodEnabled('vipps')
+          ${this.availableQuantity > 0 && this.unitPrice > 0 && this.methodEnabled('vipps')
             ? this.vippsOfficial
               ? html`
                   <vipps-mobilepay-button
@@ -1989,6 +1992,7 @@ export class VioProductDetail extends LitElement {
             : ''}
 
           ${this.availableQuantity > 0 &&
+          this.unitPrice > 0 &&
           this.applePayOk &&
           this.methodEnabled('apple-pay', 'applepay')
             ? html`

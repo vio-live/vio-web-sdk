@@ -24,10 +24,19 @@ and *when*, and links there.
   pays nothing. «Få igjen — N stk» now counts only the variant actually chosen. Before a size is
   chosen it says «På lager» if any size is in stock.
 
+### Fixed
+- **No checkout and no payment for an empty cart or a total of 0 kr.** `Vio.checkout.open()`
+  throws for a cart that totals 0, as it already did for an empty one. Vipps (`startVippsPayment`,
+  `startVippsExpress`), the Stripe link, native Stripe and Adyen read the cart from the server and
+  refuse to create a checkout or a payment when it is empty or 0 kr. The buttons check the same
+  thing first: the cart's «Til kassen» is disabled, the checkout's pay buttons are disabled and
+  say «Handlekurven er tom.», and the detail shows no Vipps or Apple Pay button for a product at 0 kr.
 ### ⚠️ Upgrade notes
 - The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt
   instead of buying. A host that clicks `.add-to-cart` from a script needs a value in every option
   first.
+- A host's `vio:checkout-open` handler that calls `Vio.checkout.open()` must still catch the throw
+  (it already threw for an empty cart). It now also throws for a cart of 0 kr.
 
 ## 0.30.0 — 2026-10-27
 

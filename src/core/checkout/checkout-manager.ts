@@ -582,6 +582,11 @@ export function usesStripe(methods: unknown): boolean {
   })
 }
 
+/** What the lines add up to (unit price × quantity). */
+function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
+  return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
+}
+
 export class CheckoutManager extends EventTarget {
   private currentStateValue: CheckoutState | null = null
   /**
@@ -698,6 +703,11 @@ export class CheckoutManager extends EventTarget {
     const cart = this.cartManager.getCart(sponsorId)
     if (!cart || cart.items.length === 0) {
       throw new Error(`[VioCheckout] sponsor ${sponsorId} has no cart items`)
+    }
+    // A cart whose lines add up to nothing is nothing to pay for: a checkout
+    // opened on it ends in a payment of 0 kr, or a provider refusing one.
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[VioCheckout] sponsor ${sponsorId} has a cart that totals 0`)
     }
     this.state = {
       sponsorId,
@@ -831,6 +841,22 @@ export class CheckoutManager extends EventTarget {
       )
     } catch {
       /* an event never costs a payment */
+    }
+  }
+
+  /**
+   * Nothing is created or paid for a cart that is empty or totals 0 — as
+   * the SERVER has it (the callers read it from the server first). Throws,
+   * so a payment button ends in its error path, never at a provider asking
+   * for 0 kr.
+   */
+  private assertPayableCart(sponsorId: number): void {
+    const cart = this.cartManager.getCart(sponsorId)
+    if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} is empty — nothing to pay`)
+    }
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} totals 0 — nothing to pay`)
     }
   }
 
@@ -1120,6 +1146,8 @@ export class CheckoutManager extends EventTarget {
     // page shows them first (see CartManager.refreshFromServer).
     await this.cartManager.waitForCartMutations(spId)
     await this.cartManager.refreshFromServer(spId)
+    // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
+    this.assertPayableCart(spId)
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {

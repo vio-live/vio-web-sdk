@@ -288,6 +288,7 @@ export class VioCart extends LitElement {
       cursor: pointer;
     }
     .checkout-btn:hover { opacity: 0.9; }
+    .checkout-btn:disabled { opacity: 0.5; cursor: not-allowed; }
     .footer {
       padding: var(--vio-space-lg, 24px);
       border-top: 1px solid var(--vio-color-border, #e5e5e5);
@@ -581,7 +582,7 @@ export class VioCart extends LitElement {
   /** Apple Pay express — pay the whole cart, then show the confirmation. */
   private onApplePay(): void {
     const handle = this.applePayHandle
-    if (!handle || !handle.available || this.itemCount === 0) return
+    if (!handle || !handle.available || !this.payable) return
     // Snapshot items + total BEFORE clearing the cart (confirmation needs them).
     const snapshot = this.buildConfirmation()
     // Who the order is with, while the cart still names it — only when one
@@ -635,7 +636,7 @@ export class VioCart extends LitElement {
    * (betalingsmetode). The host's checkout-open handler closes this cart and
    * opens <vio-checkout> in express mode with Klarna preselected. */
   private onKlarnaExpress(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -657,7 +658,7 @@ export class VioCart extends LitElement {
    * method present the others were unreachable from here.
    */
   private onCheckout(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -676,7 +677,7 @@ export class VioCart extends LitElement {
    * checkout opens with Vipps preselected, as before.
    */
   private onVipps(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: firstSponsorId, source: 'cart' })
@@ -720,7 +721,7 @@ export class VioCart extends LitElement {
 
   /** Stripe — opens the checkout with Stripe preselected. */
   private onStripe(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -735,6 +736,11 @@ export class VioCart extends LitElement {
   /** The name over a sponsor's lines: the brand's display name by the one rule, else what the cart kept. */
   private sponsorLabel(cart: { sponsorId: number; sponsorName?: string }): string {
     return resolveSponsorIdentity(cart.sponsorId)?.name || cart.sponsorName || ''
+  }
+
+  /** Something to pay for: lines, and a total above 0. No button opens a checkout or a payment otherwise. */
+  private get payable(): boolean {
+    return this.itemCount > 0 && this.totalAcrossSponsors > 0
   }
 
   private get totalAcrossSponsors(): number {
@@ -852,6 +858,7 @@ export class VioCart extends LitElement {
                 <button
                   class="checkout-btn"
                   @click=${this.onCheckout}
+                  ?disabled=${!this.payable}
                   aria-label="Til kassen"
                 >
                   Til kassen

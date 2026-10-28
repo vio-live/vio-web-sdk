@@ -45,6 +45,52 @@ const STRIPE_LOGO_SRC =
     '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
+/** One of the brand's promises under the buy zone («Rask levering», «Designet i Norge»). */
+export interface VioDetailHighlight {
+  /** A built-in line icon (see HIGHLIGHT_ICONS: plane, heart, shirt, truck, return, leaf, star, shield) or an image URL. */
+  icon?: string
+  title: string
+  text?: string
+}
+
+/** Line icons in the brand-strip style: 24×24, stroke = the text colour. */
+const HIGHLIGHT_ICONS: Record<string, string> = {
+  plane: 'M21.5 2.5 2.5 10l7 3m12-10.5-12 10.5m12-10.5L17 21l-7.5-8m0 0V20l3-4M5 17l-2.5 2.5M7.5 18.5 6 20',
+  heart: 'M12 20.5s-8.5-5-8.5-11A4.75 4.75 0 0 1 12 6.75 4.75 4.75 0 0 1 20.5 9.5c0 6-8.5 11-8.5 11Z',
+  shirt: 'M8.5 3.5 3 6l1.75 4.25L7 9.5v11h10v-11l2.25.75L21 6l-5.5-2.5a3.5 3.5 0 0 1-7 0Z',
+  truck: 'M2.5 5.5h11v10h-11zM13.5 9.5h4l3 3.5v2.5h-7M6.5 18.5a2 2 0 1 0 0-.01M17 18.5a2 2 0 1 0 0-.01',
+  return: 'M4 9h11.5a4.5 4.5 0 0 1 0 9H8M4 9l4-4M4 9l4 4',
+  leaf: 'M5 19C5 10 10 4.5 20 4.5c0 10-5.5 15-14 15M5 19l7-7',
+  star: 'm12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9L12 17l-5.2 2.7 1-5.9-4.3-4.1 5.9-.8Z',
+  shield: 'M12 3 4.5 6v5.5c0 4.5 3.2 8.2 7.5 9.5 4.3-1.3 7.5-5 7.5-9.5V6Z',
+  mailbox: 'M3 19v-8a4 4 0 0 1 8 0v8m-8 0h18v-7a4 4 0 0 0-4-4H7m8 0V4h3M6 12h2',
+  home: 'M3 11 12 4l9 7M5.5 9.5V20h13V9.5M10 20v-5h4v5',
+  pin: 'M12 21s-6.5-6-6.5-11a6.5 6.5 0 0 1 13 0c0 5-6.5 11-6.5 11Zm0-8.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-13.5V12l3 2',
+}
+
+/** The icon for a way of delivering, from the words the brand used for it. */
+function rateIcon(method: string): string {
+  const m = method.toLowerCase()
+  if (/postkasse|mailbox|brevkasse/.test(m)) return 'mailbox'
+  if (/hente|pakkeboks|automat|postkontor|pickup|utlever/.test(m)) return 'pin'
+  if (/dør|hjem|home|door/.test(m)) return 'home'
+  return 'truck'
+}
+
+/** The logo the host gave for this carrier (case-insensitive), or ''. */
+function carrierLogo(logos: Record<string, string> | null | undefined, carrier: string): string {
+  if (!logos || !carrier) return ''
+  const want = carrier.trim().toLowerCase()
+  for (const [name, url] of Object.entries(logos)) if (name.trim().toLowerCase() === want && url) return url
+  return ''
+}
+
+/** A small line icon from HIGHLIGHT_ICONS (the brand strip's set). */
+function lineIcon(name: string, cls = 'line-icon') {
+  return html`<svg class=${cls} viewBox="0 0 24 24" aria-hidden="true"><path d=${HIGHLIGHT_ICONS[name] ?? ''}></path></svg>`
+}
+
 export class VioProductDetail extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String, attribute: 'product-id' }) productId = ''
@@ -87,6 +133,40 @@ export class VioProductDetail extends LitElement {
    * say). Off by default: the toast shows.
    */
   @property({ type: Boolean, attribute: 'no-added-toast' }) noAddedToast = false
+  /**
+   * How the images show: `thumbs` (one image, thumbnails under it — the
+   * default) or `carousel` (every image in one swipeable row, no thumbnails:
+   * less height). Unset = the theme's `detailGallery` (`--vio-detail-gallery`),
+   * so a host sets it once for every detail on the page.
+   */
+  @property({ type: String }) gallery = ''
+  /**
+   * «Beskrivelse»: `preview` (default — the first lines fading out and «Les
+   * mer»), `folded` (only the heading until a tap) or `open` (all of it).
+   * Unset = the theme's `detailDescriptionMode` (`--vio-detail-description-mode`).
+   */
+  @property({ type: String, attribute: 'description-mode' }) descriptionMode = ''
+  /**
+   * The brand's promises, shown in a row under the buy zone. By default the
+   * brand's own (dashboard Settings → Brand, in the bootstrap); this list
+   * replaces them on this page — e.g.
+   * `[{ icon: 'plane', title: 'Rask levering', text: '2-5 virkedager' }]`
+   * (attribute: the same as JSON). Up to three read well. None by default.
+   */
+  @property({ type: Array }) highlights: VioDetailHighlight[] = []
+  /**
+   * How long delivery takes (`2-5 virkedager`), for a brand whose rates do not
+   * say it: Commerce's own text on each rate («Leveringstid 1-5 dager») wins.
+   * Shown under the rates in «Frakt & retur». None by default.
+   */
+  @property({ type: String, attribute: 'delivery-time' }) deliveryTime = ''
+  /**
+   * Carrier logos for «Frakt & retur», by the carrier's name as the rate
+   * starts (`{ "Bring": "https://…/bring.svg", "Helthjem": "…" }`, any case;
+   * attribute: the same as JSON), for rates without their own logo in
+   * Commerce (which wins). A carrier with neither gets the line icon.
+   */
+  @property({ type: Object, attribute: 'carrier-logos' }) carrierLogos: Record<string, string> = {}
   private readonly slotRegistration = new SlotRegistration(this, 'detail')
   /** What the click that opened the detail carried ('' when nothing), and for which product. */
   private eventSlot = ''
@@ -166,6 +246,8 @@ export class VioProductDetail extends LitElement {
    * right of withdrawal is said then.
    */
   @state() private shippingFrom: { price: number; currency: string } | null = null
+  /** Every rate for the page's country, cheapest first — for «Frakt & retur». */
+  @state() private shippingRates: Array<{ name: string; price: number; currency: string; description: string; logoUrl: string }> = []
   @state() private isLoading = false
   @state() private fetchError = ''
   @state() private selectedOptions: SelectedOptions = {}
@@ -177,6 +259,14 @@ export class VioProductDetail extends LitElement {
   @state() private thumbsOverflow = false
   @state() private thumbsAtStart = true
   @state() private thumbsAtEnd = false
+  /** «Beskrivelse» shows a preview until a tap opens it all. */
+  @state() private descriptionOpen = false
+  /** The description is longer than its preview (otherwise there is nothing to open). */
+  @state() private descriptionClipped = false
+  /** `gallery` resolved against the theme when the detail opens. */
+  @state() private galleryMode: 'thumbs' | 'carousel' = 'thumbs'
+  /** `description-mode` resolved against the theme when the detail opens. */
+  @state() private resolvedDescriptionMode: 'preview' | 'folded' | 'open' = 'preview'
   /** The top bar's logo file is square-ish: a mark, so its name goes beside it. */
   @state() private logoSquare = false
   @state() private adding = false
@@ -537,6 +627,103 @@ export class VioProductDetail extends LitElement {
       .thumbs.overflows .thumbs-arrow { display: flex; }
     }
 
+    /* Carousel (gallery="carousel" / theme detailGallery): the same box as the
+       main image — proportion, fit, background, inset — one per photo, in a
+       row that snaps. --vio-detail-carousel-peek shows the edge of the next. */
+    .carousel {
+      position: relative;
+      margin-inline: calc(
+        var(--vio-detail-image-inset, var(--vio-detail-padding-x, var(--vio-space-lg, 24px))) -
+          var(--vio-detail-padding-x, var(--vio-space-lg, 24px))
+      );
+    }
+    .carousel-track {
+      display: flex;
+      gap: var(--vio-detail-carousel-gap, 0px);
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      scroll-behavior: smooth;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      overscroll-behavior-x: contain;
+      /* Sideways is the carousel's, up and down the panel's; no double-tap
+         zoom delay. The sheet only drags from its top bar, never from here. */
+      touch-action: pan-x pan-y;
+      border-radius: var(--vio-detail-image-radius, 0);
+    }
+    .carousel-track::-webkit-scrollbar { display: none; }
+    .carousel-slide {
+      flex: 0 0 calc(100% - var(--vio-detail-carousel-peek, 0px));
+      aspect-ratio: var(--vio-detail-image-aspect, 4 / 5);
+      max-height: var(--vio-detail-image-max-height, 85vh);
+      background: var(--vio-detail-image-bg, var(--vio-color-surface-muted, #f2f2f2));
+      scroll-snap-align: start;
+      scroll-snap-stop: always;
+      overflow: hidden;
+    }
+    .carousel-slide img {
+      display: block;
+      /* A press on a photo is a swipe: no image drag, no long-press menu, no selection. */
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-user-drag: none;
+      -webkit-touch-callout: none;
+      width: 100%;
+      height: 100%;
+      object-fit: var(--vio-detail-image-fit, cover);
+      object-position: var(--vio-detail-image-position, center);
+      transform: scale(var(--vio-detail-image-zoom, 1));
+    }
+    /* One dot per photo over the bottom of the image: there is more than one,
+       and which one this is. White with a shadow reads on light and dark photos. */
+    .carousel-dots {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 6px;
+      pointer-events: none;
+    }
+    .carousel-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--vio-detail-dot-color, rgba(255, 255, 255, 0.6));
+      box-shadow: 0 0 2px rgba(0, 0, 0, 0.35);
+      transition: background 0.2s ease, transform 0.2s ease;
+    }
+    .carousel-dot.active {
+      background: var(--vio-detail-dot-active-color, #fff);
+      transform: scale(1.35);
+    }
+    .carousel-arrow {
+      display: none;
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+      background: var(--vio-color-surface, #fff);
+      color: var(--vio-color-text, #0a0a0a);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font: 18px/1 sans-serif;
+    }
+    .carousel-arrow.prev { left: 12px; }
+    .carousel-arrow.next { right: 12px; }
+    .carousel-arrow:disabled { visibility: hidden; }
+    @media (hover: hover) and (pointer: fine) {
+      .carousel-arrow { display: flex; }
+    }
+
     /* Info column */
     .info { display: flex; flex-direction: column; gap: var(--vio-detail-info-gap, 20px); min-width: 0; }
     .brand {
@@ -554,11 +741,88 @@ export class VioProductDetail extends LitElement {
       margin: 0;
       letter-spacing: -0.01em;
     }
+    /* The brand's promises: one row, an icon over a title and a line of text,
+       centred like a shop's own trust strip. */
+    .highlights {
+      list-style: none;
+      /* --vio-detail-highlights-display: none hides the strip (theme detailHighlightsDisplay). */
+      margin: 0;
+      padding: var(--vio-detail-highlights-padding, 16px 0 2px);
+      display: var(--vio-detail-highlights-display, grid);
+      grid-auto-flow: column;
+      grid-auto-columns: 1fr;
+      gap: 10px;
+      border-top: 1px solid var(--vio-color-border, #e5e5e5);
+    }
+    /* Like a shop's trust strip: a thin icon, the promise in regular weight,
+       a smaller line under it — nothing bold. */
+    .hl { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 2px; min-width: 0; }
+    .hl-icon {
+      width: var(--vio-detail-highlight-icon-size, 22px);
+      height: var(--vio-detail-highlight-icon-size, 22px);
+      margin-bottom: 8px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      object-fit: contain;
+    }
+    .hl-title { font-size: 12px; font-weight: 400; line-height: 1.3; letter-spacing: 0.01em; color: var(--vio-color-text, #0a0a0a); }
+    .hl-text { font-size: 10.5px; line-height: 1.35; letter-spacing: 0.01em; color: var(--vio-color-text-secondary, #666); }
+    /* «Frakt & retur»: same fold as «Beskrivelse», with a small list of rates.
+       --vio-detail-shipping-returns-display: none hides it (theme detailShippingReturnsDisplay). */
+    .shipping-returns { display: var(--vio-detail-shipping-returns-display, block); }
+    .description.shipping-returns-body { white-space: normal; }
+    .shipping-returns-body p { margin: 0 0 10px; }
+    .sr-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: var(--vio-tracking-label, 0.1em);
+      color: var(--vio-color-text-secondary, #666);
+      font-weight: 600;
+      margin: 4px 0 6px;
+    }
+    .sr-rates { list-style: none; margin: 0 0 10px; padding: 0; }
+    /* One row per carrier: «Helthjem» over «Til postkasse/dørmatte», price right. */
+    .sr-rates li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--vio-color-border, #eee);
+    }
+    .sr-rates li:last-child { border-bottom: none; }
+    .sr-rate { flex: 1; display: flex; flex-direction: column; min-width: 0; line-height: 1.35; }
+    .line-icon { fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+    .sr-icon { flex: 0 0 auto; width: 20px; height: 20px; color: var(--vio-color-text, #0a0a0a); }
+    .sr-line { display: flex; align-items: center; gap: 12px; }
+    /* A carrier's logo in a fixed box, so rows line up whatever its shape. */
+    .sr-logo { flex: 0 0 auto; width: var(--vio-detail-carrier-logo-width, 56px); height: 24px; object-fit: contain; object-position: left center; }
+    .sr-carrier { font-weight: 600; color: var(--vio-color-text, #0a0a0a); }
+    .sr-method { font-size: 13px; }
+    .sr-time { margin: 0 0 14px; }
+    .sr-price { font-weight: 600; color: var(--vio-color-text, #0a0a0a); white-space: nowrap; }
+    .sr-links { display: flex; gap: 16px; padding-left: 32px; }
+    .sr-links a { color: inherit; }
+    /* Name and price read as one block (stock on the name's line, right);
+       the sizes come after a wider gap, then shipping/returns by the buttons. */
+    .headline { display: flex; flex-direction: column; gap: var(--vio-detail-headline-gap, 8px); }
+    .title-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .title-row .name { min-width: 0; }
+    .title-row .stock { flex: 0 0 auto; white-space: nowrap; }
     .price-row {
       display: flex;
       align-items: baseline;
       gap: 16px;
     }
+    /* The sizes follow the price closely: they are the next thing to do. */
+    .headline + .purchase { margin-top: calc(var(--vio-detail-sizes-gap, 2px) - var(--vio-detail-info-gap, 20px)); }
     .price {
       font-size: var(--vio-detail-price-size, 24px);
       font-weight: var(--vio-detail-price-weight, 700);
@@ -584,7 +848,7 @@ export class VioProductDetail extends LitElement {
     .stock.out-of-stock { color: var(--vio-color-text-tertiary, #999); }
 
     /* Option pickers */
-    .option-group { display: flex; flex-direction: column; gap: 6px; }
+    .option-group { display: flex; flex-direction: column; gap: 8px; }
     /* The prompt sits on the label's own line: tapping a buy button before
        choosing must not push the pills down under the shopper's finger. */
     .option-label {
@@ -889,6 +1153,61 @@ export class VioProductDetail extends LitElement {
       transition: transform 0.15s ease;
     }
     .description-block[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
+    /* «Beskrivelse» with a preview: the same heading as the folds, then the
+       first lines fading out, then «Les mer». */
+    .desc-head {
+      all: unset;
+      box-sizing: border-box;
+      width: 100%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0 6px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: var(--vio-tracking-label, 0.1em);
+      color: var(--vio-color-text-secondary, #666);
+      font-weight: 600;
+      font-family: inherit;
+    }
+    .description-preview.clipped .desc-head::after {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-2px);
+      transition: transform 0.15s ease;
+    }
+    .description-preview.open .desc-head::after { transform: rotate(-135deg) translateY(-2px); }
+    .description-preview .description { padding-bottom: 6px; }
+    .description-preview.folded .desc-head, .description-preview.open:not(.clipped) .desc-head { padding-bottom: 14px; }
+    .description-preview.folded.open .desc-head { padding-bottom: 6px; }
+    .description-preview.folded .description { padding-bottom: 14px; }
+    .description-preview:not(.clipped) .description { padding-bottom: 14px; }
+    .description.collapsed {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: var(--vio-detail-description-preview-lines, 3);
+      line-clamp: var(--vio-detail-description-preview-lines, 3);
+      overflow: hidden;
+      cursor: pointer;
+      -webkit-mask-image: linear-gradient(to bottom, #000 45%, transparent);
+      mask-image: linear-gradient(to bottom, #000 45%, transparent);
+    }
+    .desc-more {
+      all: unset;
+      cursor: pointer;
+      display: inline-block;
+      margin: 0 0 14px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vio-color-text, #0a0a0a);
+      text-decoration: underline;
+      text-underline-offset: 3px;
+      font-family: inherit;
+    }
     .description {
       font-size: 14px;
       line-height: 1.6;
@@ -896,15 +1215,13 @@ export class VioProductDetail extends LitElement {
       padding-bottom: 14px;
       white-space: pre-line;
     }
-    /* Desktop: the description above, the buy zone at the bottom of the panel
-       (sticky). Phones keep the order as it is: buy, then the description. */
+    /* Same order on every screen: buy, then the description at the very
+       bottom (folded). Hosts that want the buy zone pinned can still set
+       --vio-detail-buy-position: sticky. */
     @media (min-width: 601px) {
-      .description-block { order: 1; }
       .buy {
-        order: 2;
-        position: var(--vio-detail-buy-position, sticky);
+        position: var(--vio-detail-buy-position, static);
         padding: var(--vio-detail-buy-padding, 12px 0 16px);
-        box-shadow: var(--vio-detail-buy-shadow, 0 -1px 0 var(--vio-color-border, #e5e5e5));
       }
     }
 
@@ -1016,18 +1333,83 @@ export class VioProductDetail extends LitElement {
       this.dialogFocus.update(this.open)
       this.bottomSheet.update(this.open)
     }
-    if (changed.has('product') || changed.has('open')) this.measureThumbs()
+    if (changed.has('product') || changed.has('open')) {
+      this.measureThumbs()
+      this.measureDescription()
+    }
     // The sheet shows an amount fixed when it is prepared: another quantity or
     // variant (another price) prepares it again, so it shows what is bought.
     if ((changed.has('quantity') || changed.has('selectedOptions')) && this.product && this.applePayAskedFor !== null) {
       if (this.unitPrice * this.quantity !== this.applePayAskedFor) this.prepareApplePaySheet()
     }
-    if (changed.has('activeImageIndex')) this.revealActiveThumb()
+    if (changed.has('activeImageIndex')) {
+      this.revealActiveThumb()
+      this.revealActiveSlide()
+    }
+    // A variant with its own photos starts the carousel over.
+    if (changed.has('selectedOptions') && this.galleryMode === 'carousel') {
+      if (this.activeImageIndex !== 0) this.activeImageIndex = 0
+      else this.revealActiveSlide()
+    }
     this.measureLogo()
     // The React wrappers set properties after mount.
     if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
       this.slotRegistration.sync(this.slotAttributes())
     }
+  }
+
+  override willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has('gallery') || (changed.has('open') && this.open)) this.galleryMode = this.resolveGalleryMode()
+    if (changed.has('descriptionMode') || (changed.has('open') && this.open)) {
+      const value = this.themeChoice(this.descriptionMode, '--vio-detail-description-mode')
+      this.resolvedDescriptionMode = value === 'folded' || value === 'open' ? value : 'preview'
+    }
+  }
+
+  /** An option as the element says it, else as the theme's custom property says it (lower case, unquoted). */
+  private themeChoice(own: string, cssVar: string): string {
+    const fromTheme = typeof getComputedStyle === 'function' ? getComputedStyle(this).getPropertyValue(cssVar) : ''
+    return (own || fromTheme).trim().replace(/^["']|["']$/g, '').toLowerCase()
+  }
+
+  /** The attribute wins; else the theme's `--vio-detail-gallery`; else thumbnails. */
+  private resolveGalleryMode(): 'thumbs' | 'carousel' {
+    return this.themeChoice(this.gallery, '--vio-detail-gallery') === 'carousel' ? 'carousel' : 'thumbs'
+  }
+
+  private carouselTrack(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>('.carousel-track')
+  }
+
+  /** The photo in view is the active one (dots, Apple Pay sheet, events). */
+  private onCarouselScroll = (): void => {
+    const track = this.carouselTrack()
+    const step = this.carouselStep(track)
+    if (!track || !step) return
+    const last = track.children.length - 1
+    const idx = Math.min(last, Math.max(0, Math.round(track.scrollLeft / step)))
+    if (idx !== this.activeImageIndex) this.activeImageIndex = idx
+  }
+
+  /** One photo's width plus the gap (with a peek a photo is narrower than the row). */
+  private carouselStep(track: HTMLElement | null): number {
+    const slide = track?.firstElementChild as HTMLElement | null
+    if (!track || !slide || slide.offsetWidth === 0) return 0
+    return slide.offsetWidth + (parseFloat(getComputedStyle(track).columnGap) || 0)
+  }
+
+  /** Bring the active photo into view — only when it is not already the one a swipe is on. */
+  private revealActiveSlide(): void {
+    const track = this.carouselTrack()
+    const step = this.carouselStep(track)
+    if (!track || !step) return
+    const target = Math.min(this.activeImageIndex * step, track.scrollWidth - track.clientWidth)
+    if (Math.abs(track.scrollLeft - target) > step / 2) track.scrollTo({ left: target })
+  }
+
+  private stepCarousel(direction: 1 | -1): void {
+    const last = this.allImages().length - 1
+    this.activeImageIndex = Math.min(last, Math.max(0, this.activeImageIndex + direction))
   }
 
   private thumbRow(): HTMLElement | null {
@@ -1092,6 +1474,7 @@ export class VioProductDetail extends LitElement {
         this.selectionPrompt = ''
         this.quantity = 1
         this.activeImageIndex = 0
+        this.descriptionOpen = false
         this.fetchError = ''
       }
     }, 400)
@@ -1967,10 +2350,13 @@ export class VioProductDetail extends LitElement {
    * product's price is not shown (never a price the shopper would not pay).
    */
   private async loadShippingFrom(productId: number, seq: number): Promise<void> {
-    let rates: Array<{ price: number; currency: string }> | null = null
+    let rates: Array<{ name?: string; price: number; currency: string; description?: string; logoUrl?: string }> | null = null
     try {
       const product = Vio.commerceFor(this.sponsorId).channel.product as {
-        getShippingRates?: (id: number, o?: { currency?: string }) => Promise<Array<{ price: number; currency: string }> | null>
+        getShippingRates?: (
+          id: number,
+          o?: { currency?: string },
+        ) => Promise<Array<{ name?: string; price: number; currency: string; description?: string; logoUrl?: string }> | null>
       }
       rates = typeof product.getShippingRates === 'function'
         ? await product.getShippingRates(productId, { currency: this.currency })
@@ -1983,6 +2369,175 @@ export class VioProductDetail extends LitElement {
     const usable = (rates ?? []).filter((r) => !r.currency || r.currency.toUpperCase() === currency)
     const cheapest = usable[0]
     this.shippingFrom = cheapest ? { price: cheapest.price, currency: cheapest.currency || currency } : null
+    this.shippingRates = usable.map((r) => ({
+      name: String(r.name ?? ''),
+      price: r.price,
+      currency: r.currency || currency,
+      description: String(r.description ?? '').trim(),
+      logoUrl: String(r.logoUrl ?? ''),
+    }))
+  }
+
+  /**
+   * `gallery="carousel"`: every photo in one row that snaps one at a time —
+   * swipe on touch, arrows with a mouse — and a dot per photo over it
+   * instead of thumbnails, so the name, price and sizes come up higher.
+   */
+  private renderCarousel(images: ProductImage[], title: string) {
+    const count = images.length
+    const current = Math.min(this.activeImageIndex, Math.max(0, count - 1))
+    return html`
+      <div class="gallery carousel" part="gallery">
+        <div class="carousel-track" part="image" @scroll=${this.onCarouselScroll}>
+          ${images.map(
+            (img, idx) => html`
+              <div class="carousel-slide" part="slide" aria-label=${`Bilde ${idx + 1} av ${count}`}>
+                <img src=${img.url} alt=${idx === 0 ? title : ''} loading=${idx === 0 ? 'eager' : 'lazy'} />
+              </div>
+            `,
+          )}
+        </div>
+        ${count > 1
+          ? html`
+              <button
+                class="carousel-arrow prev"
+                part="carousel-arrow"
+                aria-label="Forrige bilde"
+                ?disabled=${current === 0}
+                @click=${() => this.stepCarousel(-1)}
+              >‹</button>
+              <button
+                class="carousel-arrow next"
+                part="carousel-arrow"
+                aria-label="Neste bilde"
+                ?disabled=${current === count - 1}
+                @click=${() => this.stepCarousel(1)}
+              >›</button>
+              <div class="carousel-dots" part="image-dots" aria-hidden="true">
+                ${images.map((_, idx) => html`<span class="carousel-dot ${idx === current ? 'active' : ''}"></span>`)}
+              </div>
+            `
+          : ''}
+      </div>
+    `
+  }
+
+  /**
+   * «Beskrivelse», not shut: the first lines show, fading out, and a tap on
+   * the heading, the text or «Les mer» opens the rest (Angelo, 2026-10-28).
+   * A description that fits in the preview has nothing to open.
+   */
+  private renderDescription(text: string) {
+    const mode = this.resolvedDescriptionMode
+    if (mode === 'open') {
+      return html`<div class="description-block description-preview open" part="description">
+        <div class="desc-head">Beskrivelse</div>
+        <div class="description">${text}</div>
+      </div>`
+    }
+    // folded: only the heading until a tap, like the other folds. preview:
+    // the first lines; only a description longer than them has a fold at all.
+    const foldable = mode === 'folded' || this.descriptionClipped
+    const open = this.descriptionOpen || !foldable
+    const toggle = () => {
+      if (foldable) this.descriptionOpen = !this.descriptionOpen
+    }
+    return html`<div class="description-block description-preview ${open ? 'open' : ''} ${foldable ? 'clipped' : ''} ${mode}" part="description">
+      <button class="desc-head" type="button" aria-expanded=${open ? 'true' : 'false'} @click=${toggle}>Beskrivelse</button>
+      ${mode === 'folded' && !open
+        ? nothing
+        : html`<div class="description ${open ? '' : 'collapsed'}" @click=${() => !this.descriptionOpen && toggle()}>${text}</div>`}
+      ${mode === 'preview' && this.descriptionClipped
+        ? html`<button class="desc-more" type="button" @click=${toggle}>${this.descriptionOpen ? 'Vis mindre' : 'Les mer'}</button>`
+        : nothing}
+    </div>`
+  }
+
+  /** Is the preview hiding part of the text? Measured with the preview applied. */
+  private measureDescription(): void {
+    const el = this.renderRoot.querySelector<HTMLElement>('.description-preview .description')
+    if (!el || this.descriptionOpen) return
+    const wasCollapsed = el.classList.contains('collapsed')
+    el.classList.add('collapsed')
+    const clipped = el.scrollHeight > el.clientHeight + 1
+    if (!wasCollapsed) el.classList.remove('collapsed')
+    if (clipped !== this.descriptionClipped) this.descriptionClipped = clipped
+  }
+
+  private renderHighlights() {
+    // The host's list when it gives one; otherwise the brand's own (Settings → Brand).
+    const own = (Array.isArray(this.highlights) ? this.highlights : []).filter((h) => h && h.title)
+    const items = own.length ? own : resolveSponsorIdentity(this.sponsorId)?.highlights ?? []
+    if (items.length === 0) return nothing
+    return html`<ul class="highlights" part="highlights">
+      ${items.map((h) => {
+        const path = h.icon ? HIGHLIGHT_ICONS[h.icon] : undefined
+        const icon = path
+          ? html`<svg class="hl-icon" viewBox="0 0 24 24" aria-hidden="true"><path d=${path}></path></svg>`
+          : h.icon
+            ? html`<img class="hl-icon" src=${h.icon} alt="" />`
+            : nothing
+        return html`<li class="hl" part="highlight">
+          ${icon}
+          <span class="hl-title">${h.title}</span>
+          ${h.text ? html`<span class="hl-text">${h.text}</span>` : nothing}
+        </li>`
+      })}
+    </ul>`
+  }
+
+  /**
+   * «Frakt & retur», folded like «Beskrivelse»: the delivery options for the
+   * page's country with their price, and the right of withdrawal with the
+   * brand's own terms and returns pages when it gave them.
+   */
+  private renderShippingReturns() {
+    const identity = resolveSponsorIdentity(this.sponsorId)
+    const rates = this.shippingRates
+    // The delivery time is what the brand wrote on each rate («Leveringstid
+    // 1-5 dager»): once under the list when every rate says the same, on each
+    // row when they differ; the host's delivery-time when no rate says any.
+    const times = [...new Set(rates.map((r) => r.description).filter(Boolean))]
+    const perRateTime = times.length > 1
+    const sharedTime =
+      times.length === 1 ? times[0] : times.length === 0 && this.deliveryTime.trim() ? `Leveringstid: ${this.deliveryTime.trim()}` : ''
+    const links = [
+      identity?.refundPolicyUrl
+        ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer">Angrerett og retur</a>`
+        : null,
+      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer">Kjøpsvilkår</a>` : null,
+    ].filter(Boolean)
+    return html`<details class="description-block shipping-returns" part="shipping-returns">
+      <summary>Frakt &amp; retur</summary>
+      <div class="description shipping-returns-body">
+        <div class="sr-title">Frakt</div>
+        ${rates.length
+          ? html`<ul class="sr-rates">
+              ${rates.map((r) => {
+                const { carrier, method } = splitRateName(r.name)
+                const logo = r.logoUrl || carrierLogo(this.carrierLogos, carrier)
+                return html`<li>
+                  ${logo
+                    ? html`<img class="sr-logo" src=${logo} alt=${carrier} />`
+                    : lineIcon(rateIcon(r.name ?? ''), 'line-icon sr-icon')}
+                  <span class="sr-rate">
+                    <span class="sr-carrier">${carrier || method || 'Frakt'}</span>
+                    ${carrier && method ? html`<span class="sr-method">${method}</span>` : nothing}
+                    ${perRateTime && r.description ? html`<span class="sr-method">${r.description}</span>` : nothing}
+                  </span>
+                  <span class="sr-price">${r.price <= 0 ? 'Gratis' : formatPrice(r.price, r.currency)}</span>
+                </li>`
+              })}
+            </ul>`
+          : html`<p>Fraktprisen vises i kassen.</p>`}
+        ${sharedTime
+          ? html`<p class="sr-line sr-time">${lineIcon('clock', 'line-icon sr-icon')}<span>${sharedTime}</span></p>`
+          : nothing}
+        <div class="sr-title">Retur</div>
+        <p class="sr-line">${lineIcon('return', 'line-icon sr-icon')}<span>Du har 14 dagers angrerett fra du mottar varen.</span></p>
+        ${links.length ? html`<p class="sr-links">${links}</p>` : nothing}
+      </div>
+    </details>`
   }
 
   /** Under the price: «Frakt fra X · 14 dagers angrerett» (or «Gratis frakt · …»). */
@@ -2120,7 +2675,7 @@ export class VioProductDetail extends LitElement {
 
     return html`
       <div class="body">
-        <div class="gallery" part="gallery">
+        ${this.galleryMode === 'carousel' ? this.renderCarousel(images, p.title) : html`<div class="gallery" part="gallery">
           <div class="gallery-main" part="image">
             ${activeImage?.url
               ? html`<img src=${activeImage.url} alt=${p.title} />`
@@ -2161,31 +2716,32 @@ export class VioProductDetail extends LitElement {
                 </div>
               `
             : ''}
-        </div>
+        </div>`}
 
         <div class="info" part="info">
           ${p.brand ? html`<div class="brand" part="brand">${p.brand}</div>` : ''}
-          <h2 class="name" part="title">${p.title}</h2>
-
-          <div class="price-row">
-            <span class="price" part="price">${formatPrice(this.unitPrice, p.price.currency_code)}</span>
-            ${showCompare
-              ? html`<span class="compare-at">${formatPrice(
-                  compare,
-                  p.price.currency_code,
-                )}</span>`
-              : ''}
+          <div class="headline">
+            <div class="title-row">
+              <h2 class="name" part="title">${p.title}</h2>
+              <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
+            </div>
+            <div class="price-row">
+              <span class="price" part="price">${formatPrice(this.unitPrice, p.price.currency_code)}</span>
+              ${showCompare
+                ? html`<span class="compare-at">${formatPrice(
+                    compare,
+                    p.price.currency_code,
+                  )}</span>`
+                : ''}
+            </div>
           </div>
-
-          ${this.renderDeliveryNote()}
-
-          <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
 
           <div class="purchase">
           <div class="buy" part="buy">
           ${p.options.length > 0
             ? html`<div class="buy-options" part="buy-options">${this.renderOptionPickers(p.options)}</div>`
             : ''}
+          ${this.renderDeliveryNote()}
           ${this.methodsPending && this.availableQuantity > 0
             ? html`<div class="buy-pending" part="buy-pending" role="status" aria-label="Laster betalingsmåter"></div>`
             : ''}
@@ -2326,14 +2882,10 @@ export class VioProductDetail extends LitElement {
           ${this.renderSellerNote()}
           </div>
 
-          ${p.description
-            ? html`
-                <details class="description-block" part="description">
-                  <summary>Beskrivelse</summary>
-                  <div class="description">${this.stripHtml(p.description)}</div>
-                </details>
-              `
-            : ''}
+          ${this.renderHighlights()}
+
+          ${p.description ? this.renderDescription(this.stripHtml(p.description)) : ''}
+          ${this.renderShippingReturns()}
           </div>
         </div>
       </div>
@@ -2417,4 +2969,17 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-product-detail': VioProductDetail
   }
+}
+
+/**
+ * A rate name as the brand typed it, «Carrier - how» («Helthjem - til
+ * postkasse/dørmatte», «Bring - Pakke i postkasse»): the carrier, and the way
+ * it delivers with a capital. A name without the dash is all `method`.
+ */
+export function splitRateName(name: string | undefined): { carrier: string; method: string } {
+  const text = String(name ?? '').trim()
+  const m = text.match(/^(.+?)\s+[-–—]\s+(.+)$/)
+  if (!m?.[1] || !m[2]) return { carrier: '', method: text }
+  const method = m[2].trim()
+  return { carrier: m[1].trim(), method: method.charAt(0).toUpperCase() + method.slice(1) }
 }

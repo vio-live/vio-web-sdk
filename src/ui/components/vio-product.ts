@@ -18,6 +18,18 @@ export class VioProduct extends LitElement {
   @property({ type: String }) name = ''
   /** Pre-formatted price string (e.g. "990 kr"). Bold. */
   @property({ type: String }) price = ''
+  /** Short text under the name (plain text, cut after --vio-card-description-lines, 4). Shown only with `show-description`. */
+  @property({ type: String }) description = ''
+  /** Show `description` under the name. Off by default. */
+  @property({ type: Boolean, attribute: 'show-description' }) showDescription = false
+  /**
+   * The buy button, as in the Vev card: `icon` (the round bag on the image —
+   * default), `bar` (a full-width button under the price) or `hidden`. Both
+   * add to the cart, or open the product when it has sizes to pick.
+   */
+  @property({ type: String, attribute: 'button-style' }) buttonStyle: 'icon' | 'bar' | 'hidden' = 'icon'
+  /** Text of the `bar` button (default «Kjøp»); «Kjøp · 2» once two are in the cart. */
+  @property({ type: String, attribute: 'button-label' }) buttonLabel = 'Kjøp'
   /** Retailer / sponsor name shown at the bottom (uppercase, gray). */
   @property({ type: String }) retailer = ''
   /** Product image URL. Square aspect, gray bg if missing. */
@@ -143,20 +155,29 @@ export class VioProduct extends LitElement {
       box-sizing: border-box;
       width: 100%;
       cursor: pointer;
-      font-family: var(--vio-font-sans, -apple-system, sans-serif);
+      font-family: var(--vio-card-font, var(--vio-font-sans, -apple-system, sans-serif));
       color: var(--vio-color-text, #0a0a0a);
       -webkit-tap-highlight-color: transparent;
     }
+    /* Every --vio-card-* below defaults to the look the card always had; a
+       host restyles the card with them (they cross the carousel's shadow
+       root, ::part would not). E.g. a framed card with a buy button:
+       --vio-card-border, --vio-card-meta-padding, --vio-card-image-fit: contain. */
     .card {
       display: flex;
       flex-direction: column;
       height: 100%;
+      box-sizing: border-box;
+      border: var(--vio-card-border, none);
+      background: var(--vio-card-bg, transparent);
+      transition: border-color 0.2s ease;
     }
+    :host(:hover) .card { border-color: var(--vio-card-border-hover-color, var(--vio-color-border, #e5e5e5)); }
     .image {
       position: relative;
-      aspect-ratio: 1 / 1;
+      aspect-ratio: var(--vio-card-image-aspect, 1 / 1);
       width: 100%;
-      background-color: var(--vio-color-surface-muted, #f2f2f2);
+      background-color: var(--vio-card-image-bg, var(--vio-color-surface-muted, #f2f2f2));
       display: flex;
       align-items: center;
       justify-content: center;
@@ -171,8 +192,8 @@ export class VioProduct extends LitElement {
       position: absolute;
       right: 10px;
       bottom: 10px;
-      width: 40px;
-      height: 40px;
+      width: var(--vio-card-add-size, 40px);
+      height: var(--vio-card-add-size, 40px);
       border-radius: 50%;
       background: rgba(255, 255, 255, 0.96);
       border: none;
@@ -192,7 +213,7 @@ export class VioProduct extends LitElement {
     .add-btn.in-cart { background: #0a0a0a; color: #fff; }
     .add-btn.in-cart:hover { background: #222; }
     .add-btn.pop { animation: vio-add-pop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1); }
-    .add-btn svg { width: 18px; height: 18px; }
+    .add-btn svg { width: var(--vio-card-add-icon-size, 18px); height: var(--vio-card-add-icon-size, 18px); }
     .add-btn .add-count { font-size: 15px; font-weight: 700; line-height: 1; }
     @keyframes vio-add-pop {
       0% { transform: scale(1); }
@@ -203,47 +224,87 @@ export class VioProduct extends LitElement {
     .image img {
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      box-sizing: border-box;
+      padding: var(--vio-card-image-padding, 0);
+      object-fit: var(--vio-card-image-fit, cover);
       display: block;
     }
     .meta {
-      padding-top: 14px;
+      padding: var(--vio-card-meta-padding, 14px 0 0);
       display: flex;
       flex-direction: column;
       flex: 1;
     }
     .brand {
-      font-size: var(--vio-size-xs, 12px);
-      letter-spacing: var(--vio-tracking-label, 0.1em);
+      font-size: var(--vio-card-brand-size, var(--vio-size-xs, 12px));
+      letter-spacing: var(--vio-card-brand-tracking, var(--vio-tracking-label, 0.1em));
       text-transform: uppercase;
-      color: var(--vio-color-text-secondary, #666);
-      font-weight: 500;
-      margin-bottom: 6px;
+      color: var(--vio-card-brand-color, var(--vio-color-text-secondary, #666));
+      font-weight: var(--vio-card-brand-weight, 500);
+      margin-bottom: var(--vio-card-brand-gap, 6px);
     }
     .name {
-      font-size: var(--vio-size-md, 16px);
-      font-weight: 500;
+      font-family: var(--vio-card-name-font, inherit);
+      font-size: var(--vio-card-name-size, var(--vio-size-md, 16px));
+      font-weight: var(--vio-card-name-weight, 500);
       line-height: 1.3;
-      margin: 0 0 10px;
+      margin: 0 0 var(--vio-card-name-gap, 10px);
       display: -webkit-box;
       -webkit-line-clamp: 2;
       line-clamp: 2;
       -webkit-box-orient: vertical;
       overflow: hidden;
     }
+    /* show-description: cut after --vio-card-description-lines (4). */
+    .description {
+      display: -webkit-box;
+      -webkit-line-clamp: var(--vio-card-description-lines, 4);
+      line-clamp: var(--vio-card-description-lines, 4);
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      font-size: var(--vio-card-description-size, 14px);
+      line-height: 1.45;
+      color: var(--vio-card-description-color, var(--vio-color-text-secondary, #737373));
+      margin: 0 0 var(--vio-card-description-gap, 12px);
+    }
     .price {
-      font-size: var(--vio-size-md, 16px);
-      font-weight: 700;
-      margin-bottom: 16px;
+      font-family: var(--vio-card-price-font, inherit);
+      font-size: var(--vio-card-price-size, var(--vio-size-md, 16px));
+      font-weight: var(--vio-card-price-weight, 700);
+      margin-bottom: var(--vio-card-price-gap, 16px);
     }
+    /* Who sells it. --vio-card-retailer-order: -1 lifts it above the name
+       (where a brand line goes), for catalogues without a brand of their own. */
     .retailer {
-      font-size: var(--vio-size-xs, 12px);
-      letter-spacing: var(--vio-tracking-label, 0.1em);
+      display: var(--vio-card-retailer-display, block);
+      order: var(--vio-card-retailer-order, 0);
+      font-size: var(--vio-card-retailer-size, var(--vio-size-xs, 12px));
+      letter-spacing: var(--vio-card-retailer-tracking, var(--vio-tracking-label, 0.1em));
       text-transform: uppercase;
-      color: var(--vio-color-text-tertiary, #999);
-      font-weight: 500;
-      margin-top: auto;
+      color: var(--vio-card-retailer-color, var(--vio-color-text-tertiary, #999));
+      font-weight: var(--vio-card-retailer-weight, 500);
+      margin: var(--vio-card-retailer-margin, auto 0 0);
     }
+    /* button-style="bar": the Vev card's bar — full width under the price,
+       uppercase, the accent colour, 6px corners (--vio-card-bar-radius). */
+    .bar-btn {
+      width: 100%;
+      margin-top: auto;
+      padding: 14px;
+      border: none;
+      border-radius: var(--vio-card-bar-radius, 6px);
+      background: var(--vio-card-accent, var(--vio-color-text, #0a0a0a));
+      color: var(--vio-card-accent-text, #fff);
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+    .bar-btn:hover { opacity: 0.88; }
+    .bar-btn.pop { animation: vio-add-pop 0.42s cubic-bezier(0.34, 1.56, 0.64, 1); }
   `
 
   override connectedCallback(): void {
@@ -376,7 +437,8 @@ export class VioProduct extends LitElement {
           ${this.imageUrl
             ? html`<img src=${this.imageUrl} alt=${this.name || this.brand} loading="lazy" />`
             : ''}
-          <button
+          ${this.buttonStyle === 'icon'
+            ? html`<button
             class="add-btn ${this.inCart ? 'in-cart' : ''} ${this.justAdded ? 'pop' : ''}"
             @click=${this.onAdd}
             aria-label=${this.inCart ? 'I handlekurven – legg til en til' : 'Legg i kurv'}
@@ -393,7 +455,8 @@ export class VioProduct extends LitElement {
                   <line x1="3" y1="6" x2="21" y2="6"></line>
                   <path d="M16 10a4 4 0 0 1-8 0"></path>
                 </svg>`}
-          </button>
+          </button>`
+            : ''}
         </div>
         ${this.hideMeta
           ? ''
@@ -401,8 +464,14 @@ export class VioProduct extends LitElement {
         <div class="meta">
           ${this.brand ? html`<div class="brand">${this.brand}</div>` : ''}
           ${this.name ? html`<div class="name">${this.name}</div>` : ''}
+          ${this.showDescription && this.description ? html`<p class="description">${this.description}</p>` : ''}
           ${this.price ? html`<div class="price">${this.price}</div>` : ''}
           ${this.retailer ? html`<div class="retailer">${this.retailer}</div>` : ''}
+          ${this.buttonStyle === 'bar'
+            ? html`<button class="bar-btn ${this.justAdded ? 'pop' : ''}" @click=${this.onAdd}>
+                ${this.inCart ? `${this.buttonLabel} · ${this.cartQty}` : this.buttonLabel}
+              </button>`
+            : ''}
         </div>`}
       </div>
     `

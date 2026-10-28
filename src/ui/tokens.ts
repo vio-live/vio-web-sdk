@@ -225,6 +225,20 @@ export interface VioThemeOverrides {
   detailImageInset?: string
   /** Background behind the main image (default the muted surface). */
   detailImageBg?: string
+  /** `thumbs` (default: one image, thumbnails under it) or `carousel` (every image in one swipeable row with a dot per photo, no thumbnails — less height). An element's `gallery` attribute wins over it. */
+  detailGallery?: string
+  /** In the carousel, how much of the next photo shows at the edge (default `0px`), e.g. `32px`. */
+  detailCarouselPeek?: string
+  /** «Beskrivelse»: `preview` (default — first lines + «Les mer»), `folded` (heading only until a tap) or `open`. An element's `description-mode` wins. */
+  detailDescriptionMode?: string
+  /** Lines the «Beskrivelse» preview shows (default `3`). */
+  detailDescriptionPreviewLines?: string
+  /** The brand's promises under the buy zone: `grid` (default, shown when the brand has some) or `none` (hidden). */
+  detailHighlightsDisplay?: string
+  /** «Frakt & retur» in the detail: `block` (default) or `none` (hidden). */
+  detailShippingReturnsDisplay?: string
+  /** `<vio-product-carousel>`: `carousel` (default, one row) or `list` (cards one under the other). Its `layout` attribute wins. */
+  carouselLayout?: string
   /** Thumbnail size (default `64px`). One row, scrolls sideways. */
   detailThumbSize?: string
   /** Space between thumbnails (default `8px`). */
@@ -249,6 +263,33 @@ export interface VioThemeOverrides {
   detailBuyPosition?: string
   /** Shadow over a sticky buy zone, e.g. `0 -8px 16px rgba(0,0,0,.06)`. */
   detailBuyShadow?: string
+  /* Product cards (<vio-product>, the carousel's and the list's) — 0.32. Each
+   * defaults to the card's look before 0.32; see README → Styling for the rest
+   * of the --vio-card-* properties. */
+  /** Font of the card (default the SDK's sans). */
+  cardFont?: string
+  /** Frame around the card, e.g. `1px solid rgba(230,230,230,.6)` (default none). */
+  cardBorder?: string
+  /** Image box proportion (default `1 / 1`), e.g. `3 / 4`. */
+  cardImageAspect?: string
+  /** `cover` (default, fills and crops) or `contain` (whole image). */
+  cardImageFit?: string
+  /** Background behind the card image (default the muted surface). */
+  cardImageBg?: string
+  /** Space around the image inside its box (default `0`). */
+  cardImagePadding?: string
+  /** Padding of the text under the image (default `14px 0 0`), e.g. `16px` in a framed card. */
+  cardMetaPadding?: string
+  /** Font of the price (default the card's), e.g. a serif. */
+  cardPriceFont?: string
+  /** Colour of the `bar` buy button (default the text colour). */
+  cardAccent?: string
+  /** Corners of the `bar` buy button (default `6px`). */
+  cardBarRadius?: string
+  /** Lines of the description a card shows (default `4`). */
+  cardDescriptionLines?: string
+  /** `-1` lifts the seller line above the name (where a brand line goes); default `0` (at the bottom). */
+  cardRetailerOrder?: string
   /** Cart drawer width on desktop (default `440px`). */
   cartWidth?: string
   /** Checkout panel width on desktop (default `440px`). */
@@ -298,6 +339,13 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   detailImageZoom: '--vio-detail-image-zoom',
   detailImageInset: '--vio-detail-image-inset',
   detailImageBg: '--vio-detail-image-bg',
+  detailGallery: '--vio-detail-gallery',
+  carouselLayout: '--vio-carousel-layout',
+  detailCarouselPeek: '--vio-detail-carousel-peek',
+  detailDescriptionMode: '--vio-detail-description-mode',
+  detailDescriptionPreviewLines: '--vio-detail-description-preview-lines',
+  detailHighlightsDisplay: '--vio-detail-highlights-display',
+  detailShippingReturnsDisplay: '--vio-detail-shipping-returns-display',
   detailThumbSize: '--vio-detail-thumb-size',
   detailThumbGap: '--vio-detail-thumb-gap',
   detailThumbRadius: '--vio-detail-thumb-radius',
@@ -310,6 +358,18 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   detailButtonRadius: '--vio-detail-button-radius',
   detailBuyPosition: '--vio-detail-buy-position',
   detailBuyShadow: '--vio-detail-buy-shadow',
+  cardFont: '--vio-card-font',
+  cardBorder: '--vio-card-border',
+  cardImageAspect: '--vio-card-image-aspect',
+  cardImageFit: '--vio-card-image-fit',
+  cardImageBg: '--vio-card-image-bg',
+  cardImagePadding: '--vio-card-image-padding',
+  cardMetaPadding: '--vio-card-meta-padding',
+  cardPriceFont: '--vio-card-price-font',
+  cardAccent: '--vio-card-accent',
+  cardBarRadius: '--vio-card-bar-radius',
+  cardDescriptionLines: '--vio-card-description-lines',
+  cardRetailerOrder: '--vio-card-retailer-order',
   cartWidth: '--vio-cart-width',
   checkoutWidth: '--vio-checkout-width',
   confirmLogoHeight: '--vio-confirm-logo-height',

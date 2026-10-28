@@ -56,24 +56,25 @@ describe('the buy zone', () => {
     const el = await open()
     const buy = root(el).querySelector('.buy')!
     const order = [...buy.children].map((c) => c.className)
-    expect(order[0]).toContain('buy-vipps')
-    // (Express not known here — no line about the app — so quantity + add to cart next.)
-    expect(order[1]).toContain('qty-cta-row')
+    // «Frakt fra … · 14 dagers angrerett» right under the sizes, then Vipps,
+    // then (Express not known here — no line about the app) quantity + add to cart.
+    const vipps = order.findIndex((k) => k.includes('buy-vipps'))
+    expect(order.findIndex((k) => k.includes('delivery-note'))).toBeLessThan(vipps)
+    expect(order[vipps + 1]).toContain('qty-cta-row')
     expect(buy.getAttribute('part')).toBe('buy')
   })
 
-  it('is static on phones and sticky on desktop by default, the host can say otherwise', async () => {
+  it('scrolls with the page on every screen by default; the host can pin it', async () => {
     await open()
     const css = (VioProductDetail as any).styles.cssText as string
     expect(css).toMatch(/position: var\(--vio-detail-buy-position, static\)/)
-    expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*position: var\(--vio-detail-buy-position, sticky\)/)
+    expect(css).not.toMatch(/--vio-detail-buy-position, sticky/)
   })
 
-  it('on desktop the description comes before the buy zone; on phones after it', async () => {
+  it('the description comes after the buy zone on every screen (at the very bottom)', async () => {
     const el = await open()
     const css = (VioProductDetail as any).styles.cssText as string
-    expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*\.description-block \{ order: 1; \}[\s\S]*order: 2;/)
-    // Source order (phones): buy, then the description — both in .purchase.
+    expect(css).not.toMatch(/\.description-block \{ order: 1; \}/)
     const purchase = root(el).querySelector('.info > .purchase')!
     const kids = [...purchase.children].map((c) => c.className)
     expect(kids.indexOf('buy')).toBeLessThan(kids.findIndex((k) => k.includes('description-block')))
@@ -191,13 +192,66 @@ describe('Vipps from the detail goes through the hand-over', () => {
 })
 
 describe('the description', () => {
-  it('folds: «Beskrivelse» closed until a tap opens it', async () => {
+  it('shows whole, with no «Les mer», when it fits in the preview', async () => {
     const el = await open()
-    const block = root(el).querySelector<HTMLDetailsElement>('details.description-block')!
-    expect(block.open).toBe(false)
-    expect(block.querySelector('summary')?.textContent?.trim()).toBe('Beskrivelse')
+    const block = root(el).querySelector<HTMLElement>('.description-preview')!
+    expect(block.querySelector('.desc-head')?.textContent?.trim()).toBe('Beskrivelse')
     expect(block.querySelector('.description')?.textContent).toContain('Myk genser i ull.')
+    expect(block.querySelector('.description')!.classList.contains('collapsed')).toBe(false)
+    expect(block.querySelector('.desc-more')).toBeNull()
     expect(block.getAttribute('part')).toBe('description')
+  })
+
+  it('a longer one: the first lines fading out and «Les mer», which opens it all and folds it back', async () => {
+    const el = await open()
+    const text = root(el).querySelector<HTMLElement>('.description-preview .description')!
+    Object.defineProperty(text, 'scrollHeight', { configurable: true, value: 200 })
+    Object.defineProperty(text, 'clientHeight', { configurable: true, value: 66 })
+    el.measureDescription()
+    await settle(el)
+    const more = () => root(el).querySelector<HTMLButtonElement>('.desc-more')!
+    expect(text.classList.contains('collapsed')).toBe(true)
+    expect(more().textContent?.trim()).toBe('Les mer')
+    more().click()
+    await settle(el)
+    expect(root(el).querySelector('.description-preview .description')!.classList.contains('collapsed')).toBe(false)
+    expect(more().textContent?.trim()).toBe('Vis mindre')
+    more().click()
+    await settle(el)
+    expect(root(el).querySelector('.description-preview .description')!.classList.contains('collapsed')).toBe(true)
+  })
+})
+
+describe('the options a host sets (Replit, Vev, a page)', () => {
+  it('description-mode="folded": only the heading until a tap; "open": all of it, no fold', async () => {
+    const el = await open()
+    el.descriptionMode = 'folded'
+    el.open = false
+    await settle(el)
+    el.open = true
+    await settle(el)
+    expect(root(el).querySelector('.description-preview .description')).toBeNull()
+    root(el).querySelector<HTMLButtonElement>('.desc-head')!.click()
+    await settle(el)
+    expect(root(el).querySelector('.description-preview .description')?.textContent).toContain('Myk genser i ull.')
+
+    el.descriptionMode = 'open'
+    el.open = false
+    await settle(el)
+    el.open = true
+    await settle(el)
+    expect(root(el).querySelector('.description-preview .description')?.textContent).toContain('Myk genser i ull.')
+    expect(root(el).querySelector('.desc-more')).toBeNull()
+    expect(root(el).querySelector('button.desc-head')).toBeNull()
+  })
+
+  it('the theme can hide the promises and «Frakt & retur»; the gallery and the description mode follow it too', async () => {
+    await open()
+    const css = (VioProductDetail as any).styles.cssText as string
+    expect(css).toContain('display: var(--vio-detail-highlights-display, grid)')
+    expect(css).toContain('display: var(--vio-detail-shipping-returns-display, block)')
+    const src = String(Object.getOwnPropertyDescriptor((VioProductDetail as any).prototype, 'willUpdate')?.value)
+    expect(src).toContain('--vio-detail-description-mode')
   })
 })
 

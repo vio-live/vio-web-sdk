@@ -13,6 +13,16 @@ function pointer(type: string, target: EventTarget, clientY: number, timeStamp =
   return e
 }
 
+/** A touch event with one finger (jsdom has no Touch constructor); returns it to check preventDefault. */
+function touch(type: string, target: EventTarget, clientX: number, clientY: number, timeStamp = 0): Event {
+  const e = new Event(type, { bubbles: true, composed: true, cancelable: true })
+  const finger = { clientX, clientY }
+  Object.defineProperty(e, 'touches', { value: type === 'touchend' || type === 'touchcancel' ? [] : [finger] })
+  Object.defineProperty(e, 'timeStamp', { value: timeStamp })
+  target.dispatchEvent(e)
+  return e
+}
+
 function phone(matches: boolean) {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
     matches,
@@ -201,6 +211,45 @@ describe('BottomSheet', () => {
       pointer('pointerup', s.text, 400, 120)
       expect(s.close).not.toHaveBeenCalled()
       expect(s.modal.style.transform).toBe('')
+    })
+
+    it('closes from the content too, pulling down with it at the top (the grab bar scrolls away)', () => {
+      const s = sheet()
+      s.controller.update(true)
+      touch('touchstart', s.text, 100, 100, 0)
+      const first = touch('touchmove', s.text, 102, 130, 50)
+      expect(first.defaultPrevented).toBe(true) // the browser does not overscroll
+      expect(s.modal.style.transform).toBe('translateY(30px)')
+      touch('touchmove', s.text, 104, 400, 500)
+      touch('touchend', s.text, 104, 400, 510)
+      expect(s.close).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves the content a scroll when the finger goes sideways (a photo carousel) or up', () => {
+      const s = sheet()
+      s.controller.update(true)
+      touch('touchstart', s.text, 100, 100, 0)
+      const sideways = touch('touchmove', s.text, 30, 112, 50)
+      touch('touchmove', s.text, 0, 300, 100)
+      touch('touchend', s.text, 0, 300, 110)
+      expect(sideways.defaultPrevented).toBe(false)
+      touch('touchstart', s.text, 100, 300, 200)
+      touch('touchmove', s.text, 100, 200, 250)
+      touch('touchmove', s.text, 100, 500, 300)
+      touch('touchend', s.text, 100, 500, 310)
+      expect(s.close).not.toHaveBeenCalled()
+      expect(s.modal.style.transform).toBe('')
+    })
+
+    it('leaves the content a scroll when it is not at its top', () => {
+      const s = sheet()
+      s.controller.update(true)
+      Object.defineProperty(s.modal, 'scrollTop', { value: 200, configurable: true })
+      touch('touchstart', s.text, 100, 100, 0)
+      const move = touch('touchmove', s.text, 100, 400, 100)
+      touch('touchend', s.text, 100, 400, 110)
+      expect(move.defaultPrevented).toBe(false)
+      expect(s.close).not.toHaveBeenCalled()
     })
 
     it('springs back while a payment is in flight', () => {

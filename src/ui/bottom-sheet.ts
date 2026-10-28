@@ -19,6 +19,13 @@
  *     and it closes, otherwise it springs back. Those zones need
  *     `touch-action: none` in the component's CSS, or the browser keeps the
  *     gesture for scrolling. A drag never turns into a tap on ✕.
+ *   - **…and from anywhere, at the top.** The grab bar scrolls away with the
+ *     content and nobody aims for it (Angelo, 2026-10-28): with the content
+ *     scrolled to the top, a finger pulling DOWN on the image or the text
+ *     moves the sheet too, like the system's own sheets. Sideways (a photo
+ *     carousel), upwards, or with the content scrolled, it stays a scroll.
+ *     This one runs on touch events: only a non-passive `touchmove` can keep
+ *     the browser from taking the pull for its overscroll.
  *
  * Desktop (the side drawers) is untouched: nothing locks, nothing drags.
  * One instance per component, driven from its `updated()` like `DialogFocus`.
@@ -37,6 +44,8 @@ export interface BottomSheetOptions {
   close: () => void
   /** Answer false while the sheet must stay open (a payment in flight): it springs back. */
   canClose?: () => boolean
+  /** What scrolls inside the sheet (default the sheet itself): a pull from the content closes only when it is at the top. */
+  scroller?: () => HTMLElement | null
 }
 
 /** Same breakpoint as the components' CSS: below it they are bottom sheets. */
@@ -70,6 +79,8 @@ export class BottomSheet {
   private locked = false
   private drag: Drag | null = null
   private dragEndedAt = -Infinity
+  /** A finger down in the content, not yet known to be a pull (down) or a scroll. */
+  private pull: { startX: number; startY: number } | null = null
 
   constructor(private readonly opts: BottomSheetOptions) {}
 
@@ -96,13 +107,22 @@ export class BottomSheet {
     }
     this.opts.host.addEventListener('pointerdown', this.onPointerDown)
     this.opts.host.addEventListener('click', this.onClickCapture, true)
+    this.opts.host.addEventListener('touchstart', this.onTouchStart, { passive: true })
+    this.opts.host.addEventListener('touchmove', this.onTouchMove, { passive: false })
+    this.opts.host.addEventListener('touchend', this.onTouchEnd)
+    this.opts.host.addEventListener('touchcancel', this.onTouchCancel)
   }
 
   private closed(): void {
     this.opts.host.removeEventListener('pointerdown', this.onPointerDown)
     this.opts.host.removeEventListener('click', this.onClickCapture, true)
+    this.opts.host.removeEventListener('touchstart', this.onTouchStart)
+    this.opts.host.removeEventListener('touchmove', this.onTouchMove)
+    this.opts.host.removeEventListener('touchend', this.onTouchEnd)
+    this.opts.host.removeEventListener('touchcancel', this.onTouchCancel)
     this.stopTracking()
     this.drag = null
+    this.pull = null
     // The close animation runs from wherever the finger left the sheet to the
     // CSS's closed position; dropping the inline transform now keeps that
     // animation going (same end value) and leaves the next open clean.
@@ -148,24 +168,9 @@ export class BottomSheet {
     if (!drag.moving) {
       if (dy < -SLOP) return this.abandon() // upwards: not ours
       if (dy <= SLOP) return
-      drag.moving = true
-      const sheet = this.opts.sheet()
-      if (sheet) sheet.style.transition = 'none'
-      const backdrop = this.opts.backdrop?.()
-      if (backdrop) backdrop.style.transition = 'none'
+      this.startMoving(drag)
     }
-    const dt = e.timeStamp - drag.lastT
-    if (dt > 0) drag.velocity = 0.8 * ((e.clientY - drag.lastY) / dt) + 0.2 * drag.velocity
-    drag.lastY = e.clientY
-    drag.lastT = e.timeStamp
-    drag.offset = Math.max(0, dy)
-    const sheet = this.opts.sheet()
-    if (sheet) sheet.style.transform = `translateY(${drag.offset}px)`
-    const backdrop = this.opts.backdrop?.()
-    if (backdrop && sheet) {
-      const height = sheet.getBoundingClientRect().height || window.innerHeight
-      backdrop.style.opacity = String(Math.max(0, 1 - drag.offset / height))
-    }
+    this.follow(drag, e.clientY, e.timeStamp)
     if (e.cancelable) e.preventDefault()
   }
 
@@ -173,6 +178,93 @@ export class BottomSheet {
     const drag = this.drag
     if (!drag || e.pointerId !== drag.pointerId) return
     this.stopTracking()
+    this.finish(drag)
+  }
+
+  // ── Pull from the content (touch) ─────────────────────────────────────────
+
+  private onTouchStart = (e: TouchEvent): void => {
+    this.pull = null
+    if (this.drag || e.touches.length !== 1 || !isPhoneSheet()) return
+    const sheet = this.opts.sheet()
+    if (!sheet || !e.composedPath().includes(sheet)) return
+    if (inZone(e, sheet, this.opts.dragZones)) return // the pointer path has it
+    const t = e.touches[0]
+    if (t) this.pull = { startX: t.clientX, startY: t.clientY }
+  }
+
+  private onTouchMove = (e: TouchEvent): void => {
+    const t = e.touches[0]
+    if (!t) return
+    if (this.pull) {
+      const dx = t.clientX - this.pull.startX
+      const dy = t.clientY - this.pull.startY
+      if (Math.max(Math.abs(dx), Math.abs(dy)) <= SLOP) return
+      const startY = this.pull.startY
+      this.pull = null
+      // Sideways (a carousel), upwards, or content not at its top: a scroll.
+      if (Math.abs(dx) >= Math.abs(dy) || dy < 0 || this.scrolledDown(e)) return
+      this.drag = { pointerId: -1, startY, lastY: startY, lastT: e.timeStamp, velocity: 0, moving: false, offset: 0 }
+      this.startMoving(this.drag)
+    }
+    const drag = this.drag
+    if (!drag || drag.pointerId !== -1) return
+    this.follow(drag, t.clientY, e.timeStamp)
+    if (e.cancelable) e.preventDefault()
+  }
+
+  private onTouchEnd = (e: TouchEvent): void => {
+    this.pull = null
+    const drag = this.drag
+    if (!drag || drag.pointerId !== -1 || e.touches.length > 0) return
+    this.finish(drag)
+  }
+
+  private onTouchCancel = (): void => {
+    this.pull = null
+    if (this.drag?.pointerId === -1) this.abandon()
+  }
+
+  /** Is the content under the finger scrolled away from its top (the sheet's scroller, or one inside it)? */
+  private scrolledDown(e: Event): boolean {
+    const sheet = this.opts.sheet()
+    const scroller = this.opts.scroller?.() ?? sheet
+    if (scroller && scroller.scrollTop > 0) return true
+    for (const node of e.composedPath()) {
+      if (node === sheet) break
+      if (node instanceof HTMLElement && node.scrollTop > 0 && node.scrollHeight > node.clientHeight) return true
+    }
+    return false
+  }
+
+  // ── Shared by both ────────────────────────────────────────────────────────
+
+  /** The press is a drag now: the sheet and backdrop follow the finger without easing. */
+  private startMoving(drag: Drag): void {
+    drag.moving = true
+    const sheet = this.opts.sheet()
+    if (sheet) sheet.style.transition = 'none'
+    const backdrop = this.opts.backdrop?.()
+    if (backdrop) backdrop.style.transition = 'none'
+  }
+
+  private follow(drag: Drag, y: number, timeStamp: number): void {
+    const dt = timeStamp - drag.lastT
+    if (dt > 0) drag.velocity = 0.8 * ((y - drag.lastY) / dt) + 0.2 * drag.velocity
+    drag.lastY = y
+    drag.lastT = timeStamp
+    drag.offset = Math.max(0, y - drag.startY)
+    const sheet = this.opts.sheet()
+    if (sheet) sheet.style.transform = `translateY(${drag.offset}px)`
+    const backdrop = this.opts.backdrop?.()
+    if (backdrop && sheet) {
+      const height = sheet.getBoundingClientRect().height || window.innerHeight
+      backdrop.style.opacity = String(Math.max(0, 1 - drag.offset / height))
+    }
+  }
+
+  /** Let go: close if far or fast enough (and allowed), else spring back. */
+  private finish(drag: Drag): void {
     this.drag = null
     if (!drag.moving) return // a tap: the click goes through
     this.dragEndedAt = performance.now()

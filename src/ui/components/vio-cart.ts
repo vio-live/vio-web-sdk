@@ -113,6 +113,7 @@ export class VioCart extends LitElement {
     sheet: () => this.renderRoot.querySelector<HTMLElement>('.drawer'),
     backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
     dragZones: '.handle, .header',
+    scroller: () => this.renderRoot.querySelector<HTMLElement>('.body'),
     close: () => this.close(),
   })
 

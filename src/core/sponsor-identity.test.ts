@@ -318,3 +318,34 @@ describe('Vio.checkout: the memory is written when a checkout exists, getOrderRe
     })
   })
 })
+
+/** The brand's promises (dashboard Settings → Brand), for the strip under the buy zone (2026-10-28). */
+describe('the brand’s promises', () => {
+  const withHighlights = (highlights: unknown): BootstrapResponse =>
+    ({ campaign: { id: 1, name: 'x' }, primarySponsor: sponsor(4, 'Careless', null, { highlights }), secondarySponsors: [] }) as unknown as BootstrapResponse
+
+  it('come as the brand wrote them, trimmed, at most three, each with a title', () => {
+    const id = sponsorIdentityFrom(
+      withHighlights([
+        { icon: 'plane', title: ' Rask levering ', text: '2-5 virkedager' },
+        { icon: 'heart', title: '', text: 'no title: dropped' },
+        { icon: 'shirt', title: 'Designet i Norge', text: '  ' },
+        'not an object',
+        { icon: 'star', title: 'Third' },
+        { icon: 'leaf', title: 'Fourth: over the limit' },
+      ]),
+      4,
+    )
+    expect(id?.highlights).toEqual([
+      { icon: 'plane', title: 'Rask levering', text: '2-5 virkedager' },
+      { icon: 'shirt', title: 'Designet i Norge' },
+      { icon: 'star', title: 'Third' },
+    ])
+  })
+
+  it('a brand without any keeps the identity’s shape (no highlights key)', () => {
+    expect(sponsorIdentityFrom(withHighlights(null), 4)).not.toHaveProperty('highlights')
+    expect(sponsorIdentityFrom(withHighlights([]), 4)).not.toHaveProperty('highlights')
+    expect(sponsorIdentityFrom(withHighlights('nope'), 4)).not.toHaveProperty('highlights')
+  })
+})

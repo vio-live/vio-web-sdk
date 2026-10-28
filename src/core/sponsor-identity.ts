@@ -15,7 +15,7 @@
  * Pure helpers and a tiny per-checkout memory in `sessionStorage`; no DOM.
  */
 
-import type { BootstrapResponse, Sponsor } from './types.js'
+import type { BootstrapResponse, Sponsor, SponsorHighlight } from './types.js'
 
 /** What a sponsor looks like to a shopper. `name` is the brand's display name. */
 export interface SponsorIdentity {
@@ -28,6 +28,8 @@ export interface SponsorIdentity {
   termsUrl?: string | null
   /** The brand's returns / refund policy page — https only; `null` when it has none. */
   refundPolicyUrl?: string | null
+  /** The brand's promises (at most three, each with a title); absent when it has none. */
+  highlights?: SponsorHighlight[]
 }
 
 /** The sponsor of a checkout / an order as events and `getOrderReference` carry it. */
@@ -115,6 +117,7 @@ export function sponsorIdentityFrom(
     // The brand's pages only when it gave them: an identity without them keeps its shape.
     const termsUrl = pageUrlOrNull((sponsor as { termsUrl?: unknown }).termsUrl)
     const refundPolicyUrl = pageUrlOrNull((sponsor as { refundPolicyUrl?: unknown }).refundPolicyUrl)
+    const highlights = highlightsOf((sponsor as { highlights?: unknown }).highlights)
     return {
       id,
       name,
@@ -122,6 +125,7 @@ export function sponsorIdentityFrom(
       avatarUrl: urlOrNull(sponsor.avatarUrl),
       ...(termsUrl ? { termsUrl } : {}),
       ...(refundPolicyUrl ? { refundPolicyUrl } : {}),
+      ...(highlights.length ? { highlights } : {}),
     }
   } catch {
     return null
@@ -261,4 +265,20 @@ export function rememberedSponsor(sponsorId: number | string | null | undefined)
 export function resetCheckoutSponsorMemory(): void {
   inMemory = []
   storageRefusedWrite = false
+}
+
+/** The brand's promises as the bootstrap gives them, kept only when they make sense: at most three, each with a title. */
+function highlightsOf(value: unknown): SponsorHighlight[] {
+  if (!Array.isArray(value)) return []
+  const out: SponsorHighlight[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const { icon, title, text } = item as Record<string, unknown>
+    const t = typeof title === 'string' ? title.trim() : ''
+    if (!t) continue
+    const body = typeof text === 'string' ? text.trim() : ''
+    out.push({ icon: typeof icon === 'string' ? icon.trim() : '', title: t, ...(body ? { text: body } : {}) })
+    if (out.length === 3) break
+  }
+  return out
 }

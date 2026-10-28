@@ -183,6 +183,21 @@ export interface AnalyticsStartOptions {
    * its own rotating session.
    */
   sessionId?: string
+  /**
+   * Dejar de capturar QUÉ contenido se está viendo: sin `content_url`,
+   * `content_title`, `content_id` ni nombre/marca de producto. Default false
+   * (se captura).
+   *
+   * Para superficies donde el contenido ES el dato sensible — una app de
+   * salud: la pantalla abierta y el producto comprado revelan la condición
+   * aunque el dispositivo sea anónimo. El funnel se sigue midiendo: ids de
+   * campaña y componente, cantidades e importes.
+   *
+   * El colector lo aplica igual del lado del servidor para las surfaces
+   * marcadas (`client_apps.privacy_mode = 'minimal'`); este interruptor evita
+   * que el dato salga del dispositivo.
+   */
+  privateContent?: boolean
   /** Send to the Vio collector. Default true. */
   collector?: boolean
   /** Also push GA4 e-commerce events to window.dataLayer (publisher feature). */
@@ -240,10 +255,20 @@ interface WireEvent {
 export class AnalyticsManager extends EventTarget {
   private started = false
   private options: Required<
-    Pick<AnalyticsStartOptions, 'collector' | 'dataLayer' | 'debug' | 'autoTrack'>
+    Pick<
+      AnalyticsStartOptions,
+      'collector' | 'dataLayer' | 'debug' | 'autoTrack' | 'privateContent'
+    >
   > & {
     host: string
-  } = { host: 'custom', collector: true, dataLayer: false, debug: false, autoTrack: true }
+  } = {
+    host: 'custom',
+    collector: true,
+    dataLayer: false,
+    debug: false,
+    autoTrack: true,
+    privateContent: false,
+  }
 
   private queue: WireEvent[] = []
   private flushTimer: ReturnType<typeof setInterval> | null = null
@@ -337,6 +362,7 @@ export class AnalyticsManager extends EventTarget {
       dataLayer: options.dataLayer ?? this.options.dataLayer,
       debug: options.debug ?? this.options.debug,
       autoTrack: options.autoTrack ?? this.options.autoTrack,
+      privateContent: options.privateContent ?? this.options.privateContent,
     }
     // A host-supplied session id wins over our own: it is the only way the
     // host can join Vio's funnel onto the events it already collects.
@@ -606,19 +632,24 @@ export class AnalyticsManager extends EventTarget {
       // one is usually the tracking tail, not the page. The other host-given
       // fields (broadcastId, componentTemplateId, errorCode, variant, …) are
       // the host's responsibility: the SDK does not touch them.
-      content_url: capContentUrl(ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined)),
+      // Con `privateContent` ninguno de los tres sale del dispositivo.
+      content_url: this.options.privateContent
+        ? undefined
+        : capContentUrl(ctx.contentUrl ?? (typeof location !== 'undefined' ? location.href : undefined)),
       // The host's own content id — its join key back onto its reporting.
       // Explicit on the event when it fits, else what the SDK resolved for
       // the page (already capped per source), else nothing.
-      content_id: explicitContentId ?? fitsId(content.id),
+      content_id: this.options.privateContent ? undefined : (explicitContentId ?? fitsId(content.id)),
       // Deletion-proof reporting: sources have no trash bin — the title
       // snapshotted at event time keeps reports legible if content dies.
       error_code: ctx.errorCode,
-      content_title: capTitle(
-        ctx.contentTitle ??
-          content.title ??
-          (typeof document !== 'undefined' && document.title ? document.title : undefined),
-      ),
+      content_title: this.options.privateContent
+        ? undefined
+        : capTitle(
+            ctx.contentTitle ??
+              content.title ??
+              (typeof document !== 'undefined' && document.title ? document.title : undefined),
+          ),
       variant: ctx.variant,
     })
 
@@ -629,8 +660,8 @@ export class AnalyticsManager extends EventTarget {
           items: com.items?.slice(0, MAX_ITEMS).map((i) =>
             compact({
               product_id: String(i.productId),
-              name: i.name,
-              brand: i.brand,
+              name: this.options.privateContent ? undefined : i.name,
+              brand: this.options.privateContent ? undefined : i.brand,
               variant_id: i.variantId !== undefined ? String(i.variantId) : undefined,
               price: i.price,
               quantity: i.quantity,

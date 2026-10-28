@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.31.0 — 2026-10-28
 
 ### Added
 - **Delivery and returns under the price in the product detail.** It reads «Frakt fra X · 14

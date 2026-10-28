@@ -585,7 +585,14 @@ export class VioProductDetail extends LitElement {
 
     /* Option pickers */
     .option-group { display: flex; flex-direction: column; gap: 6px; }
+    /* The prompt sits on the label's own line: tapping a buy button before
+       choosing must not push the pills down under the shopper's finger. */
     .option-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 1.4em;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
@@ -635,6 +642,8 @@ export class VioProductDetail extends LitElement {
     .option-chosen { color: var(--vio-color-text, #0a0a0a); font-weight: 700; }
     /* A buy button was tapped before choosing: say what is missing. */
     .option-prompt {
+      text-transform: none;
+      letter-spacing: normal;
       font-size: 13px;
       font-weight: 600;
       color: var(--vio-color-accent, #c14a3b);
@@ -2341,11 +2350,13 @@ export class VioProductDetail extends LitElement {
       return html`
         <div class="option-group ${asked ? 'needs-choice' : ''}" part="option-group">
           <div class="option-label" part="option-label">
-            ${opt.name}${chosen ? html`: <span class="option-chosen" part="option-chosen">${chosen}</span>` : ''}
+            <span
+              >${opt.name}${chosen ? html`: <span class="option-chosen" part="option-chosen">${chosen}</span>` : ''}</span
+            >
+            ${asked
+              ? html`<span class="option-prompt" part="option-prompt" role="alert">${this.promptFor(opt)}</span>`
+              : ''}
           </div>
-          ${asked
-            ? html`<div class="option-prompt" part="option-prompt" role="alert">${this.promptFor(opt)}</div>`
-            : ''}
           <div class="option-values" part="options">
             ${values.map((val) => {
               const available = this.isValueAvailable(opt.name, val)

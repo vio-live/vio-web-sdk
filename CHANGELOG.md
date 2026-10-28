@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.34.0 — 2026-10-29
 
 ### Added
 - **Section order of `<vio-product-detail>` and layout tracking** (asked by Replit for Mote &

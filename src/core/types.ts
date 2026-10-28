@@ -6,6 +6,8 @@
  * we stay aligned cross-platform.
  */
 
+import { storageGet } from './safe-storage.js'
+
 export type ImageSize = 'thumbnail' | 'small' | 'medium' | 'large' | 'full'
 
 export interface ProductPrice {
@@ -289,14 +291,9 @@ export function displayPrice(product: Product): string {
 export function getGlobalCountryCode(): string {
   const g = globalThis as { __VIO_COUNTRY__?: string }
   if (g.__VIO_COUNTRY__) return g.__VIO_COUNTRY__
-  if (typeof localStorage !== 'undefined') {
-    try {
-      const v = localStorage.getItem('vio.country')
-      if (v) return v
-    } catch {
-      /* privacy mode */
-    }
-  }
+  // Never throws: an in-app browser can refuse even to look (safe-storage.ts).
+  const stored = storageGet('local', 'vio.country')
+  if (stored) return stored
   return 'NO'
 }
 
@@ -308,14 +305,9 @@ export function getGlobalCountryCode(): string {
 export function getGlobalLocale(): string {
   const g = globalThis as { __VIO_LOCALE__?: string }
   if (g.__VIO_LOCALE__) return g.__VIO_LOCALE__
-  if (typeof localStorage !== 'undefined') {
-    try {
-      const v = localStorage.getItem('vio.locale')
-      if (v) return v
-    } catch {
-      /* privacy mode */
-    }
-  }
+  // Never throws: an in-app browser can refuse even to look (safe-storage.ts).
+  const stored = storageGet('local', 'vio.locale')
+  if (stored) return stored
   return 'nb-NO'
 }
 
@@ -327,13 +319,9 @@ export function getGlobalSymbol(currency?: string): string {
   const activeCurrency = currency || getGlobalCurrency()
   const g = globalThis as { __VIO_SYMBOL__?: string }
   if (!currency && g.__VIO_SYMBOL__) return g.__VIO_SYMBOL__
-  if (!currency && typeof localStorage !== 'undefined') {
-    try {
-      const v = localStorage.getItem('vio.symbol')
-      if (v) return v
-    } catch {
-      /* privacy mode */
-    }
+  if (!currency) {
+    const v = storageGet('local', 'vio.symbol')
+    if (v) return v
   }
   const curr = String(activeCurrency).toUpperCase()
   if (curr === 'NOK' || curr === 'DKK') return 'Kr'
@@ -353,14 +341,9 @@ export function getGlobalSymbol(currency?: string): string {
 export function getGlobalCurrency(): string {
   const g = globalThis as { __VIO_CURRENCY__?: string }
   if (g.__VIO_CURRENCY__) return g.__VIO_CURRENCY__
-  if (typeof localStorage !== 'undefined') {
-    try {
-      const v = localStorage.getItem('vio.currency')
-      if (v) return v
-    } catch {
-      /* privacy mode */
-    }
-  }
+  // Never throws: an in-app browser can refuse even to look (safe-storage.ts).
+  const stored = storageGet('local', 'vio.currency')
+  if (stored) return stored
   return 'NOK'
 }
 

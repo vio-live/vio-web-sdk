@@ -943,6 +943,7 @@ query Config {
  * source so the vendored bundle stays a pure esbuild artifact.
  */
 
+import { storageGet, storageSet } from '../safe-storage.js'
 import { Configuration } from '../configuration.js'
 import { normalizeBuyerRef } from '../buyer-ref.js'
 import { getGlobalCountryCode, getGlobalCurrency } from '../types.js'
@@ -1048,13 +1049,17 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
 
 const CUSTOMER_SESSION_KEY = 'vio.customer_session_id.v1'
 
-/** Stable per-browser customer session id (backend CreateCart requires one). */
+/**
+ * Stable per-browser customer session id (backend CreateCart requires one).
+ * Never throws: where storage is refused (in-app browsers) the id lives in
+ * this page's memory — still one per shopper, never the shared
+ * `cs_session_default` every storage-less browser used to send.
+ */
 export function getCustomerSessionId(): string {
-  if (typeof localStorage === 'undefined') return 'cs_session_default'
-  let id = localStorage.getItem(CUSTOMER_SESSION_KEY)
+  let id = storageGet('local', CUSTOMER_SESSION_KEY)
   if (!id) {
     id = 'cs_' + Math.random().toString(36).slice(2, 11) + Date.now().toString(36)
-    localStorage.setItem(CUSTOMER_SESSION_KEY, id)
+    storageSet('local', CUSTOMER_SESSION_KEY, id)
   }
   return id
 }

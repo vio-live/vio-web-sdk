@@ -73,6 +73,13 @@ and *when*, and links there.
   `.methods-pending`) until `getAvailablePaymentMethods` answers. They used to show every method,
   so a Vipps-only brand flashed Stripe and Klarna. «Legg i handlekurv» and «Til kassen» are there
   from the start. A failed lookup still shows every button, as before.
+- **Storage never blocks add to cart or checkout (in-app browsers, private modes).** Every read
+  and write of `localStorage`/`sessionStorage` goes through one guard, `src/core/safe-storage.ts`.
+  A storage property that throws on access, a `null` storage or a refused write now falls back to
+  the page's memory. This covers the cart, the customer session id, the market's
+  currency/country/locale and the Klarna return. Before, `typeof localStorage` outside a `try`
+  could throw while the SDK started. Without storage, every browser also sent the same customer
+  session id, `cs_session_default`. It is now one id per page.
 
 ### ⚠️ Upgrade notes
 - The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt

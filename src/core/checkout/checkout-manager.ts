@@ -10,6 +10,7 @@
  * a method) and `payment-complete` (vendor sheet completed successfully).
  */
 
+import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
 import {
@@ -155,6 +156,8 @@ function describeError(err: unknown): string {
   return String(err)
 }
 
+/** sessionStorage key of the last confirmed Klarna token (a retry never confirms it twice). */
+const KLARNA_CONFIRMED_KEY = 'vio.klarna.confirmed.v1'
 /** sessionStorage key for a pending Klarna purchase (survives redirect). */
 const KLARNA_PENDING_KEY = 'vio.klarna.pending.v1'
 
@@ -2922,14 +2925,13 @@ export class CheckoutManager extends EventTarget {
    * the SDK's resumed `complete` event — finish creating the order + confirm.
    */
   async resumeKlarnaReturn(): Promise<void> {
-    if (typeof sessionStorage === 'undefined') return
-    const raw = sessionStorage.getItem(KLARNA_PENDING_KEY)
+    const raw = storageGet('session', KLARNA_PENDING_KEY)
     if (!raw) return
     let pending: KlarnaPendingContext
     try {
       pending = JSON.parse(raw) as KlarnaPendingContext
     } catch {
-      sessionStorage.removeItem(KLARNA_PENDING_KEY)
+      storageRemove('session', KLARNA_PENDING_KEY)
       return
     }
 
@@ -3004,10 +3006,9 @@ export class CheckoutManager extends EventTarget {
     // A token can only be confirmed once — a retry with an already-confirmed
     // token (network blip after a successful confirm) would create a second
     // order with autoCapture: double charge.
-    if (
-      typeof sessionStorage !== 'undefined' &&
-      sessionStorage.getItem('vio.klarna.confirmed.v1') === authorizationToken
-    ) {
+    // (Read through safe-storage: a storage that throws used to escape here
+    // with the in-flight flag still set — no Klarna order could follow.)
+    if (storageGet('session', KLARNA_CONFIRMED_KEY) === authorizationToken) {
       this.klarnaOrderInFlight = false
       return
     }
@@ -3043,10 +3044,10 @@ export class CheckoutManager extends EventTarget {
 
       // Success: only NOW is the pending context consumed (keeping it until
       // here lets the redirect path retry a confirm that never ran).
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem('vio.klarna.confirmed.v1', authorizationToken)
-        sessionStorage.removeItem(KLARNA_PENDING_KEY)
-      }
+      // Never throws: a refusing storage keeps it in this page's memory, and
+      // the order just created is never reported as a failed payment.
+      storageSet('session', KLARNA_CONFIRMED_KEY, authorizationToken)
+      storageRemove('session', KLARNA_PENDING_KEY)
 
       // Synthesize a checkout state for the confirmation if the live one was
       // lost to a redirect reload.

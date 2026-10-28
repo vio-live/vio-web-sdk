@@ -54,6 +54,7 @@ import {
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
 import { isValidNorwegianMobile } from '../../core/checkout/phone.js'
+import { storageGet } from '../../core/safe-storage.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
@@ -1441,8 +1442,7 @@ export class VioCheckout extends LitElement {
       // fires payment-complete — don't double-handle while it's pending.
       if (
         vioMethod === 'klarna' &&
-        typeof sessionStorage !== 'undefined' &&
-        sessionStorage.getItem('vio.klarna.pending.v1')
+        storageGet('session', 'vio.klarna.pending.v1')
       ) {
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
         return

@@ -28,6 +28,7 @@
  *   - A server-side Klarna API key for the order-creation step (backend).
  */
 
+import { storageSet } from '../../safe-storage.js'
 import { getGlobalLocale } from '../../types.js'
 
 /** Klarna Web SDK v2 ESM module (loaded from Klarna's CDN at runtime). */
@@ -238,12 +239,10 @@ export async function mountKlarnaExpressButton(opts: {
   button.on('click', () => {
     // Persist the pending order so a REDIRECT completion (page reloads, this
     // promise never resolves) can be recovered on the return page.
-    if (opts.pendingKey && opts.pendingContext && typeof sessionStorage !== 'undefined') {
-      try {
-        sessionStorage.setItem(opts.pendingKey, JSON.stringify(opts.pendingContext))
-      } catch {
-        /* storage unavailable — popup mode still works via the promise */
-      }
+    // Never throws (safe-storage.ts); unavailable storage keeps it in this
+    // page's memory — popup mode still works via the promise.
+    if (opts.pendingKey && opts.pendingContext) {
+      storageSet('session', opts.pendingKey, JSON.stringify(opts.pendingContext))
     }
     // initiate() MUST be called synchronously here — going async first would
     // drop the user-gesture and the browser would block the popup.

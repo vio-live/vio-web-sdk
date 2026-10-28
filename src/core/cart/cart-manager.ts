@@ -12,6 +12,7 @@
  * phase B) so the order is born attributed — see `origin-wire.ts`.
  */
 
+import { storageGet, storageSet } from '../safe-storage.js'
 import {
   formatPrice,
   getGlobalCountryCode,
@@ -1078,21 +1079,25 @@ export class CartManager extends EventTarget {
 
   // MARK: - Persistence
 
+  /**
+   * Keep the carts for the next page and the other tabs. Where storage
+   * refuses (in-app browsers, private modes) nothing throws (safe-storage.ts):
+   * the carts stay in this manager's own map, the add to cart and the
+   * checkout go on, and the cart just does not survive a reload there.
+   */
   private persist(): void {
-    if (typeof localStorage === 'undefined') return
     try {
       const obj: Record<string, SponsorCartState> = {}
       for (const [k, v] of this.cartsBySponsor) obj[String(k)] = v
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(obj))
+      storageSet('local', STORAGE_KEY, JSON.stringify(obj), { memory: false })
     } catch {
-      // Ignore quota / privacy errors.
+      // A cart that cannot be serialised is not worth an exception.
     }
   }
 
   private loadFromStorage(): Map<number, SponsorCartState> {
-    if (typeof localStorage === 'undefined') return new Map()
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = storageGet('local', STORAGE_KEY)
       if (!raw) return new Map()
       const obj = JSON.parse(raw) as Record<string, SponsorCartState>
       const map = new Map<number, SponsorCartState>()

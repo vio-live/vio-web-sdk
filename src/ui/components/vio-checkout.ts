@@ -13,7 +13,7 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
-import { formatPrice, getGlobalCurrency } from '../../core/types.js'
+import { formatPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
 import {
   buyerRefOf,
   type PaymentSuccessDetail,
@@ -53,6 +53,8 @@ import {
   type AdyenSession,
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
+import { isValidPhone } from '../../core/checkout/phone.js'
+import { storageGet } from '../../core/safe-storage.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
@@ -73,17 +75,16 @@ const STRIPE_LOGO_SRC =
     '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
+/** Said when a pay button is pressed on a cart with nothing to pay for. */
+const EMPTY_CART_MESSAGE = 'Handlekurven er tom.'
+/** Said when the chosen delivery could not be saved on the cart before a hosted payment. */
+const SHIPPING_NOT_SAVED_MESSAGE = 'Kunne ikke lagre fraktmetoden. Prøv igjen.'
+
 export class VioCheckout extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
   @property({ type: String }) heading = 'Kasse'
   @property({ type: String, attribute: 'shipping-label' })
   shippingLabel = 'Beregnes ved kasse'
-  /**
-   * Vipps Express: the shopper picks the delivery inside Vipps, so with Vipps
-   * selected our own shipping rate is not part of the total and the summary
-   * says the shipping is chosen in Vipps (Angelo, 2026-10-24).
-   */
-  @state() private vippsShipsInApp = false
   /** Express mode — render only the Klarna widget (no address form / method grid). */
   @property({ type: Boolean, reflect: true }) express = false
 
@@ -261,6 +262,7 @@ export class VioCheckout extends LitElement {
     firstName: '',
     lastName: '',
     email: '',
+    phone: '',
     address: '',
     postalCode: '',
     city: '',
@@ -673,6 +675,8 @@ export class VioCheckout extends LitElement {
       transition: border-color 0.15s;
     }
     .field input:focus { border-bottom-color: var(--vio-color-text, #0a0a0a); }
+    .field input[aria-invalid='true'] { border-bottom-color: var(--vio-color-accent, #c14a3b); }
+    .field-error { margin-top: 4px; font-size: 12px; color: var(--vio-color-accent, #c14a3b); }
 
     .payment-grid {
       display: grid;
@@ -1440,8 +1444,7 @@ export class VioCheckout extends LitElement {
       // fires payment-complete — don't double-handle while it's pending.
       if (
         vioMethod === 'klarna' &&
-        typeof sessionStorage !== 'undefined' &&
-        sessionStorage.getItem('vio.klarna.pending.v1')
+        storageGet('session', 'vio.klarna.pending.v1')
       ) {
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
         return
@@ -1790,7 +1793,33 @@ export class VioCheckout extends LitElement {
     )
   }
 
-  /** Whether all mandatory Leveringsadresse fields are filled. */
+  /** The shipping country the mobile's calling code defaults to (no +prefix typed). */
+  private get phoneCountry(): string {
+    return String(this.form.country || getGlobalCountryCode())
+  }
+
+  /**
+   * The mobile is required only for the standard Vipps payment — shopcart
+   * does not ask Vipps for the profile there. Every other method takes it
+   * when given and never waits for it (a host that pre-fills the form with
+   * `setAddress()` and no phone keeps working).
+   */
+  private get phoneRequired(): boolean {
+    return this.checkoutState?.paymentMethod === 'vipps'
+  }
+
+  /** A number typed that is not usable (nothing said while the field is empty). */
+  private get phoneError(): boolean {
+    const raw = String(this.form.phone ?? '').trim()
+    return raw.length > 0 && !isValidPhone(raw, this.phoneCountry)
+  }
+
+  /** The mobile as the chosen method needs it: valid when required, else anything. */
+  private get phoneReady(): boolean {
+    return !this.phoneRequired || isValidPhone(this.form.phone, this.phoneCountry)
+  }
+
+  /** Whether all mandatory Leveringsadresse fields are filled (the mobile only for Vipps). */
   private get isAddressValid(): boolean {
     const f = this.form
     if (!f) return false
@@ -1800,7 +1829,8 @@ export class VioCheckout extends LitElement {
       f.email && String(f.email).trim().length > 0 && String(f.email).includes('@') &&
       f.address && String(f.address).trim().length > 0 &&
       f.postalCode && String(f.postalCode).trim().length > 0 &&
-      f.city && String(f.city).trim().length > 0,
+      f.city && String(f.city).trim().length > 0 &&
+      this.phoneReady,
     )
   }
 
@@ -1825,11 +1855,10 @@ export class VioCheckout extends LitElement {
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
         // Which Stripe: the flow travels in the method's own config, and the
-        // list is memoised, so this costs nothing extra.
+        // list is memoised, so this costs nothing extra. (Vipps here is always
+        // the standard payment — see startVippsFromCheckout — whatever the
+        // brand's Express switch says.)
         this.stripeMode = await Vio.checkout.getStripeMode(spId)
-        this.vippsShipsInApp = this.availableMethods.some((m) => String(m).toLowerCase() === 'vipps')
-          ? await Vio.checkout.getVippsExpressEnabled(spId)
-          : false
       } else {
         this.availableMethods = null
       }
@@ -2101,21 +2130,45 @@ export class VioCheckout extends LitElement {
   }
 
   /**
-   * Vipps from the checkout: Express when the channel allows it, so the
-   * shopper picks the delivery inside the app — our rate on the cart is the
-   * one preselected there — and never silently keeps the default our form
-   * chose for them. When the cart cannot have Express (several suppliers)
-   * the backend says so without creating a payment, and the plain payment
-   * follows: profile shared, the rate already on the cart.
+   * Vipps from the checkout: the STANDARD payment, always (Mote & Livsstil,
+   * 2026-10-28). The shopper filled our form — name, address, mobile — and
+   * chose the delivery with its price here; the payment carries that address
+   * and the rate on the cart, and Vipps only approves and pays. Express (the
+   * app filling in name and address) is the product detail's «Kjøp nå med
+   * Vipps» alone, even when the brand has Express on.
    */
   private async startVippsFromCheckout(): Promise<void> {
     const sponsorId = this.checkoutState?.sponsorId
-    const express = await Vio.checkout.getVippsExpressEnabled(sponsorId)
-    if (express) {
-      const res = await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: true })
-      if (res?.payment_url) return
+    await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: false })
+  }
+
+  /**
+   * The chosen delivery on the cart before a hosted payment is minted (its
+   * total depends on it). False — and the payment must not start — when it
+   * could not be saved: the selected rate has no supplier to save it under,
+   * or the backend refused. A cart with no rates at all has nothing to save.
+   */
+  private async persistSelectedShipping(method: string): Promise<boolean> {
+    if (this.availableShippingsList.length === 0) return true
+    const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
+    if (!selectedOpt?.supplierId) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[VioCheckout] no supplier for the selected shipping — ${method} not started`)
+      }
+      return false
     }
-    await Vio.checkout.startVippsPayment(sponsorId, this.form)
+    try {
+      const updated = await Vio.checkout.updateShippingsBySupplier(
+        [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+        this.checkoutState?.sponsorId,
+      )
+      return updated != null
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[VioCheckout] updateShippingsBySupplier on ${method} pay failed:`, err)
+      }
+      return false
+    }
   }
 
   private async onApplePay(): Promise<void> {
@@ -2140,6 +2193,12 @@ export class VioCheckout extends LitElement {
     if (this.shippingBlocked) return
     this.paymentError = null
     this.paymentNotice = null
+    // Never a payment for an empty cart or one of 0 kr (another tab may have
+    // paid or emptied it while this one was open).
+    if (!this.cartPayable) {
+      this.paymentError = EMPTY_CART_MESSAGE
+      return
+    }
     // Apple Pay collects address, shipping AND email inside its own sheet —
     // skip the manual form validation entirely.
     if (method === 'apple-pay') {
@@ -2167,12 +2226,14 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('nexi')
       return
     }
-    // Vipps collects address, delivery AND email in its own flow (Express,
-    // 2026-09-29) — nothing of ours has to be filled in first, so one click
-    // selects it and starts it. An email the shopper already typed (the
-    // "Kontakt" section, or another method's form) travels along.
-    if (method !== 'vipps') {
-      const missing = !this.isAddressValid
+    // Every method that pays after our form needs it complete — Vipps too
+    // (2026-10-28: the checkout's Vipps is the standard payment, it carries
+    // our address and delivery; Express lives on the product detail).
+    {
+      // The mobile counts for the method being paid with (Vipps), even before
+      // the state says it is the selected one.
+      const phoneMissing = method === 'vipps' && !isValidPhone(this.form.phone, this.phoneCountry)
+      const missing = !this.isAddressValid || phoneMissing
         ? 'Vennligst fyll ut alle feltene i leveringsadresse.'
         : !this.hasSelectedShipping
           ? 'Vennligst velg en fraktmetode.'
@@ -2211,21 +2272,14 @@ export class VioCheckout extends LitElement {
         this.stripeRequested = true
         return
       }
-      // Persist the chosen shipping before the link is minted (total depends on it).
-      const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
-      if (selectedOpt?.supplierId) {
-        try {
-          await Vio.checkout.updateShippingsBySupplier(
-            [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
-            this.checkoutState?.sponsorId,
-          )
-        } catch (err) {
-          if (typeof console !== 'undefined') {
-            console.warn('[VioCheckout] updateShippingsBySupplier on stripe pay failed:', err)
-          }
-        }
-      }
+      // Persist the chosen shipping before the link is minted (total depends
+      // on it); a delivery that could not be saved starts no payment.
       this.stripeLoading = true
+      if (!(await this.persistSelectedShipping('stripe'))) {
+        this.stripeLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
       void Vio.checkout
         .startStripePayment(this.checkoutState?.sponsorId, this.form)
         .catch((err: unknown) => {
@@ -2240,6 +2294,13 @@ export class VioCheckout extends LitElement {
     }
     if (method === 'vipps') {
       this.vippsLoading = true
+      // The delivery Vipps will charge for is the one saved on the cart: not
+      // saved, no payment.
+      if (!(await this.persistSelectedShipping('vipps'))) {
+        this.vippsLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
       const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.checkoutState?.sponsorId, source: 'checkout' })
       void this.startVippsFromCheckout()
         .catch((err: unknown) => {
@@ -2264,7 +2325,11 @@ export class VioCheckout extends LitElement {
     const s = this.checkoutState
     if (!s || !s.paymentMethod) return
     if (this.shippingBlocked) return
-    if (s.paymentMethod !== 'vipps' && !this.isAddressValid) {
+    if (!this.cartPayable) {
+      this.paymentError = EMPTY_CART_MESSAGE
+      return
+    }
+    if (!this.isAddressValid) {
       this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
       return
     }
@@ -2549,6 +2614,15 @@ export class VioCheckout extends LitElement {
     )
   }
 
+  /**
+   * A total above 0 — every pay button needs it. The state's subtotal follows
+   * the cart (CheckoutManager.onCartChange): a cart emptied or paid in
+   * another tab drops it to 0 here.
+   */
+  private get cartPayable(): boolean {
+    return (this.checkoutState?.subtotal ?? 0) > 0
+  }
+
   private orderTotal(): string {
     const s = this.checkoutState
     if (!s) return ''
@@ -2559,7 +2633,6 @@ export class VioCheckout extends LitElement {
    * express always has one; the normal flow has one once the backend
    * shippings loaded (the choice IS persisted on the cart and charged). */
   private shippingMajor(): number {
-    if (this.vippsChoosesShipping()) return 0
     if (this.checkoutState?.paymentMethod === 'qliro' && typeof this.qliroShipping?.price === 'number') {
       return this.qliroShipping.price
     }
@@ -2573,11 +2646,6 @@ export class VioCheckout extends LitElement {
     const o = this.shippingOption
     if (!o) return 0
     return o.priceMajor ?? o.price / 100
-  }
-
-  /** Vipps is the method and it runs as Express: the delivery is chosen in Vipps. */
-  private vippsChoosesShipping(): boolean {
-    return this.checkoutState?.paymentMethod === 'vipps' && this.vippsShipsInApp
   }
 
   /** The rate the summary names — Qliro's own pick while Qliro is the method. */
@@ -3952,8 +4020,6 @@ export class VioCheckout extends LitElement {
   private renderCheckoutBody() {
     const method = this.checkoutState?.paymentMethod
     const showCompleteCta = !!method && !this.isExpressMethod(method)
-    // Vipps collects the address in its own flow; it only needs an email.
-    const isVipps = method === 'vipps'
     // Method first (Angelo, 2026-09-22): our delivery form is asked only once
     // the shopper has chosen a method that needs it. Asking it up front made
     // anyone who then chose Nexi, Qliro, Kustom or Walley type it all again
@@ -4001,6 +4067,25 @@ export class VioCheckout extends LitElement {
                 @input=${(e: InputEvent) =>
                   this.onFieldChange('email', (e.target as HTMLInputElement).value)}
               />
+            </div>
+            <div class="field">
+              <label for="vio-checkout-phone">${this.phoneRequired ? 'Mobilnummer *' : 'Mobilnummer (valgfritt)'}</label>
+              <input
+                id="vio-checkout-phone"
+                class="phone-input"
+                type="tel"
+                ?required=${this.phoneRequired}
+                inputmode="tel"
+                autocomplete="tel"
+                placeholder=${this.phoneCountry.toUpperCase() === 'NO' ? '8 siffer' : '+46 70 123 45 67'}
+                aria-invalid=${this.phoneError ? 'true' : 'false'}
+                .value=${this.form.phone ?? ''}
+                @input=${(e: InputEvent) =>
+                  this.onFieldChange('phone', (e.target as HTMLInputElement).value)}
+              />
+              ${this.phoneError
+                ? html`<div class="field-error" role="alert">Skriv et gyldig mobilnummer (med landskode, f.eks. +46, hvis det ikke er norsk)</div>`
+                : ''}
             </div>
             <div class="field">
               <label>Adresse *</label>
@@ -4072,25 +4157,6 @@ export class VioCheckout extends LitElement {
           `
             : ''}
 
-          ${isVipps
-            ? html`
-                <section class="section">
-                  <div class="section-label">Kontakt</div>
-                  <div class="field">
-                    <label>E-post * <span style="font-weight:400;opacity:0.6">(for kvittering — adresse fylles ut i Vipps)</span></label>
-                    <input
-                      type="email"
-                      required
-                      autocomplete="email"
-                      .value=${this.form.email}
-                      @input=${(e: InputEvent) =>
-                        this.onFieldChange('email', (e.target as HTMLInputElement).value)}
-                    />
-                  </div>
-                </section>
-              `
-            : ''}
-
           <section class="section">
             <div class="section-label">
               ${needsOurForm ? 'Steg 2' : 'Betaling'}
@@ -4138,7 +4204,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('stripe')}
-                          ?disabled=${this.stripeLoading || !this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${this.stripeLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -4156,7 +4222,12 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('vipps')}
-                          ?disabled=${this.vippsLoading}
+                          ?disabled=${this.vippsLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
+                          title=${!this.isAddressValid
+                            ? 'Vennligst fyll ut leveringsadresse'
+                            : !this.hasSelectedShipping
+                              ? 'Vennligst velg en fraktmetode'
+                              : ''}
                         >
                           ${this.vippsLoading
                             ? 'Går til Vipps…'
@@ -4169,7 +4240,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('apple-pay')}
-                          ?disabled=${this.applePayInProgress || !this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${this.applePayInProgress || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -4187,7 +4258,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${this.onCompleteOrder}
-                          ?disabled=${!this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${!this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -4343,9 +4414,7 @@ export class VioCheckout extends LitElement {
                   </div>
                   <div class="order-row">
                     <span>Frakt${this.shippingMajor() > 0 && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
-                    <span>${this.vippsChoosesShipping()
-                      ? 'Velges i Vipps'
-                      : this.shippingMajor() > 0
+                    <span>${this.shippingMajor() > 0
                         ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
                         : this.shippingLabel}</span>
                   </div>

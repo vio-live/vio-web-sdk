@@ -13,7 +13,6 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
-import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
@@ -31,6 +30,38 @@ const STRIPE_LOGO_SRC =
     '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
+/** A backend shipping rate's price (tax included when given) in `currency`, or null. */
+function ratePrice(rate: unknown, currency: string): number | null {
+  const price = (rate as { price?: { amount?: number; amount_incl_taxes?: number | null; currency_code?: string } } | null)?.price
+  if (!price) return null
+  const amount = typeof price.amount_incl_taxes === 'number' ? price.amount_incl_taxes : price.amount
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) return null
+  if (price.currency_code && currency && price.currency_code.toUpperCase() !== currency.toUpperCase()) return null
+  return amount
+}
+
+/**
+ * One cart's shipping from its lines (shipping is per supplier, and a
+ * sponsor's cart is one supplier): the rate chosen on a line, else the
+ * cheapest offered. null when no line says.
+ */
+function cartShipping(
+  items: ReadonlyArray<{ shipping?: unknown; availableShippings?: unknown[] }>,
+  currency: string,
+): number | null {
+  for (const item of items) {
+    const chosen = ratePrice(item.shipping, currency)
+    if (chosen !== null) return chosen
+  }
+  for (const item of items) {
+    const offered = (item.availableShippings ?? [])
+      .map((r) => ratePrice(r, currency))
+      .filter((p): p is number => p !== null)
+    if (offered.length > 0) return Math.min(...offered)
+  }
+  return null
+}
+
 export class VioCart extends LitElement {
   /** Drawer visibility. Reflects to attribute for `:host([open])`. */
   @property({ type: Boolean, reflect: true }) open = false
@@ -45,6 +76,8 @@ export class VioCart extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** Asking for the brand's methods: a neutral placeholder instead of every method's button (see methodEnabled). */
+  @state() private methodsLoading = false
   @state() private vippsOfficial = false
   /** Whether the method lookup has been attempted — see boundOnCartChange. */
   private paymentMethodsAttempted = false
@@ -288,6 +321,14 @@ export class VioCart extends LitElement {
       cursor: pointer;
     }
     .checkout-btn:hover { opacity: 0.9; }
+    .checkout-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Where the express buttons go while the brand's methods load. */
+    .methods-pending {
+      height: 48px;
+      margin-bottom: 10px;
+      border-radius: var(--vio-radius-lg, 8px);
+      background: var(--vio-color-surface-muted, #f1f1f1);
+    }
     .footer {
       padding: var(--vio-space-lg, 24px);
       border-top: 1px solid var(--vio-color-border, #e5e5e5);
@@ -300,6 +341,14 @@ export class VioCart extends LitElement {
       font-size: 14px;
     }
     .subtotal-label { color: var(--vio-color-text-secondary, #666); }
+    .shipping-row,
+    .total-row {
+      display: flex;
+      justify-content: space-between;
+      margin: calc(var(--vio-space-md, 16px) * -0.5) 0 var(--vio-space-md, 16px);
+      font-size: 14px;
+    }
+    .total-row { font-weight: 700; font-size: 16px; margin-top: 0; }
     .subtotal-value { font-weight: 700; font-size: 16px; }
 
     /* Apple Pay express — pay the whole cart directly. */
@@ -508,6 +557,7 @@ export class VioCart extends LitElement {
       this.loadingPaymentMethods = false
       return
     }
+    this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(firstSponsorId)) as
         | Array<{ name: string }>
@@ -525,11 +575,22 @@ export class VioCart extends LitElement {
       this.availableMethods = null
     } finally {
       this.loadingPaymentMethods = false
+      this.methodsLoading = false
     }
   }
 
-  /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
+  /** The methods are on their way and none is known yet. */
+  private get methodsPending(): boolean {
+    return this.methodsLoading && this.availableMethods === null
+  }
+
+  /**
+   * Backend names arrive as e.g. "Apple Pay" — compare letters only. While
+   * the list loads, no method's button is drawn: «unknown = all» painted
+   * Stripe and Klarna for a Vipps-only brand until it came.
+   */
   private methodEnabled(...names: string[]): boolean {
+    if (this.methodsPending) return false
     return isMethodEnabled(this.availableMethods, ...names)
   }
 
@@ -581,7 +642,7 @@ export class VioCart extends LitElement {
   /** Apple Pay express — pay the whole cart, then show the confirmation. */
   private onApplePay(): void {
     const handle = this.applePayHandle
-    if (!handle || !handle.available || this.itemCount === 0) return
+    if (!handle || !handle.available || !this.payable) return
     // Snapshot items + total BEFORE clearing the cart (confirmation needs them).
     const snapshot = this.buildConfirmation()
     // Who the order is with, while the cart still names it — only when one
@@ -635,7 +696,7 @@ export class VioCart extends LitElement {
    * (betalingsmetode). The host's checkout-open handler closes this cart and
    * opens <vio-checkout> in express mode with Klarna preselected. */
   private onKlarnaExpress(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -657,7 +718,7 @@ export class VioCart extends LitElement {
    * method present the others were unreachable from here.
    */
   private onCheckout(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -670,17 +731,23 @@ export class VioCart extends LitElement {
   }
 
   /**
-   * Vipps — Express: the app collects address and delivery, so the cart
-   * goes straight to Vipps. When this cart cannot have Express (several
-   * suppliers, digital goods, no rate) or Vipps cannot be started, the
-   * checkout opens with Vipps preselected, as before.
+   * Vipps from the cart: the checkout opens with Vipps preselected — the
+   * standard path, where our form collects name, address, mobile and the
+   * delivery (with its price) before paying (Mote & Livsstil, 2026-10-28).
+   * It no longer starts Express from here: Express is the product detail's
+   * «Kjøp nå med Vipps» only.
    */
   private onVipps(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
-    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: firstSponsorId, source: 'cart' })
-    void this.startVippsExpressOrCheckout(firstSponsorId, redirect)
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(firstSponsorId) },
+      }),
+    )
   }
 
   /** Vipps' own button when its script answers; our orange one otherwise. */
@@ -688,39 +755,9 @@ export class VioCart extends LitElement {
     this.vippsOfficial = await ensureVippsButton()
   }
 
-  private async startVippsExpressOrCheckout(sponsorId: number, redirect: PaymentRedirectHandle): Promise<void> {
-    let fallback = true
-    try {
-      // A +/− a moment ago may still be syncing: Vipps must get the cart it produced.
-      await Vio.cart.waitForCartMutations(sponsorId)
-      // The seller may have switched Express off on its Vipps row: then the
-      // button is an ordinary way into the checkout, with Vipps preselected.
-      if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) {
-        redirect.abort('express-off')
-      } else {
-        const res = await Vio.checkout.startVippsExpress(sponsorId)
-        fallback = !res?.payment_url
-        if (fallback) redirect.abort('not-started')
-      }
-    } catch (err) {
-      if (typeof console !== 'undefined') {
-        console.warn('[VioCart] Vipps Express not started:', err)
-      }
-      redirect.fail(err instanceof Error ? err.message : String(err))
-    }
-    if (!fallback) return
-    this.dispatchEvent(
-      new CustomEvent('vio:checkout-open', {
-        bubbles: true,
-        composed: true,
-        detail: { sponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(sponsorId) },
-      }),
-    )
-  }
-
   /** Stripe — opens the checkout with Stripe preselected. */
   private onStripe(): void {
-    if (this.itemCount === 0) return
+    if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -737,12 +774,36 @@ export class VioCart extends LitElement {
     return resolveSponsorIdentity(cart.sponsorId)?.name || cart.sponsorName || ''
   }
 
+  /** Something to pay for: lines, and a total above 0. No button opens a checkout or a payment otherwise. */
+  private get payable(): boolean {
+    return this.itemCount > 0 && this.totalAcrossSponsors > 0
+  }
+
   private get totalAcrossSponsors(): number {
     let sum = 0
     for (const cart of this.carts.values()) {
       for (const item of cart.items) sum += item.unitPrice * item.quantity
     }
     return sum
+  }
+
+  /**
+   * Shipping across the carts, from what the server cart says of its lines:
+   * the rate chosen for them, else the cheapest one offered (the one the
+   * checkout preselects). null when some cart has no known rate — the footer
+   * says it is worked out in the checkout then.
+   */
+  private get shippingAcrossSponsors(): number | null {
+    let sum = 0
+    let any = false
+    for (const cart of this.carts.values()) {
+      if (cart.items.length === 0) continue
+      const rate = cartShipping(cart.items, cart.currency)
+      if (rate === null) return null
+      sum += rate
+      any = true
+    }
+    return any ? sum : null
   }
 
   private get primaryCurrency(): string {
@@ -849,13 +910,18 @@ export class VioCart extends LitElement {
                     ${formatPrice(this.totalAcrossSponsors, this.primaryCurrency)}
                   </span>
                 </div>
+                ${this.renderShippingRows()}
                 <button
                   class="checkout-btn"
                   @click=${this.onCheckout}
+                  ?disabled=${!this.payable}
                   aria-label="Til kassen"
                 >
                   Til kassen
                 </button>
+                ${this.methodsPending
+                  ? html`<div class="methods-pending" role="status" aria-label="Laster betalingsmåter"></div>`
+                  : ''}
                 ${this.methodEnabled('apple-pay') && this.applePayAvailable
                   ? html`
                       <button
@@ -924,6 +990,27 @@ export class VioCart extends LitElement {
               </div>
             `}
       </aside>
+    `
+  }
+
+  /** «Frakt» (the chosen or cheapest rate) and «Totalt» with it; «Beregnes i kassen» when unknown. */
+  private renderShippingRows() {
+    const shipping = this.shippingAcrossSponsors
+    return html`
+      <div class="shipping-row" part="cart-shipping">
+        <span class="subtotal-label">Frakt</span>
+        <span>${shipping === null
+          ? 'Beregnes i kassen'
+          : shipping <= 0
+            ? 'Gratis'
+            : formatPrice(shipping, this.primaryCurrency)}</span>
+      </div>
+      ${shipping !== null
+        ? html`<div class="total-row" part="cart-total">
+            <span>Totalt</span>
+            <span>${formatPrice(this.totalAcrossSponsors + shipping, this.primaryCurrency)}</span>
+          </div>`
+        : ''}
     `
   }
 

@@ -57,6 +57,7 @@ describe('the buy zone', () => {
     const buy = root(el).querySelector('.buy')!
     const order = [...buy.children].map((c) => c.className)
     expect(order[0]).toContain('buy-vipps')
+    // (Express not known here — no line about the app — so quantity + add to cart next.)
     expect(order[1]).toContain('qty-cta-row')
     expect(buy.getAttribute('part')).toBe('buy')
   })
@@ -72,9 +73,9 @@ describe('the buy zone', () => {
     const el = await open()
     const css = (VioProductDetail as any).styles.cssText as string
     expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*\.description-block \{ order: 1; \}[\s\S]*order: 2;/)
-    // Source order (phones): buy, then the description.
-    const info = root(el).querySelector('.info')!
-    const kids = [...info.children].map((c) => c.className)
+    // Source order (phones): buy, then the description — both in .purchase.
+    const purchase = root(el).querySelector('.info > .purchase')!
+    const kids = [...purchase.children].map((c) => c.className)
     expect(kids.indexOf('buy')).toBeLessThan(kids.findIndex((k) => k.includes('description-block')))
   })
 })

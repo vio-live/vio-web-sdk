@@ -5,9 +5,10 @@ import { Vio } from '../../core/client.js'
 import { VioCheckout } from './vio-checkout.js'
 
 /**
- * Vipps Express picks the delivery inside Vipps: with Vipps selected, our own
- * shipping rate is not added to the total and the summary says so (Angelo,
- * 2026-10-24 — the checkout showed 1 308 kr while Vipps asked 1 298).
+ * The checkout's Vipps is the standard payment (2026-10-28): the delivery is
+ * chosen in our form, so our rate is part of the total — whether or not the
+ * brand has Vipps Express on. (2026-10-24 to 10-28 the checkout ran Express,
+ * left our rate out and said «Velges i Vipps».)
  */
 const SPONSOR = 5
 const manager = Vio.checkout as any
@@ -62,28 +63,18 @@ async function openWithMethod(method: string) {
 const payButtonText = (el: HTMLElement) =>
   [...(el.shadowRoot?.querySelectorAll<HTMLButtonElement>('.complete-cta') ?? [])].map((b) => b.textContent ?? '').join(' | ')
 
-describe('Vipps Express: the delivery is chosen in Vipps', () => {
-  it('Vipps Express selected: the total is the items only and the shipping row says it is chosen in Vipps', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
-    const el = await openWithMethod('vipps')
-    expect(el.vippsShipsInApp).toBe(true)
-    const text = shadowText(el)
-    expect(text).toContain('Velges i Vipps')
-    expect(text).not.toMatch(/1\s?308/)
-    expect(text).not.toMatch(/10\s?kr/i)
-    expect(payButtonText(el)).toMatch(/1\s?298/)
-  })
+describe('Vipps in the checkout: our delivery, in the total', () => {
+  for (const express of [true, false]) {
+    it(`Vipps selected, Express ${express ? 'on' : 'off'} for the brand: our rate is part of the total`, async () => {
+      vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(express)
+      const el = await openWithMethod('vipps')
+      expect(shadowText(el)).not.toContain('Velges i Vipps')
+      expect(shadowText(el)).toMatch(/Totalt\s*1\s?308/)
+      expect(payButtonText(el)).toMatch(/1\s?308/)
+    })
+  }
 
-  it('Vipps without Express: our rate is part of the total, as before', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
-    const el = await openWithMethod('vipps')
-    expect(el.vippsShipsInApp).toBe(false)
-    expect(shadowText(el)).not.toContain('Velges i Vipps')
-    expect(shadowText(el)).toMatch(/Totalt\s*1\s?308/)
-    expect(payButtonText(el)).toMatch(/1\s?308/)
-  })
-
-  it('another method with Express on: our rate still counts', async () => {
+  it('another method: our rate counts too', async () => {
     vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
     const el = await openWithMethod('stripe')
     expect(shadowText(el)).not.toContain('Velges i Vipps')

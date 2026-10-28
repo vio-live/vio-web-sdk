@@ -5,19 +5,22 @@ import { Vio } from '../../core/client.js'
 import { VioCheckout } from './vio-checkout.js'
 
 /**
- * Vipps among other methods — nothing of ours stands in its way.
+ * Vipps in the checkout is the STANDARD payment (Mote & Livsstil,
+ * 2026-10-28): our form collects name, address, mobile and the delivery with
+ * its price before paying — even when the brand has Vipps Express on — and
+ * the payment goes out with `express: false`. Express is the product
+ * detail's «Kjøp nå med Vipps» only.
  *
- * Vipps collects the address, the delivery and the email in its own flow
- * (Express, 2026-09-29), so the checkout asks for nothing first: the first
- * click selects the method, the pay button starts it. The "Kontakt" section
- * still offers an email field, used when the shopper types one. Before
- * Express, on 2026-09-21, Alan (QA, web and mobile) found the dead end that
- * shaped this: on a channel whose methods ALL collect the address themselves
- * (Nexi + Qliro + Vipps) the Vipps button refused to select the method until
- * an email was typed — into a field that did not exist yet.
+ * Before, Vipps here skipped our form (Express, 2026-09-29) and the shopper
+ * met the address and the delivery price for the first time inside the app.
  */
 const SPONSOR = 5
 const manager = Vio.checkout as any
+const RATE = { id: 'r1', supplierId: '77', name: 'Posten', method: 'Posten', price: 4900, priceMajor: 49, currency: 'NOK' }
+const FULL = {
+  firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no', phone: '912 34 567',
+  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo',
+}
 
 beforeEach(() => {
   vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
@@ -27,8 +30,13 @@ beforeEach(() => {
     vi.spyOn(proto, m).mockResolvedValue(undefined)
   }
   vi.spyOn(proto, 'loadAvailableShippings').mockImplementation(async function (this: any) {
+    this.availableShippingsList = [RATE]
+    this.selectedShipping = RATE.id
     this.shippingsReadyFor = this.embedSession()
   })
+  vi.spyOn(manager, 'updateShippingsBySupplier').mockResolvedValue({ cart_id: 'cart-1' })
+  // The brand has Express on: the checkout pays standard all the same.
+  vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
   vi.spyOn(manager, 'resumeKlarnaReturn').mockResolvedValue(undefined)
   vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map([[SPONSOR, {} as any]]))
   vi.spyOn(manager, 'open').mockImplementation((...args: unknown[]) => {
@@ -67,78 +75,129 @@ const methodButton = (el: HTMLElement, label: string) =>
 const emailInput = (el: HTMLElement) =>
   el.shadowRoot?.querySelector<HTMLInputElement>('input[type="email"]') ?? null
 
-describe('Vipps among several methods', () => {
-  it('every method collects the address: no form, and one click on Vipps selects it AND starts it — no email required', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
-    // Express first: the app picks the delivery. A landing page = done.
+const payCta = (el: HTMLElement) => el.shadowRoot?.querySelector<HTMLButtonElement>('.complete-cta') ?? null
+const phoneInput = (el: HTMLElement) => el.shadowRoot?.querySelector<HTMLInputElement>('input[type="tel"]') ?? null
+
+describe('Vipps in the checkout: the standard path', () => {
+  it('choosing Vipps brings our form — address, mobile, delivery with its price — and starts nothing yet', async () => {
     const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
     const el = await openWith(['Nexi', 'Qliro', 'Vipps'])
-    expect(shadowText(el)).not.toContain('Leveringsadresse')
-    expect(emailInput(el)).toBeNull()
-
     methodButton(el, 'vipps')!.click()
     await renderCycles(el)
-    // Selected and started at once: the app hands the email back.
     expect(el.checkoutState?.paymentMethod).toBe('vipps')
-    expect(el.paymentError).toBeFalsy()
-    expect(start).toHaveBeenCalledTimes(1)
-    expect(start.mock.calls[0]![1]).not.toMatchObject({ email: expect.stringContaining('@') })
-    expect(start.mock.calls[0]![2]).toEqual({ express: true })
-
-    // An email the shopper did type travels with the payment.
-    el.form = { ...el.form, email: 'kari@example.no' }
-    await renderCycles(el)
-    methodButton(el, 'vipps')!.click()
-    await renderCycles(el)
-    expect(start).toHaveBeenCalledTimes(2)
-    expect(start.mock.calls[1]![1]).toMatchObject({ email: 'kari@example.no' })
+    const text = shadowText(el)
+    expect(text).toContain('Leveringsadresse')
+    expect(text).toContain('Mobilnummer *')
+    expect(text).toContain('Posten')
+    expect(text).toMatch(/49\s?Kr/)
+    expect(text).not.toContain('adresse fylles ut i Vipps')
+    expect(emailInput(el)).not.toBeNull()
+    expect(phoneInput(el)).not.toBeNull()
+    expect(start).not.toHaveBeenCalled()
+    // Its pay button waits for a complete form.
+    expect(payCta(el)!.disabled).toBe(true)
   })
 
-  it('with the email already known (typed for another method), one click still starts Vipps', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
+  it('a complete form pays standard — express: false, the form and the delivery on the cart — even with Express on', async () => {
     const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
-    const el = await openWith(['Stripe', 'Vipps'], { email: 'kari@example.no' })
-    // Method first: no delivery form before a method is chosen.
-    expect(shadowText(el)).not.toContain('Leveringsadresse')
-
-    methodButton(el, 'vipps')!.click()
+    const el = await openWith(['Vipps'], FULL)
+    manager.selectPaymentMethod('vipps')
     await renderCycles(el)
+    expect(payCta(el)!.disabled).toBe(false)
+    expect(payCta(el)!.textContent).toMatch(/Betal\s+\S+\s?\S*\s*Kr med Vipps/)
+    payCta(el)!.click()
+    await renderCycles(el)
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(start.mock.calls[0]![0]).toBe(SPONSOR)
+    expect(start.mock.calls[0]![1]).toMatchObject({ phone: '912 34 567', address: 'Storgata 12B' })
+    expect(start.mock.calls[0]![2]).toEqual({ express: false })
+    expect(manager.updateShippingsBySupplier).toHaveBeenCalledWith([{ shipping_id: 'r1', supplier_id: 77 }], SPONSOR)
+  })
+
+  it('a missing address refuses Vipps with the form’s message and starts nothing', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    const el = await openWith(['Vipps'], { ...FULL, address: '' })
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    await el.onPay('vipps')
+    expect(start).not.toHaveBeenCalled()
+    expect(el.paymentError).toBe('Vennligst fyll ut alle feltene i leveringsadresse.')
+  })
+
+  it('a number that is not a Norwegian mobile: the field says so and Vipps does not start', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    const el = await openWith(['Vipps'], { ...FULL, phone: '1234' })
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Skriv et gyldig mobilnummer')
+    expect(phoneInput(el)!.getAttribute('aria-invalid')).toBe('true')
+    expect(payCta(el)!.disabled).toBe(true)
+    await el.onPay('vipps')
+    expect(start).not.toHaveBeenCalled()
+  })
+
+  it('a delivery that cannot be saved on the cart starts no payment, and says so', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const failure of ['rejects', 'null', 'no-supplier'] as const) {
+      if (failure === 'rejects') manager.updateShippingsBySupplier.mockRejectedValueOnce(new Error('503'))
+      if (failure === 'null') manager.updateShippingsBySupplier.mockResolvedValueOnce(null)
+      const el = await openWith(['Vipps'], FULL)
+      manager.selectPaymentMethod('vipps')
+      await renderCycles(el)
+      if (failure === 'no-supplier') {
+        el.shippingsAttempted = true // the stubbed load would put RATE back on the next state change
+        el.availableShippingsList = [{ ...RATE, supplierId: undefined }]
+      }
+      await el.onPay('vipps')
+      expect(start, failure).not.toHaveBeenCalled()
+      expect(el.paymentError, failure).toBe('Kunne ikke lagre fraktmetoden. Prøv igjen.')
+      expect(el.vippsLoading).toBe(false)
+      expect(document.querySelector('.vio-redirect-overlay')).toBeNull()
+      unmountAll()
+      manager.state = null
+    }
+  })
+
+  it('a foreign number with its +prefix is fine for Vipps', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    const el = await openWith(['Vipps'], { ...FULL, phone: '+46 70 123 45 67' })
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    expect(shadowText(el)).not.toContain('Skriv et gyldig mobilnummer')
+    await el.onPay('vipps')
     expect(start).toHaveBeenCalledTimes(1)
   })
 
-  it('a cart Express cannot serve (several suppliers) pays plain: the backend says no, the second call follows', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
-    const start = vi
-      .spyOn(manager, 'startVippsPayment')
-      .mockResolvedValueOnce({ express: false, reason: 'several suppliers' })
-      .mockResolvedValueOnce({ payment_url: 'https://pay-mt.vipps.no/y' })
-    const el = await openWith(['Vipps'])
-    methodButton(el, 'vipps')!.click()
+  it('the mobile is optional for any other method: it never gates their pay button', async () => {
+    vi.spyOn(manager, 'getStripeMode').mockResolvedValue('link')
+    const startStripe = vi.spyOn(manager, 'startStripePayment').mockResolvedValue({})
+    const { phone: _omit, ...noPhone } = FULL
+    const el = await openWith(['Stripe', 'Vipps'], noPhone)
+    el.stripeMode = 'link'
+    manager.selectPaymentMethod('stripe')
     await renderCycles(el)
-    expect(start).toHaveBeenCalledTimes(2)
-    expect(start.mock.calls[0]![2]).toEqual({ express: true })
-    expect(start.mock.calls[1]![2]).toBeUndefined()
-  })
-
-  it('with Express switched off for the channel, the checkout asks for the plain payment straight away', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
-    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/z' })
-    const el = await openWith(['Vipps'])
-    methodButton(el, 'vipps')!.click()
+    expect(shadowText(el)).toContain('Mobilnummer (valgfritt)')
+    expect(payCta(el)!.disabled).toBe(false)
+    await el.onPay('stripe')
+    expect(startStripe).toHaveBeenCalledTimes(1)
+    // Switching to Vipps makes it required.
+    manager.selectPaymentMethod('vipps')
     await renderCycles(el)
-    expect(start).toHaveBeenCalledTimes(1)
-    expect(start.mock.calls[0]![2]).toBeUndefined()
+    expect(shadowText(el)).toContain('Mobilnummer *')
+    expect(payCta(el)!.disabled).toBe(true)
   })
 
   it('a start the gateway refuses shows the shopper a sentence, not the gateway text (2026-10-09)', async () => {
-    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
     // A cart emptied from another tab: what QA saw, word for word.
     vi.spyOn(manager, 'startVippsPayment').mockRejectedValue(
       new Error('Payment Vipps not initialize: [vipps] amount must be a positive integer in minor units, got 0'),
     )
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const el = await openWith(['Vipps'])
-    methodButton(el, 'vipps')!.click()
+    const el = await openWith(['Vipps'], FULL)
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    payCta(el)!.click()
     await renderCycles(el)
     expect(el.paymentError).toBe('Handlekurven er tom. Legg til et produkt og prøv igjen.')
     expect(shadowText(el)).not.toContain('not initialize')

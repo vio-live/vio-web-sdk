@@ -10,6 +10,7 @@
  * a method) and `payment-complete` (vendor sheet completed successfully).
  */
 
+import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
 import {
@@ -155,6 +156,8 @@ function describeError(err: unknown): string {
   return String(err)
 }
 
+/** sessionStorage key of the last confirmed Klarna token (a retry never confirms it twice). */
+const KLARNA_CONFIRMED_KEY = 'vio.klarna.confirmed.v1'
 /** sessionStorage key for a pending Klarna purchase (survives redirect). */
 const KLARNA_PENDING_KEY = 'vio.klarna.pending.v1'
 
@@ -225,6 +228,7 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
   },
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
+import { parsePhone } from './phone.js'
 import type { CheckoutAttributionWire } from './attribution.js'
 
 // MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
@@ -391,6 +395,11 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
 
   if (!firstName && !lastName && !address1 && !city && !zip) return null
 
+  // The mobile the form asked for (the courier texts it): national digits +
+  // calling code — from its own +prefix, else the shipping country's — the
+  // shape the order's address keeps. Not a usable number: none is sent.
+  const phone = parsePhone(address.phone, country_code)
+
   return {
     first_name: firstName,
     last_name: lastName,
@@ -398,7 +407,13 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
     city: city,
     zip: zip,
     country_code: country_code,
+    ...(phone ? { phone: phone.phone, phone_code: phone.phone_code } : {}),
   }
+}
+
+/** Every field the backend needs to ship to it (the shape `buildCheckoutAddress` returns). */
+function isCompleteCheckoutAddress(a: Record<string, unknown> | null): boolean {
+  return !!a && ['first_name', 'last_name', 'address1', 'city', 'zip'].every((k) => String(a[k] ?? '').trim().length > 0)
 }
 
 /**
@@ -582,6 +597,11 @@ export function usesStripe(methods: unknown): boolean {
   })
 }
 
+/** What the lines add up to (unit price × quantity). */
+function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
+  return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
+}
+
 export class CheckoutManager extends EventTarget {
   private currentStateValue: CheckoutState | null = null
   /**
@@ -698,6 +718,11 @@ export class CheckoutManager extends EventTarget {
     const cart = this.cartManager.getCart(sponsorId)
     if (!cart || cart.items.length === 0) {
       throw new Error(`[VioCheckout] sponsor ${sponsorId} has no cart items`)
+    }
+    // A cart whose lines add up to nothing is nothing to pay for: a checkout
+    // opened on it ends in a payment of 0 kr, or a provider refusing one.
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[VioCheckout] sponsor ${sponsorId} has a cart that totals 0`)
     }
     this.state = {
       sponsorId,
@@ -831,6 +856,22 @@ export class CheckoutManager extends EventTarget {
       )
     } catch {
       /* an event never costs a payment */
+    }
+  }
+
+  /**
+   * Nothing is created or paid for a cart that is empty or totals 0 — as
+   * the SERVER has it (the callers read it from the server first). Throws,
+   * so a payment button ends in its error path, never at a provider asking
+   * for 0 kr.
+   */
+  private assertPayableCart(sponsorId: number): void {
+    const cart = this.cartManager.getCart(sponsorId)
+    if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} is empty — nothing to pay`)
+    }
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} totals 0 — nothing to pay`)
     }
   }
 
@@ -1111,6 +1152,8 @@ export class CheckoutManager extends EventTarget {
     extraUpdateVars: Record<string, unknown> = {},
     /** The page leaves for the provider right after (Vipps, a Stripe payment link). */
     leaving = false,
+    /** Vipps standard (not Express): our form's address goes on the checkout like any other method's. */
+    vippsWithAddress = false,
   ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
@@ -1120,6 +1163,25 @@ export class CheckoutManager extends EventTarget {
     // page shows them first (see CartManager.refreshFromServer).
     await this.cartManager.waitForCartMutations(spId)
     await this.cartManager.refreshFromServer(spId)
+    // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
+    this.assertPayableCart(spId)
+
+    // Vipps Express collects the address in its own flow — never push one onto
+    // the checkout for it (the backend rejects partial Vipps addresses). The
+    // standard Vipps payment (the checkout's) carries the form's address, and
+    // ONLY a complete one with a usable mobile — shopcart does not ask Vipps
+    // for the profile on it, so a payment without the address written would
+    // be an order with nowhere to ship. Checked before anything is created.
+    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
+    const addr =
+      typeof formData === 'object' && formData !== null ? formData : this.state?.address
+    const built = buildCheckoutAddress(addr)
+    if (isVipps && vippsWithAddress && !(isCompleteCheckoutAddress(built) && built?.phone)) {
+      throw new Error(
+        '[CheckoutManager] the standard Vipps payment needs the complete delivery address (name, street, postcode, city and a mobile number) — no payment started',
+      )
+    }
+    const addressObj = !isVipps ? built : vippsWithAddress ? built : null
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -1148,12 +1210,6 @@ export class CheckoutManager extends EventTarget {
       throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
     }
 
-    // Vipps collects the address in its own flow — never push one onto the
-    // checkout for it (the backend rejects partial Vipps addresses).
-    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
-    const addr =
-      typeof formData === 'object' && formData !== null ? formData : this.state?.address
-    const addressObj = !isVipps ? buildCheckoutAddress(addr) : null
     const emailVal =
       (typeof formData === 'string'
         ? formData
@@ -1266,6 +1322,11 @@ export class CheckoutManager extends EventTarget {
    * so the caller can open the ordinary checkout instead. Without the flag
    * the backend decides: Express while the cart has no delivery yet, a
    * plain payment once the shopper chose one in our form.
+   *
+   * `express: false` is the checkout's standard path (2026-10-28): the
+   * form's address — name, street, mobile — goes on the checkout before the
+   * payment is created, and the delivery already chosen on the cart is what
+   * Vipps charges for.
    */
   async startVippsPayment(
     sponsorId?: number,
@@ -1279,6 +1340,7 @@ export class CheckoutManager extends EventTarget {
       formData,
       { paymentMethod: 'Vipps' },
       true,
+      options.express === false,
     )
     const returnUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -2872,14 +2934,13 @@ export class CheckoutManager extends EventTarget {
    * the SDK's resumed `complete` event — finish creating the order + confirm.
    */
   async resumeKlarnaReturn(): Promise<void> {
-    if (typeof sessionStorage === 'undefined') return
-    const raw = sessionStorage.getItem(KLARNA_PENDING_KEY)
+    const raw = storageGet('session', KLARNA_PENDING_KEY)
     if (!raw) return
     let pending: KlarnaPendingContext
     try {
       pending = JSON.parse(raw) as KlarnaPendingContext
     } catch {
-      sessionStorage.removeItem(KLARNA_PENDING_KEY)
+      storageRemove('session', KLARNA_PENDING_KEY)
       return
     }
 
@@ -2954,10 +3015,9 @@ export class CheckoutManager extends EventTarget {
     // A token can only be confirmed once — a retry with an already-confirmed
     // token (network blip after a successful confirm) would create a second
     // order with autoCapture: double charge.
-    if (
-      typeof sessionStorage !== 'undefined' &&
-      sessionStorage.getItem('vio.klarna.confirmed.v1') === authorizationToken
-    ) {
+    // (Read through safe-storage: a storage that throws used to escape here
+    // with the in-flight flag still set — no Klarna order could follow.)
+    if (storageGet('session', KLARNA_CONFIRMED_KEY) === authorizationToken) {
       this.klarnaOrderInFlight = false
       return
     }
@@ -2993,10 +3053,10 @@ export class CheckoutManager extends EventTarget {
 
       // Success: only NOW is the pending context consumed (keeping it until
       // here lets the redirect path retry a confirm that never ran).
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem('vio.klarna.confirmed.v1', authorizationToken)
-        sessionStorage.removeItem(KLARNA_PENDING_KEY)
-      }
+      // Never throws: a refusing storage keeps it in this page's memory, and
+      // the order just created is never reported as a failed payment.
+      storageSet('session', KLARNA_CONFIRMED_KEY, authorizationToken)
+      storageRemove('session', KLARNA_PENDING_KEY)
 
       // Synthesize a checkout state for the confirmation if the live one was
       // lost to a redirect reload.

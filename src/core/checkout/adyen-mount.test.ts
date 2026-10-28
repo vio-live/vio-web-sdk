@@ -54,7 +54,7 @@ function manager() {
   const cart = {
     waitForCartMutations: async () => {},
     refreshFromServer: async () => undefined,
-    getCart: () => ({ cartId: 'cart-1', items: [{ id: 'armchair' }] }),
+    getCart: () => ({ cartId: 'cart-1', items: [{ id: 'armchair', unitPrice: 4999, quantity: 1 }] }),
     ensureCartId: async () => 'cart-1',
     subtotalForSponsor: () => 4999,
   }

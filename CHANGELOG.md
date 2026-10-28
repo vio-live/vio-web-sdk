@@ -14,6 +14,109 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **Delivery and returns under the price in the product detail.** It reads «Frakt fra X · 14
+  dagers angrerett», where X is the product's cheapest shipping rate for the page's market (the
+  same `product_shipping` rates the backend cart offers). A cheapest rate of 0 reads «Gratis frakt».
+  With no known rate, only «14 dagers angrerett» is shown (`part="delivery-note"`). The rates come
+  from a separate query (`commerce.channel.product.getShippingRates`), so a failure there only
+  loses this line.
+- **The cart drawer shows shipping and the total including it.** It uses the rate chosen on the
+  server cart, or the cheapest rate offered. Without a known rate it reads «Frakt: Beregnes i
+  kassen» and shows no total (`part="cart-shipping"`, `part="cart-total"`).
+- **«Lagt i handlekurven» after «Legg i handlekurv».** The detail closes and a small toast offers
+  **«Til kassen»** and **«Fortsett å handle»** (`part="added-toast"`). «Til kassen» dispatches
+  `vio:checkout-open` for that brand, the same event the cart's «Til kassen» sends. It does nothing
+  when the cart was emptied in the meantime. The toast closes by itself after 8 s.
+- **A line under «Kjøp nå med Vipps» in the product detail:** «Vipps fyller inn navn og adresse –
+  du godkjenner og betaler i appen» (`part="vipps-note"`). It is shown only when that button goes
+  straight to the app: Express is on for the brand and the brand's cart is empty. In other cases
+  the button opens the checkout first.
+### Changed
+- **The product detail no longer picks a size for the shopper.** Only an option with a single
+  value is preselected. The chosen value is shown beside the option's name («Størrelse: M») and
+  on its pill. Every buy button (Vipps, «Legg i handlekurv», «Kjøp nå», Stripe, Klarna, Apple Pay)
+  checks for a missing choice first: it shows «Velg størrelse» (or «Velg farge», etc.) and adds or
+  pays nothing. «Få igjen — N stk» now counts only the variant actually chosen. Before a size is
+  chosen it says «På lager» if any size is in stock.
+- **Two Vipps paths.** The product detail's «Kjøp nå med Vipps» stays **Express**. The
+  **cart's** Vipps button now opens the checkout with Vipps preselected. It no longer starts
+  Express or hands over to Vipps. **The checkout's Vipps is always the standard payment**, even
+  when the brand has Express on:
+  - the address form, the delivery and its price are required before paying, as for Stripe;
+  - the summary counts our shipping rate, so «Velges i Vipps» is gone;
+  - the payment is `startVippsPayment(sponsorId, form, { express: false })`, which now puts the
+    form's complete address on the checkout's shipping and billing address.
+
+  `COLLECTS_OWN_ADDRESS` no longer lists Vipps. See
+  [README → Two Vipps paths](README.md#the-hand-over-to-vipps-028).
+- **«Mobilnummer» in the checkout's address form.** It is required only for the standard Vipps
+  payment, and optional for every other method; it never blocks their buttons or widgets.
+  - It accepts any market's number. A `+`/`00` prefix sets the calling code; without one, the
+    shipping country does (NO 47, SE 46, DK 45, FI 358, DE 49, GB 44…), falling back to the
+    page's country. A trunk 0 is dropped.
+  - A number that cannot be read shows «Skriv et gyldig mobilnummer…».
+  - It is sent as `phone` (national digits) + `phone_code` (digits, no plus) on the shipping and
+    billing address of every method that takes our form. `CheckoutAddress.phone` is new.
+- **The checkout's Vipps refuses to start without the delivery saved.** If the chosen rate cannot
+  be saved on the cart, the Vipps or Stripe-link payment does not start and the checkout says
+  «Kunne ikke lagre fraktmetoden. Prøv igjen.». This covers a failed save and a rate without a
+  supplier. `startVippsPayment(…, { express: false })` also throws before creating anything when
+  the address is incomplete or has no usable mobile.
+
+### Fixed
+- **No checkout and no payment for an empty cart or a total of 0 kr.** `Vio.checkout.open()`
+  throws for a cart that totals 0, as it already did for an empty one. Vipps (`startVippsPayment`,
+  `startVippsExpress`), the Stripe link, native Stripe and Adyen read the cart from the server and
+  refuse to create a checkout or a payment when it is empty or 0 kr. The buttons check the same
+  thing first: the cart's «Til kassen» is disabled, the checkout's pay buttons are disabled and
+  say «Handlekurven er tom.», and the detail shows no Vipps or Apple Pay button for a product at 0 kr.
+- **Desktop: the product detail's pinned buy bar no longer covers the size picker.** The option
+  pickers now sit at the top of the buy zone (`part="buy-options"`), so they move with the
+  buttons whether the zone is static or sticky.
+- **No buttons for payment methods the brand does not have while its methods load.** The
+  product detail and the cart drawer show a neutral placeholder (`part="buy-pending"` /
+  `.methods-pending`) until `getAvailablePaymentMethods` answers. They used to show every method,
+  so a Vipps-only brand flashed Stripe and Klarna. «Legg i handlekurv» and «Til kassen» are there
+  from the start. A failed lookup still shows every button, as before.
+- **Storage never blocks add to cart or checkout (in-app browsers, private modes).** Every read
+  and write of `localStorage`/`sessionStorage` goes through one guard, `src/core/safe-storage.ts`.
+  A storage property that throws on access, a `null` storage or a refused write now falls back to
+  the page's memory. This covers the cart, the customer session id, the market's
+  currency/country/locale and the Klarna return. Before, `typeof localStorage` outside a `try`
+  could throw while the SDK started. Without storage, every browser also sent the same customer
+  session id, `cs_session_default`. It is now one id per page.
+
+### ⚠️ Upgrade notes
+- The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt
+  instead of buying. A host that clicks `.add-to-cart` from a script needs a value in every option
+  first.
+- A host's `vio:checkout-open` handler that calls `Vio.checkout.open()` must still catch the throw
+  (it already threw for an empty cart). It now also throws for a cart of 0 kr.
+- Host CSS that placed `::part(option-group)` relative to `::part(buy)` should be checked: the
+  option groups are now inside `buy`.
+- A host that already answers `vio:added-to-cart` with its own UI (for example, opening its cart
+  drawer) can turn the new toast off with `<vio-product-detail no-added-toast>`. The toast's
+  «Til kassen» relies on the host's `vio:checkout-open` handler, like the cart's does.
+- **Backend (shopcart):** the checkout's Vipps payment is now `express: false` with the address
+  already on the checkout. shopcart must not request the Vipps profile on these standard
+  payments, and must carry the address `phone`/`phone_code` through to the order. Until that is
+  deployed, check a QA order to confirm the phone arrives.
+- Hosts that pre-fill the checkout form through `Vio.checkout.setAddress()` should include
+  `phone`, or the shopper has to type it when paying with Vipps. Other methods do not need it.
+- **The cart's Vipps button now opens the checkout through `vio:checkout-open`**, with
+  `paymentMethod: 'vipps'`. A host without a handler for that event loses direct Vipps from the
+  cart. The `vio:payment-redirect-*` events with `source: 'cart'` are gone; those with
+  `'detail'` and `'checkout'` remain.
+- **`startVippsPayment(sponsorId, form, { express: false })` writes the full address**, including
+  the mobile, to the checkout's shipping and billing address before it creates the payment.
+  Without the flag, or with `express: true`, nothing changes.
+- `Vio.checkout.open()` throws on a cart that totals 0, as well as on an empty one.
+- The «Lagt i handlekurven» toast is on by default. Use `<vio-product-detail no-added-toast>` to
+  turn it off.
+
 ## 0.30.0 — 2026-10-27
 
 ### Added

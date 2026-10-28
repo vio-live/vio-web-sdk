@@ -24,7 +24,7 @@ const manager = Vio.checkout as any
 
 const FULL_FORM = {
   firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no',
-  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo',
+  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo', phone: '912 34 567',
 }
 
 beforeEach(() => {

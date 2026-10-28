@@ -709,10 +709,13 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
 **`::part` names**, for what the properties do not cover:
 
 - `<vio-product-detail>`: `topbar`, `sponsor`, `close`, `gallery`, `image`, `thumbs`, `thumb`
-  (+ `thumb-active`), `thumbs-arrow`, `info`, `brand`, `title`, `price`, `stock`,
-  `option-group`, `option-label`, `options`, `option` (+ `option-selected`), `buy`,
-  `buy-vipps`, `quantity-row`, `add-to-cart`, `seller-note`, `seller-terms`, `seller-refund`,
-  `description`.
+  (+ `thumb-active`), `thumbs-arrow`, `info`, `brand`, `title`, `price`, `delivery-note`
+  (`delivery-shipping`, `delivery-withdrawal`), `stock`, `buy`, `buy-options`, `option-group`,
+  `option-label`, `option-chosen`, `option-prompt`, `options`, `option` (+ `option-selected`),
+  `buy-pending`, `buy-vipps`, `vipps-note`, `quantity-row`, `add-to-cart`, `seller-note`,
+  `seller-terms`, `seller-refund`, `description`, `added-toast` (`added-toast-checkout`,
+  `added-toast-continue`).
+- `<vio-cart>`: `cart-shipping`, `cart-total`.
 - `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`.
 
 ```css
@@ -721,8 +724,9 @@ vio-product-detail::part(option-selected) { background: #2b2b2b; }
 ```
 
 **The detail's order:** the selling brand top left; the main image; the thumbnails;
-name, price, stock, sizes; then, **on phones**, the buy zone — **Vipps first** (when the
-channel has it), quantity + «Legg i handlekurv», then the other ways to pay, and under them
+name, price, «Frakt fra X · 14 dagers angrerett», stock; then, **on phones**, the buy zone —
+the sizes (none preselected; every buy button asks «Velg størrelse» first), **Vipps first**
+(when the channel has it), quantity + «Legg i handlekurv», then the other ways to pay, and under them
 «Du handler direkte hos {brand}.» (the product's brand, never the article's) with links to
 the brand's «Kjøpsvilkår» and «Angrerett og retur» when it gave them (the sponsor block's
 `termsUrl` / `refundPolicyUrl`, https only, opened in a new tab) — and the
@@ -749,8 +753,17 @@ detail adds the product to the sponsor's cart and the checkout is built on that 
 every line in it. It goes straight to Vipps only when the cart was **empty**; with lines
 already in it, the product is added and the checkout opens first (`vio:checkout-open`
 with `paymentMethod: 'vipps'`, no hand-over events), every line and the total on screen,
-so what the Vipps page lists is what the shopper saw. The cart's own Vipps button always
-pays the whole cart — the lines are right there. **Apple Pay on the detail follows the same
+so what the Vipps page lists is what the shopper saw.
+
+**Two Vipps paths (2026-10-28).** The detail's «Kjøp nå med Vipps» is **Express**: the app
+fills in name and address. The **cart's** Vipps button opens the checkout with Vipps
+preselected, and the checkout's Vipps is always the **standard** payment, even when the
+brand has Express on. Our form collects name, e-mail, **Mobilnummer**, address and the
+delivery with its price before paying. The mobile is required for Vipps only and accepts any
+market's number: the `+` prefix or the shipping country sets the calling code. The delivery is
+saved on the cart first; if that fails, no payment starts. The payment goes out with
+`express: false`, and the address (with `phone` + `phone_code`) is on the checkout's shipping
+and billing address. **Apple Pay on the detail follows the same
 rule**: its sheet's amount is fixed before the tap, so it opens only on an empty cart, for the
 product × the chosen quantity; otherwise the checkout opens (`paymentMethod: 'apple-pay'`).
 

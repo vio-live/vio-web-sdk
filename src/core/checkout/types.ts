@@ -18,6 +18,8 @@ export interface CheckoutAddress {
   postalCode: string
   city: string
   country?: string
+  /** Mobile number (Norwegian, 8 digits, optional +47) — sent as `phone` + `phone_code`. */
+  phone?: string
 }
 
 export interface CheckoutState {

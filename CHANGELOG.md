@@ -41,6 +41,22 @@ and *when*, and links there.
   checks for a missing choice first: it shows «Velg størrelse» (or «Velg farge», etc.) and adds or
   pays nothing. «Få igjen — N stk» now counts only the variant actually chosen. Before a size is
   chosen it says «På lager» if any size is in stock.
+- **Two Vipps paths.** The product detail's «Kjøp nå med Vipps» stays **Express**. The
+  **cart's** Vipps button now opens the checkout with Vipps preselected. It no longer starts
+  Express or hands over to Vipps. **The checkout's Vipps is always the standard payment**, even
+  when the brand has Express on:
+  - the address form, the delivery and its price are required before paying, as for Stripe;
+  - the summary counts our shipping rate, so «Velges i Vipps» is gone;
+  - the payment is `startVippsPayment(sponsorId, form, { express: false })`, which now puts the
+    form's complete address on the checkout's shipping and billing address.
+
+  `COLLECTS_OWN_ADDRESS` no longer lists Vipps. See
+  [README → Two Vipps paths](README.md#the-hand-over-to-vipps-028).
+- **«Mobilnummer» (required) in the checkout's address form.** It takes a Norwegian mobile:
+  8 digits, optional +47/0047, spaces allowed. Any other value shows «Skriv et norsk
+  mobilnummer (8 siffer)» and keeps the pay button disabled. It is sent as `phone` (the 8 digits)
+  + `phone_code: '47'` on the shipping and billing address of every method that takes our form
+  (Vipps, Stripe, Adyen, Klarna). `CheckoutAddress.phone` is new.
 
 ### Fixed
 - **No checkout and no payment for an empty cart or a total of 0 kr.** `Vio.checkout.open()`
@@ -69,6 +85,12 @@ and *when*, and links there.
 - A host that already answers `vio:added-to-cart` with its own UI (for example, opening its cart
   drawer) can turn the new toast off with `<vio-product-detail no-added-toast>`. The toast's
   «Til kassen» relies on the host's `vio:checkout-open` handler, like the cart's does.
+- **Backend (shopcart):** the checkout's Vipps payment is now `express: false` with the address
+  already on the checkout. shopcart must not request the Vipps profile on these standard
+  payments, and must carry the address `phone`/`phone_code` through to the order. Until that is
+  deployed, check a QA order to confirm the phone arrives.
+- Hosts that pre-fill the checkout form through `Vio.checkout.setAddress()` should include
+  `phone`, or the shopper has to type it.
 
 ## 0.30.0 — 2026-10-27
 

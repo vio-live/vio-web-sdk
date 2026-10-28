@@ -13,7 +13,6 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
-import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
@@ -732,52 +731,28 @@ export class VioCart extends LitElement {
   }
 
   /**
-   * Vipps — Express: the app collects address and delivery, so the cart
-   * goes straight to Vipps. When this cart cannot have Express (several
-   * suppliers, digital goods, no rate) or Vipps cannot be started, the
-   * checkout opens with Vipps preselected, as before.
+   * Vipps from the cart: the checkout opens with Vipps preselected — the
+   * standard path, where our form collects name, address, mobile and the
+   * delivery (with its price) before paying (Mote & Livsstil, 2026-10-28).
+   * It no longer starts Express from here: Express is the product detail's
+   * «Kjøp nå med Vipps» only.
    */
   private onVipps(): void {
     if (!this.payable) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
-    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: firstSponsorId, source: 'cart' })
-    void this.startVippsExpressOrCheckout(firstSponsorId, redirect)
+    this.dispatchEvent(
+      new CustomEvent('vio:checkout-open', {
+        bubbles: true,
+        composed: true,
+        detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(firstSponsorId) },
+      }),
+    )
   }
 
   /** Vipps' own button when its script answers; our orange one otherwise. */
   private async loadVippsButton(): Promise<void> {
     this.vippsOfficial = await ensureVippsButton()
-  }
-
-  private async startVippsExpressOrCheckout(sponsorId: number, redirect: PaymentRedirectHandle): Promise<void> {
-    let fallback = true
-    try {
-      // A +/− a moment ago may still be syncing: Vipps must get the cart it produced.
-      await Vio.cart.waitForCartMutations(sponsorId)
-      // The seller may have switched Express off on its Vipps row: then the
-      // button is an ordinary way into the checkout, with Vipps preselected.
-      if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) {
-        redirect.abort('express-off')
-      } else {
-        const res = await Vio.checkout.startVippsExpress(sponsorId)
-        fallback = !res?.payment_url
-        if (fallback) redirect.abort('not-started')
-      }
-    } catch (err) {
-      if (typeof console !== 'undefined') {
-        console.warn('[VioCart] Vipps Express not started:', err)
-      }
-      redirect.fail(err instanceof Error ? err.message : String(err))
-    }
-    if (!fallback) return
-    this.dispatchEvent(
-      new CustomEvent('vio:checkout-open', {
-        bubbles: true,
-        composed: true,
-        detail: { sponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(sponsorId) },
-      }),
-    )
   }
 
   /** Stripe — opens the checkout with Stripe preselected. */

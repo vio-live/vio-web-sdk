@@ -225,6 +225,7 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
   },
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
+import { NORWAY_PHONE_CODE, normalizeNorwegianMobile } from './phone.js'
 import type { CheckoutAttributionWire } from './attribution.js'
 
 // MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
@@ -391,6 +392,10 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
 
   if (!firstName && !lastName && !address1 && !city && !zip) return null
 
+  // The mobile the form asked for (the courier texts it): national digits +
+  // calling code, the shape the order's address keeps.
+  const phone = normalizeNorwegianMobile(address.phone)
+
   return {
     first_name: firstName,
     last_name: lastName,
@@ -398,7 +403,13 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
     city: city,
     zip: zip,
     country_code: country_code,
+    ...(phone ? { phone, phone_code: NORWAY_PHONE_CODE } : {}),
   }
+}
+
+/** Every field the backend needs to ship to it (the shape `buildCheckoutAddress` returns). */
+function isCompleteCheckoutAddress(a: Record<string, unknown> | null): boolean {
+  return !!a && ['first_name', 'last_name', 'address1', 'city', 'zip'].every((k) => String(a[k] ?? '').trim().length > 0)
 }
 
 /**
@@ -1137,6 +1148,8 @@ export class CheckoutManager extends EventTarget {
     extraUpdateVars: Record<string, unknown> = {},
     /** The page leaves for the provider right after (Vipps, a Stripe payment link). */
     leaving = false,
+    /** Vipps standard (not Express): our form's address goes on the checkout like any other method's. */
+    vippsWithAddress = false,
   ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
@@ -1176,12 +1189,15 @@ export class CheckoutManager extends EventTarget {
       throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
     }
 
-    // Vipps collects the address in its own flow — never push one onto the
-    // checkout for it (the backend rejects partial Vipps addresses).
+    // Vipps Express collects the address in its own flow — never push one onto
+    // the checkout for it (the backend rejects partial Vipps addresses). The
+    // standard Vipps payment (the checkout's) carries the form's address, and
+    // only a complete one.
     const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
     const addr =
       typeof formData === 'object' && formData !== null ? formData : this.state?.address
-    const addressObj = !isVipps ? buildCheckoutAddress(addr) : null
+    const built = buildCheckoutAddress(addr)
+    const addressObj = !isVipps ? built : vippsWithAddress && isCompleteCheckoutAddress(built) ? built : null
     const emailVal =
       (typeof formData === 'string'
         ? formData
@@ -1294,6 +1310,11 @@ export class CheckoutManager extends EventTarget {
    * so the caller can open the ordinary checkout instead. Without the flag
    * the backend decides: Express while the cart has no delivery yet, a
    * plain payment once the shopper chose one in our form.
+   *
+   * `express: false` is the checkout's standard path (2026-10-28): the
+   * form's address — name, street, mobile — goes on the checkout before the
+   * payment is created, and the delivery already chosen on the cart is what
+   * Vipps charges for.
    */
   async startVippsPayment(
     sponsorId?: number,
@@ -1307,6 +1328,7 @@ export class CheckoutManager extends EventTarget {
       formData,
       { paymentMethod: 'Vipps' },
       true,
+      options.express === false,
     )
     const returnUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',

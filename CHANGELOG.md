@@ -67,6 +67,7 @@ and *when*, and links there.
   the address is incomplete or has no usable mobile.
 
 ### Fixed
+- **«Velg størrelse» no mueve las tallas.** El aviso sale en la misma línea que el nombre de la opción, así que tocar comprar sin talla ya no desplaza los botones bajo el dedo.
 - **No checkout and no payment for an empty cart or a total of 0 kr.** `Vio.checkout.open()`
   throws for a cart that totals 0, as it already did for an empty one. Vipps (`startVippsPayment`,
   `startVippsExpress`), the Stripe link, native Stripe and Adyen read the cart from the server and

@@ -118,6 +118,16 @@ describe('the buy buttons ask for the size', () => {
     expect(text(el, '.option-prompt')).toBe('Velg størrelse')
   })
 
+  it('the prompt sits on the label line: nothing is inserted between the label and the pills', async () => {
+    const el = await open()
+    const group = root(el).querySelector('.option-group')!
+    const before = [...group.children].map((c) => c.className)
+    root(el).querySelector<HTMLButtonElement>('.add-to-cart')!.click()
+    await settle(el)
+    expect(group.querySelector('.option-label .option-prompt')?.textContent?.trim()).toBe('Velg størrelse')
+    expect([...group.children].map((c) => c.className)).toEqual(before)
+  })
+
   it('choosing the size clears the prompt, and the add carries that variant', async () => {
     const add = vi.spyOn(Vio.cart, 'addProduct').mockReturnValue({} as any)
     const el = await open()

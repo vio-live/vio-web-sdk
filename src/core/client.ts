@@ -19,7 +19,7 @@
 import { Configuration, type VioConfig } from './configuration.js'
 import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
-import { CartManager } from './cart/cart-manager.js'
+import { CartManager, cartScopeOf } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import { resolveContent, type ContentRef } from './content.js'
@@ -128,7 +128,17 @@ class VioFacade {
 
   // Client-side managers — created lazily on first access. They don't
   // need Vio.init() to work (state is purely local).
-  private cartManager: CartManager | null = null
+  /**
+   * One cart manager per connection (environment + key), each with its own
+   * storage entry; `Vio.cart` is a stable front for the current one, so a
+   * re-init with another key switches carts without the page re-subscribing.
+   * A manager left behind keeps its carts (they come back if the page switches
+   * back) and finishes its requests into ITS carts, never the new one's.
+   */
+  private cartManagers = new Map<string, CartManager>()
+  private cartScope = ''
+  private cartFront: CartManager | null = null
+  private readonly cartEvents = new EventTarget()
   private checkoutManager: CheckoutManager | null = null
   private analyticsManager: AnalyticsManager | null = null
   /** What the surface answered of its privacy mode (`GET /v2/mobile/surface`) and when; `unknown` expires after a minute. */
@@ -138,6 +148,13 @@ class VioFacade {
 
   init(config: VioConfig): void {
     Configuration.init(config)
+    // Each connection keeps its own carts (cart-manager.ts → cartStorageKey).
+    try {
+      const resolved = Configuration.get()
+      this.switchCartScope(cartScopeOf(resolved.environment, resolved.apiKey))
+    } catch {
+      /* never breaks init */
+    }
     // Reset cached backend instances so a re-init picks up the new config.
     this.apiInstance = null
     this.commerceClients.clear()
@@ -202,8 +219,72 @@ class VioFacade {
 
   /** Multi-sponsor cart manager. Reactive — listen via addEventListener('change', ...). */
   get cart(): CartManager {
-    if (!this.cartManager) this.cartManager = new CartManager()
-    return this.cartManager
+    if (!this.cartFront) this.cartFront = this.makeCartFront()
+    return this.cartFront
+  }
+
+  /** The cart manager of the page's connection now (created on first use). */
+  private currentCartManager(): CartManager {
+    const scope = this.cartScope
+    let manager = this.cartManagers.get(scope)
+    if (!manager) {
+      const created = new CartManager(scope)
+      // Only the current connection's events reach the page's listeners.
+      for (const type of ['change', 'error']) {
+        created.addEventListener(type, (e) => {
+          if (this.cartManagers.get(this.cartScope) !== created) return
+          this.cartEvents.dispatchEvent(new CustomEvent(type, { detail: (e as CustomEvent).detail }))
+        })
+      }
+      this.cartManagers.set(scope, created)
+      manager = created
+    }
+    return manager
+  }
+
+  /**
+   * `Vio.cart`: every property and method is the current connection's
+   * manager's; the listeners live on the front, so they survive a switch.
+   */
+  private makeCartFront(): CartManager {
+    const events = this.cartEvents
+    const listenerMethods: Record<string, unknown> = {
+      addEventListener: events.addEventListener.bind(events),
+      removeEventListener: events.removeEventListener.bind(events),
+      dispatchEvent: events.dispatchEvent.bind(events),
+    }
+    return new Proxy(Object.create(CartManager.prototype) as CartManager, {
+      get: (_target, prop) => {
+        if (typeof prop === 'string' && prop in listenerMethods) return listenerMethods[prop]
+        const manager = this.currentCartManager()
+        const value = Reflect.get(manager, prop, manager)
+        // The class's methods bound to the manager; its own function properties
+        // (arrow handlers, a spy put there) as they are.
+        if (typeof value !== 'function' || Object.prototype.hasOwnProperty.call(manager, prop)) return value
+        return value.bind(manager)
+      },
+      set: (_target, prop, value) => Reflect.set(this.currentCartManager(), prop, value),
+      has: (_target, prop) => Reflect.has(this.currentCartManager(), prop),
+      // A property defined on Vio.cart (a test's spy, a host's patch) lands on
+      // the current manager, where its own methods find it.
+      defineProperty: (_target, prop, descriptor) => Reflect.defineProperty(this.currentCartManager(), prop, descriptor),
+      deleteProperty: (_target, prop) => Reflect.deleteProperty(this.currentCartManager(), prop),
+      getOwnPropertyDescriptor: (_target, prop) => {
+        const own = Reflect.getOwnPropertyDescriptor(this.currentCartManager(), prop)
+        return own ? { ...own, configurable: true } : undefined
+      },
+    })
+  }
+
+  /** After `init`: the carts are the new connection's. Says `change` when that switched them. */
+  private switchCartScope(scope: string): void {
+    if (scope === this.cartScope) return
+    this.cartManagers.get(this.cartScope)?.setActive(false)
+    this.cartScope = scope
+    if (!this.cartFront) return // nothing has used the cart yet: it opens on the new connection
+    const manager = this.currentCartManager()
+    manager.setActive(true)
+    manager.announce()
   }
 
   /** Checkout flow manager. Subscribes to cart state via the CartManager; asks here for the order's attribution. */

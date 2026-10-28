@@ -14,7 +14,10 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.32.0 — 2026-10-28
+
+> First version published to npm since 0.29.0: **0.30.0 and 0.31.0 were never published on their own** — their
+> changes (below) ship in this version too. A host on 0.29.0 should read the three sections.
 
 ### Added
 - **Options for the product detail** (README → *Options of the detail and the product cards*):

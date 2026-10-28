@@ -150,6 +150,13 @@ export class VioProductDetail extends LitElement {
    */
   @state() private sellerName: string | null = null
   @state() private sellerSettled = false
+  /**
+   * The cheapest shipping rate of the product for the page's market, in the
+   * product's currency — under the price as «Frakt fra X» («Gratis frakt» at
+   * 0). null = not known (not asked yet, none, or another currency): only the
+   * right of withdrawal is said then.
+   */
+  @state() private shippingFrom: { price: number; currency: string } | null = null
   @state() private isLoading = false
   @state() private fetchError = ''
   @state() private selectedOptions: SelectedOptions = {}
@@ -537,6 +544,11 @@ export class VioProductDetail extends LitElement {
       font-size: 16px;
       color: var(--vio-color-text-tertiary, #999);
       text-decoration: line-through;
+    }
+    .delivery-note {
+      margin-top: calc(var(--vio-detail-info-gap, 20px) * -0.6);
+      font-size: 13px;
+      color: var(--vio-color-text-secondary, #666);
     }
     .stock {
       font-size: 12px;
@@ -987,6 +999,7 @@ export class VioProductDetail extends LitElement {
         this.product = null
         this.sellerName = null
         this.sellerSettled = false
+        this.shippingFrom = null
         this.selectedOptions = {}
         this.selectionPrompt = ''
         this.quantity = 1
@@ -1010,6 +1023,7 @@ export class VioProductDetail extends LitElement {
     this.fetchError = ''
     this.sellerName = null
     this.sellerSettled = false
+    this.shippingFrom = null
 
     // Fetch with retry: the commerce backend intermittently returns
     // "Authentication failed" under concurrent requests (many cards + the
@@ -1048,6 +1062,7 @@ export class VioProductDetail extends LitElement {
     this.optMapCache = new WeakMap()
     this.product = products?.[0] ?? null
     if (this.product) void this.loadSeller(productIdNum, seq)
+    if (this.product) void this.loadShippingFrom(productIdNum, seq)
     if (this.product) {
       // Analytics (auto): the detail opened with a concrete product.
       try {
@@ -1779,6 +1794,42 @@ export class VioProductDetail extends LitElement {
     this.close()
   }
 
+  /**
+   * The product's cheapest rate for the page's market — the rates the
+   * backend cart offers for its line. A rate in another currency than the
+   * product's price is not shown (never a price the shopper would not pay).
+   */
+  private async loadShippingFrom(productId: number, seq: number): Promise<void> {
+    let rates: Array<{ price: number; currency: string }> | null = null
+    try {
+      const product = Vio.commerceFor(this.sponsorId).channel.product as {
+        getShippingRates?: (id: number, o?: { currency?: string }) => Promise<Array<{ price: number; currency: string }> | null>
+      }
+      rates = typeof product.getShippingRates === 'function'
+        ? await product.getShippingRates(productId, { currency: this.currency })
+        : null
+    } catch {
+      rates = null
+    }
+    if (seq !== this.fetchSeq) return // another product opened meanwhile
+    const currency = String(this.product?.price?.currency_code ?? this.currency ?? '').toUpperCase()
+    const usable = (rates ?? []).filter((r) => !r.currency || r.currency.toUpperCase() === currency)
+    const cheapest = usable[0]
+    this.shippingFrom = cheapest ? { price: cheapest.price, currency: cheapest.currency || currency } : null
+  }
+
+  /** Under the price: «Frakt fra X · 14 dagers angrerett» (or «Gratis frakt · …»). */
+  private renderDeliveryNote() {
+    const ship = this.shippingFrom
+    const shipping = ship ? (ship.price <= 0 ? 'Gratis frakt' : `Frakt fra ${formatPrice(ship.price, ship.currency)}`) : ''
+    return html`<div class="delivery-note" part="delivery-note">
+      ${shipping ? html`<span part="delivery-shipping">${shipping}</span><span aria-hidden="true"> · </span>` : ''}<span
+        part="delivery-withdrawal"
+        >14 dagers angrerett</span
+      >
+    </div>`
+  }
+
   /** The seller's Company name; the brand when there is none; nothing while asking. */
   private headerName(): string {
     if (this.sellerName) return this.sellerName
@@ -1957,6 +2008,8 @@ export class VioProductDetail extends LitElement {
                 )}</span>`
               : ''}
           </div>
+
+          ${this.renderDeliveryNote()}
 
           <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
 

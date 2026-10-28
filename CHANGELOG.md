@@ -16,6 +16,16 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **Delivery and returns under the price in the product detail.** It reads «Frakt fra X · 14
+  dagers angrerett», where X is the product's cheapest shipping rate for the page's market (the
+  same `product_shipping` rates the backend cart offers). A cheapest rate of 0 reads «Gratis frakt».
+  With no known rate, only «14 dagers angrerett» is shown (`part="delivery-note"`). The rates come
+  from a separate query (`commerce.channel.product.getShippingRates`), so a failure there only
+  loses this line.
+- **The cart drawer shows shipping and the total including it.** It uses the rate chosen on the
+  server cart, or the cheapest rate offered. Without a known rate it reads «Frakt: Beregnes i
+  kassen» and shows no total (`part="cart-shipping"`, `part="cart-total"`).
 ### Changed
 - **The product detail no longer picks a size for the shopper.** Only an option with a single
   value is preselected. The chosen value is shown beside the option's name («Størrelse: M») and
@@ -39,6 +49,7 @@ and *when*, and links there.
   `.methods-pending`) until `getAvailablePaymentMethods` answers. They used to show every method,
   so a Vipps-only brand flashed Stripe and Klarna. «Legg i handlekurv» and «Til kassen» are there
   from the start. A failed lookup still shows every button, as before.
+
 ### ⚠️ Upgrade notes
 - The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt
   instead of buying. A host that clicks `.add-to-cart` from a script needs a value in every option

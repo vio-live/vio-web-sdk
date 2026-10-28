@@ -199,6 +199,11 @@ export class VioProductDetail extends LitElement {
    * came (Mote & Livsstil, 2026-10-28).
    */
   @state() private methodsLoading = false
+  /**
+   * The brand's Vipps runs Express (`config.express`, unknown = yes): the
+   * Vipps button then goes straight to the app, and says so under it.
+   */
+  @state() private vippsExpress = true
   /** Whose methods `availableMethods` are — another brand's are not shown while its own load. */
   private methodsSponsorId = 0
   @state() private vippsOfficial = false
@@ -814,6 +819,14 @@ export class VioProductDetail extends LitElement {
     }
     .buy-vipps:hover:not(:disabled) { background: #ec4f1c; }
     .buy-vipps:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Under the Express button: what happens in the app. */
+    .vipps-note {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--vio-color-text-secondary, #666);
+      text-align: center;
+    }
     /* Vipps' own button (web component) — same slot, their drawing. */
     .buy-vipps-official { display: block; width: 100%; margin-top: 10px; cursor: pointer; }
     /* Apple Pay express button — black, per Apple's button guidelines. Only
@@ -1199,6 +1212,10 @@ export class VioProductDetail extends LitElement {
         | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        // Memoised with the list: costs nothing more.
+        if (isMethodEnabled(this.availableMethods, 'vipps')) {
+          this.vippsExpress = await Vio.checkout.getVippsExpressEnabled(spId)
+        }
       } else {
         this.availableMethods = null
       }
@@ -1784,6 +1801,15 @@ export class VioProductDetail extends LitElement {
     void this.startVippsExpressOrCheckout(redirect)
   }
 
+  /**
+   * The Vipps button will open the app with Express (see buyWithVipps): the
+   * brand has Express on, and this brand's cart is empty — with lines in it
+   * the checkout opens first.
+   */
+  private vippsGoesStraightToApp(): boolean {
+    return this.vippsExpress && (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) === 0
+  }
+
   private async startVippsExpressOrCheckout(redirect: PaymentRedirectHandle): Promise<void> {
     let fallback = true
     try {
@@ -2158,6 +2184,9 @@ export class VioProductDetail extends LitElement {
                     <span class="vipps-badge">vipps</span>
                   </button>
                 `
+            : ''}
+          ${this.availableQuantity > 0 && this.unitPrice > 0 && this.methodEnabled('vipps') && this.vippsGoesStraightToApp()
+            ? html`<p class="vipps-note" part="vipps-note">Vipps fyller inn navn og adresse – du godkjenner og betaler i appen</p>`
             : ''}
 
           <div class="qty-cta-row" part="quantity-row">

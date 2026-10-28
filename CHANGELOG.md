@@ -30,6 +30,10 @@ and *when*, and links there.
   **«Til kassen»** and **«Fortsett å handle»** (`part="added-toast"`). «Til kassen» dispatches
   `vio:checkout-open` for that brand, the same event the cart's «Til kassen» sends. It does nothing
   when the cart was emptied in the meantime. The toast closes by itself after 8 s.
+- **A line under «Kjøp nå med Vipps» in the product detail:** «Vipps fyller inn navn og adresse –
+  du godkjenner og betaler i appen» (`part="vipps-note"`). It is shown only when that button goes
+  straight to the app: Express is on for the brand and the brand's cart is empty. In other cases
+  the button opens the checkout first.
 ### Changed
 - **The product detail no longer picks a size for the shopper.** Only an option with a single
   value is preselected. The chosen value is shown beside the option's name («Størrelse: M») and

@@ -35,12 +35,19 @@ function area(kind: StorageKind): Storage | null {
   }
 }
 
-/** The value, or null. A value this page could only keep in memory wins. */
+/**
+ * The value, or null. The browser's storage when it can be read; this page's
+ * memory only for a key whose last write the storage refused (the storage
+ * then holds an older value, or none), or when the storage cannot be read
+ * at all.
+ */
 export function storageGet(kind: StorageKind, key: string): string | null {
   const kept = memory[kind]
   if (kept.has(key)) return kept.get(key) ?? null
+  const s = area(kind)
+  if (!s) return null
   try {
-    return area(kind)?.getItem(key) ?? null
+    return s.getItem(key)
   } catch {
     return null
   }

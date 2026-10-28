@@ -119,3 +119,35 @@ for (const mode of ['throws', 'null', 'write-fails'] as Mode[]) {
     })
   })
 }
+
+describe('a readable storage is preferred', () => {
+  it('reads the storage; memory only for a key whose write failed, dropped when a write succeeds', () => {
+    const store = new Map<string, string>([['k', 'from-storage']])
+    let refuse = false
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      writable: true,
+      value: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => {
+          if (refuse) throw new Error('QuotaExceededError')
+          store.set(k, v)
+        },
+        removeItem: (k: string) => void store.delete(k),
+      },
+    })
+    expect(storageGet('local', 'k')).toBe('from-storage')
+    // Another tab writes: this page reads it, nothing kept in memory shadows it.
+    store.set('k', 'other-tab')
+    expect(storageGet('local', 'k')).toBe('other-tab')
+    // This page's write is refused: its value is the one it reads back.
+    refuse = true
+    expect(storageSet('local', 'k', 'mine')).toBe(false)
+    expect(storageGet('local', 'k')).toBe('mine')
+    // A later write goes through: the memory copy is gone, the storage answers.
+    refuse = false
+    expect(storageSet('local', 'k', 'saved')).toBe(true)
+    store.set('k', 'other-tab-again')
+    expect(storageGet('local', 'k')).toBe('other-tab-again')
+  })
+})

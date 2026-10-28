@@ -785,6 +785,111 @@ line above the name). CSS only: `--vio-card-border-hover-color`, `--vio-card-add
 `--vio-card-retailer-{display,size,tracking,weight,color,margin}`,
 `--vio-card-description-{size,color,gap}`, `--vio-card-accent-text`.
 
+### Section order and layout tracking (0.34)
+
+The sections of `<vio-product-detail>` **below the gallery** can be put in any order, and the
+layout the shopper really saw travels with every event of the funnel — so a host can run an
+experiment on the product page and read its conversion. The header (selling brand + close) and
+the gallery stay where they are. Without any configuration nothing changes.
+
+```js
+// The whole page (every detail open now and later):
+Vio.configureDetail({
+  layout: {
+    id: 'pdp-sizes-first',        // required
+    revision: '3',
+    sections: ['title', 'stock', 'price', 'options', 'purchase', 'description', 'shippingReturns'],
+    experimentId: 'pdp-2026-11',  // optional
+    variantId: 'B',               // optional — the experiment variant
+  },
+})
+Vio.configureDetail({ layout: null }) // back to the default
+
+// One element (wins over the page): the property, or the attribute as JSON.
+detail.layout = { id: 'pdp-b', revision: '1', sections: ['price', 'title', 'options', 'purchase'] }
+// <vio-product-detail layout='{"id":"pdp-b","revision":"1","sections":["price","title","options","purchase"]}'>
+
+detail.appliedLayout   // what this detail applies
+Vio.detailLayout()     // what a detail without its own layout applies (the page's or the default)
+```
+
+**Section ids**
+
+| Id | What |
+|---|---|
+| `brand` | The product's brand line (`.brand`) |
+| `title` | The product name |
+| `stock` | «På lager» / «Få igjen» / «Utsolgt» |
+| `price` | Price + compare-at price |
+| `options` | The size / option groups and their prompt («Velg størrelse») |
+| `purchase` | The SDK's buy group, never split: «Frakt fra…», Vipps / Apple Pay / the other ways to pay, quantity + «Legg i handlekurv», «Du handler direkte hos …» and the terms links |
+| `highlights` | The brand's promises |
+| `description` | «Beskrivelse» |
+| `shippingReturns` | «Frakt & retur» |
+
+Default order — exactly the DOM before 0.34: `brand, title, stock, price, options, purchase,
+highlights, description, shippingReturns` (title and stock on one row; the options inside the
+buy zone; highlights, description and «Frakt & retur» after it).
+
+**Rules**
+
+- Ids, `revision`, `experimentId`, `variantId`: strings of at most 64 characters of
+  `[A-Za-z0-9._:-]`. An invalid `id` (or `sections` that is not an array) ignores the layout, with
+  one `console.warn`; an invalid `revision` / `experimentId` / `variantId` is treated as absent.
+- Unknown section ids are ignored; a duplicate: the first wins.
+- Essentials — `title`, `price`, `options`, `purchase` — are appended in that order when missing.
+  Any other section left out is not rendered.
+- `title` immediately followed by `stock` keep today's single row; otherwise each is its own block.
+  A run of `title` / `stock` / `price` is one `.headline` block.
+- `options` immediately before `purchase` render inside the buy zone (`.buy`), as today — so a
+  sticky buy zone still holds them. Anywhere else they are their own block
+  (`.buy-options.options-apart`, same `part="buy-options"`), and the buy buttons still require the
+  choice: the same «Velg størrelse» prompt, and the options are scrolled into view.
+- The real DOM is reordered (no CSS `order`), the same on phone and desktop. Every section after
+  `purchase` goes inside `.purchase`, as the description does by default: a sticky buy zone
+  (`detailBuyPosition: 'sticky'`) may slide over them, never over what comes before it.
+  `detailHighlightsDisplay`, `detailShippingReturnsDisplay`, `description-mode` and `gallery`
+  apply as before.
+
+**Applied layout** — `el.appliedLayout`, `Vio.detailLayout()` and the event
+`vio:detail-layout-applied` (bubbles, composed; React: `onLayoutApplied`), dispatched each time a
+detail renders a product with a layout it was not yet shown with (every open, every change while
+open; the detail also carries `productId` and `sponsorId`):
+
+```ts
+{
+  id: string, revision: string, experimentId?: string, variantId?: string,
+  sections: string[],                       // what is rendered, in order
+  adjusted: Array<{ section: string, reason: 'unknown' | 'duplicate' | 'added-essential' }>,
+  source: 'element' | 'global' | 'default',
+}
+// no configuration:
+{ id: 'default', revision: '0', sections: [/* the default order */], adjusted: [], source: 'default' }
+```
+
+**Tracking contract** (shared with the collector). Only a non-default layout (`source`
+`element` / `global`) adds anything; the default one sends nothing new on `view_item`.
+
+| Where | Fields | Value |
+|---|---|---|
+| `view_item` — `context` (next to `campaign_id`, `location_id`) | `layout_id`, `layout_revision`, `experiment_id`, `variant_id` | The layout the detail is shown with. `variant_id` here is the **experiment** variant (`context` has no product variant). Absent for the default layout; `experiment_id` / `variant_id` absent when the layout has none |
+| Every item of `add_to_cart`, `remove_from_cart`, `view_cart`, `begin_checkout`, `add_payment_info`, `purchase` — `commerce.items[]` | `layout_id`, `layout_revision`, `experiment_id`, `experiment_variant_id` | The layout the units were added under (their cart line origin). Always present on these items: `""` when the units came from no layout (a card, the default layout). `items[].variant_id` stays the **product** variant — hence `experiment_variant_id` |
+
+- The detail stores the layout on the cart line origin when it adds to the cart (any buy button):
+  `CartOrigin.layoutId`, `layoutRevision`, `experimentId`, `variantId` (the experiment variant),
+  taken from the layout shown at that moment. They persist with the cart (`localStorage`), so they
+  survive the return from Vipps / Stripe, a reload and another tab; changing the page's layout
+  later never rewrites lines already in the cart.
+- A line whose units came from several layouts is split per layout into several items (each with
+  its quantity), the same way the units are split per campaign / slot (`Vio.cartSlices()` items
+  carry `layoutId`, `layoutRevision`, `experimentId`, `experimentVariantId` when they have a
+  layout). A purchase is never credited whole to the last product opened.
+- `vio:added-to-cart` from the detail carries `layout: { layoutId, layoutRevision, experimentId?,
+  variantId? }` for a non-default layout (`variantId` of the event itself stays the product's).
+- Internal traffic stays excluded as before; campaign, sponsor, channel, content and slot are
+  unchanged. The layout is **not** sent to Commerce (the line origin's wire to shopcart has no
+  layout fields): the collector joins `order_paid` to these events by `checkout_id`.
+
 ### The hand-over to Vipps (0.28)
 
 Between the tap on Vipps (detail, cart or checkout) and the Vipps page, the SDK shows

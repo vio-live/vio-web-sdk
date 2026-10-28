@@ -69,6 +69,7 @@ export const VioProductDetail = createComponent({
   events: {
     onAddedToCart: 'vio:added-to-cart',
     onCheckoutOpen: 'vio:checkout-open',
+    onLayoutApplied: 'vio:detail-layout-applied',
   },
 })
 

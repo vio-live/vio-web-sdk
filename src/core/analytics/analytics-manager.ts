@@ -51,7 +51,8 @@ import {
 } from './client-context.js'
 import { readInternal, resolveInternal, writeInternal } from './internal-traffic.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
-import { cartSlicesFrom, hasExplicitCampaign, type CartSlice } from '../cart/slices.js'
+import { cartSlicesFrom, hasExplicitCampaign, itemLayoutOf, lineItemsByLayout, type CartSlice } from '../cart/slices.js'
+import { layoutToken, normalizeLayoutOrigin } from '../detail-layout.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CheckoutReference } from '../api/cart-queries.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
@@ -89,6 +90,16 @@ export type AnalyticsEventName = (typeof ANALYTICS_EVENT_NAMES)[number]
 
 /** Camel-case for DX; mapped to the snake_case wire format at build time. */
 export interface AnalyticsContext {
+  /**
+   * The `<vio-product-detail>` layout shown (0.34), on `view_item` and only
+   * for a non-default layout: `layout_id`, `layout_revision`, `experiment_id`,
+   * `variant_id` in the event's `context` (next to `campaign_id` /
+   * `location_id`). `variantId` is the experiment variant.
+   */
+  layoutId?: string
+  layoutRevision?: string
+  experimentId?: string
+  variantId?: string
   campaignId?: number
   broadcastId?: string
   campaignComponentId?: number
@@ -124,9 +135,22 @@ export interface AnalyticsItemInput {
   productId: number | string
   name?: string
   brand?: string
+  /** The PRODUCT variant (`variant_id` on the wire). */
   variantId?: number | string
   price?: number
   quantity?: number
+  /**
+   * The `<vio-product-detail>` layout these units were added from (0.34), from
+   * the cart line's origin: `layout_id`, `layout_revision`, `experiment_id`,
+   * `experiment_variant_id` on the wire. When any of them is given, all four
+   * go out (`''` for the missing ones); the SDK's events with cart items give
+   * them always (`''` when the units came from no layout).
+   */
+  layoutId?: string
+  layoutRevision?: string
+  experimentId?: string
+  /** The EXPERIMENT variant of the layout — not the product variant. */
+  experimentVariantId?: string
 }
 
 export interface AnalyticsCommerce {
@@ -651,14 +675,19 @@ export class AnalyticsManager extends EventTarget {
               (typeof document !== 'undefined' && document.title ? document.title : undefined),
           ),
       variant: ctx.variant,
+      // The detail layout shown (0.34) — `view_item` of a non-default layout.
+      layout_id: ctx.layoutId,
+      layout_revision: ctx.layoutRevision,
+      experiment_id: ctx.experimentId,
+      variant_id: ctx.variantId,
     })
 
     const com = opts.commerce
     const commerce = com
       ? compact({
           // The collector rejects an event with more lines than its cap, whole.
-          items: com.items?.slice(0, MAX_ITEMS).map((i) =>
-            compact({
+          items: com.items?.slice(0, MAX_ITEMS).map((i) => ({
+            ...compact({
               product_id: String(i.productId),
               name: this.options.privateContent ? undefined : i.name,
               brand: this.options.privateContent ? undefined : i.brand,
@@ -666,7 +695,8 @@ export class AnalyticsManager extends EventTarget {
               price: i.price,
               quantity: i.quantity,
             }),
-          ),
+            ...itemLayoutWire(i),
+          })),
           value: com.value,
           currency: com.currency,
           order_id: com.orderId,
@@ -843,12 +873,14 @@ export class AnalyticsManager extends EventTarget {
     }
 
     on('vio:added-to-cart', (ev) => {
-      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; campaignId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string; componentTemplateId?: string }>).detail ?? {}
+      const d = (ev as CustomEvent<{ productId?: number | string; sponsorId?: number; campaignId?: number; quantity?: number; variantId?: number | string; slot?: string; contentId?: string | number; contentTitle?: string; componentTemplateId?: string; layout?: unknown }>).detail ?? {}
       const line = this.findLine(d.productId, d.variantId)
       this.track('add_to_cart', {
         context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), componentTemplateId: templateOf(d), ...contentOf(d) },
         commerce: {
-          items: [
+          // The detail layout the units were added from (0.34): the add's own
+          // (`detail.layout`, set by <vio-product-detail>), '' when none.
+          items: withLineLayouts([
             {
               productId: d.productId ?? line?.productId ?? '',
               name: line?.name,
@@ -856,8 +888,9 @@ export class AnalyticsManager extends EventTarget {
               variantId: d.variantId ?? line?.variantId,
               price: line?.unitPrice,
               quantity: d.quantity ?? 1,
+              ...itemLayoutOf(normalizeLayoutOrigin(d.layout)),
             },
-          ],
+          ]),
           value: line ? line.unitPrice * (d.quantity ?? 1) : undefined,
           currency: line?.currency,
         },
@@ -878,12 +911,13 @@ export class AnalyticsManager extends EventTarget {
         slot?: string
         contentId?: string | number
         contentTitle?: string
+        layout?: unknown
       }>).detail ?? {}
       if (d.productId === undefined) return
       this.track('remove_from_cart', {
         context: { sponsorId: d.sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) },
         commerce: {
-          items: [
+          items: withLineLayouts([
             {
               productId: d.productId,
               variantId: d.variantId,
@@ -891,8 +925,9 @@ export class AnalyticsManager extends EventTarget {
               brand: d.brand,
               price: d.price,
               quantity: d.quantity,
+              ...itemLayoutOf(normalizeLayoutOrigin(d.layout)),
             },
-          ],
+          ]),
           value: (d.price ?? 0) * (d.quantity ?? 1),
           currency: d.currency,
         },
@@ -1257,14 +1292,8 @@ export class AnalyticsManager extends EventTarget {
     }
     if (items.length === 0) return null
     return {
-      items: items.map((i) => ({
-        productId: i.productId,
-        name: i.name,
-        brand: i.brand,
-        variantId: i.variantId,
-        price: i.unitPrice,
-        quantity: i.quantity,
-      })),
+      // One item per line and detail layout (0.34), each saying its layout.
+      items: withLineLayouts(lineItemsByLayout(items)),
       value: items.reduce((sum, i) => sum + i.unitPrice * (i.quantity ?? 1), 0),
       currency: items[0]?.currency ?? this.lastCartSnapshot?.currency,
     }
@@ -1339,6 +1368,41 @@ function impressionCommerce(
   } catch {
     return undefined // analytics never breaks the page
   }
+}
+
+/**
+ * The detail layout of an item on the wire (0.34): all four keys when the
+ * item states any of them — `''` for the missing ones, never left out, so a
+ * line from no layout reads as `''` — else nothing (items that are not cart
+ * lines: impressions, `view_item`, `select_item`).
+ */
+function itemLayoutWire(i: AnalyticsItemInput): Record<string, string> {
+  if (
+    i.layoutId === undefined &&
+    i.layoutRevision === undefined &&
+    i.experimentId === undefined &&
+    i.experimentVariantId === undefined
+  ) {
+    return {}
+  }
+  const token = (v: unknown) => layoutToken(v) ?? ''
+  return {
+    layout_id: token(i.layoutId),
+    layout_revision: token(i.layoutRevision),
+    experiment_id: token(i.experimentId),
+    experiment_variant_id: token(i.experimentVariantId),
+  }
+}
+
+/** Cart items as the events with items send them: every item states its layout (`''` when none). */
+function withLineLayouts(items: AnalyticsItemInput[] | undefined): AnalyticsItemInput[] | undefined {
+  return items?.map((i) => ({
+    ...i,
+    layoutId: i.layoutId ?? '',
+    layoutRevision: i.layoutRevision ?? '',
+    experimentId: i.experimentId ?? '',
+    experimentVariantId: i.experimentVariantId ?? '',
+  }))
 }
 
 function compact<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
@@ -1463,7 +1527,7 @@ function capTitle(value: string | undefined): string | undefined {
 
 /** A slice as the commerce block of its event. */
 function sliceCommerce(slice: CartSlice): AnalyticsCommerce {
-  return { items: slice.items, value: slice.value, currency: slice.currency }
+  return { items: withLineLayouts(slice.items), value: slice.value, currency: slice.currency }
 }
 
 /** The `slot` a `vio:*` event detail carries, when it is a non-empty string. */

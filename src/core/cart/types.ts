@@ -29,6 +29,20 @@ export interface CartOrigin {
   contentUrl?: string
   /** Its title (`content_title`, ≤ 255). */
   contentTitle?: string
+  /**
+   * The layout of `<vio-product-detail>` the units were added from (0.34):
+   * its `id`, `revision`, and the experiment / variant it belongs to — set by
+   * the detail from the layout it showed at that moment, only for a
+   * non-default layout. Kept with the line (localStorage) and never rewritten
+   * by a later configuration; reported per unit on the events with items
+   * (`layout_id`, `layout_revision`, `experiment_id`, `experiment_variant_id`).
+   * Never sent to Commerce. `variantId` here is the EXPERIMENT variant, not the
+   * product variant (`CartLineItem.variantId`).
+   */
+  layoutId?: string
+  layoutRevision?: string
+  experimentId?: string
+  variantId?: string
 }
 
 /** One origin of a line and how many of its units came from it. */

@@ -24,6 +24,7 @@ import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from 
 import { currentOriginPage, currentPrivacyMode, lineOriginWire } from './origin-wire.js'
 import { componentKindOf } from '../slots.js'
 import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
+import { normalizeLayoutOrigin } from '../detail-layout.js'
 import {
   addItem as gqlAddItem,
   createCart as gqlCreateCart,
@@ -998,6 +999,8 @@ export class CartManager extends EventTarget {
               slot: removedOrigin?.slot,
               campaignId: removedOrigin?.campaignId,
               contentId: removedOrigin?.contentId,
+              // The detail layout of those units (0.34), when they came from one.
+              ...(removedOrigin?.layoutId ? { layout: normalizeLayoutOrigin(removedOrigin) } : {}),
             },
           }),
         )
@@ -1390,16 +1393,27 @@ export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrig
   if (typeof origin.contentTitle === 'string' && origin.contentTitle.trim()) {
     out.contentTitle = origin.contentTitle.trim().slice(0, CONTENT_TITLE_MAX_LENGTH)
   }
+  // The detail layout the units were added from (0.34) — validated, only with its id.
+  Object.assign(out, normalizeLayoutOrigin(origin))
   return out
 }
 
-/** Two origins are the same place when campaign, slot, content and kind of element all match (the page's URL and title are attributes of the place, not its identity). */
+/**
+ * Two origins are the same place when campaign, slot, content and kind of
+ * element all match (the page's URL and title are attributes of the place, not
+ * its identity) — and the same detail layout (0.34): units added under two
+ * layouts stay two origins, so each layout is credited with its own.
+ */
 export function sameOrigin(a: CartOrigin, b: CartOrigin): boolean {
   return (
     a.campaignId === b.campaignId &&
     a.slot === b.slot &&
     a.contentId === b.contentId &&
-    a.componentKind === b.componentKind
+    a.componentKind === b.componentKind &&
+    a.layoutId === b.layoutId &&
+    a.layoutRevision === b.layoutRevision &&
+    a.experimentId === b.experimentId &&
+    a.variantId === b.variantId
   )
 }
 

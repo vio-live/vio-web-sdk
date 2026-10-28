@@ -1,6 +1,6 @@
 {
   "name": "@vio-live/web-sdk",
-  "version": "0.20.3",
+  "version": "0.31.0",
   "description": "Vio Web SDK — in-site shoppable + native checkout, designed for editorial commerce sites",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,7 +31,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
@@ -57,6 +58,7 @@
     "@lit/react": "^1.0.8",
     "@types/node": "^22.10.0",
     "@types/react": "^19.2.17",
+    "graphql": "^16.14.2",
     "jsdom": "^25.0.1",
     "tsup": "^8.5.1",
     "typescript": "^5.6.3",

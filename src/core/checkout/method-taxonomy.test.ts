@@ -27,11 +27,11 @@ describe('method taxonomy', () => {
     }
   })
 
-  it('knows which collect the address themselves — the embedded ones and Vipps', () => {
-    for (const m of ['Qliro', 'Kustom', 'Walley', 'Vipps']) {
+  it('knows which collect the address themselves — the embedded ones; not Vipps (the checkout’s Vipps is the standard payment, 2026-10-28)', () => {
+    for (const m of ['Qliro', 'Kustom', 'Walley']) {
       expect(collectsOwnAddress(m)).toBe(true)
     }
-    for (const m of ['Klarna', 'STRIPE', 'Apple Pay']) {
+    for (const m of ['Klarna', 'STRIPE', 'Apple Pay', 'Vipps']) {
       expect(collectsOwnAddress(m)).toBe(false)
     }
   })

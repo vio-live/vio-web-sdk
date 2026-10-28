@@ -123,6 +123,55 @@ const GET_PRODUCT_SELLER = /* GraphQL */ `
   }
 `
 
+/**
+ * A product's shipping rates (`product_shipping`) for the page's market — the
+ * same rates the backend cart offers for its line. Apart from
+ * GET_PRODUCTS_BY_IDS like the seller: a failure here costs the detail its
+ * «Frakt fra» line, never the product.
+ */
+export const GET_PRODUCT_SHIPPING = /* GraphQL */ `
+  query GetProductShipping(
+    $productIds: [Int!]
+    $useCache: Boolean!
+    $currency: String
+    $shippingCountryCode: String
+  ) {
+    Channel {
+      GetProductsByIds(
+        product_ids: $productIds
+        useCache: $useCache
+        currency: $currency
+        shipping_country_code: $shippingCountryCode
+      ) {
+        id
+        product_shipping {
+          id
+          name
+          default
+          shipping_country {
+            country
+            price {
+              amount
+              amount_incl_taxes
+              currency_code
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
+/** One shipping rate of a product for a country, tax included. */
+export interface ProductShippingRate {
+  id: string
+  name: string
+  /** Major units, tax included when the backend says it. */
+  price: number
+  currency: string
+  default: boolean
+}
+
 export interface GetProductsByIdsOptions {
   product_ids: number[]
   currency?: string | null
@@ -177,6 +226,62 @@ class ChannelProduct {
       return null
     }
   }
+
+  /**
+   * The product's shipping rates for the page's market (or `country`),
+   * cheapest first; `[]` when it has none there, `null` when they could not
+   * be read. Never throws. Never from the cache, for the reason given at
+   * getSellerCompany.
+   */
+  async getShippingRates(
+    productId: number,
+    options: { currency?: string | null; country?: string | null } = {},
+  ): Promise<ProductShippingRate[] | null> {
+    const country = options.country || getGlobalCountryCode()
+    try {
+      const data = await this.client.request<{
+        Channel: { GetProductsByIds: Array<{ id: number; product_shipping?: unknown }> }
+      }>(GET_PRODUCT_SHIPPING, {
+        productIds: [productId],
+        useCache: false,
+        currency: options.currency ?? getGlobalCurrency(),
+        shippingCountryCode: country,
+      })
+      const product = data.Channel?.GetProductsByIds?.[0]
+      if (!product) return null
+      return shippingRatesFor(product.product_shipping, country)
+    } catch {
+      return null
+    }
+  }
+}
+
+/**
+ * The rates of a product for one country, cheapest first: `null` when they
+ * could not be read (unknown), `[]` when the product has none there.
+ */
+export function shippingRatesFor(
+  productShipping: unknown,
+  country: string,
+): ProductShippingRate[] {
+  if (!Array.isArray(productShipping)) return []
+  const want = String(country || '').trim().toUpperCase()
+  const out: ProductShippingRate[] = []
+  for (const s of productShipping as Array<Record<string, any>>) {
+    const countries = Array.isArray(s?.shipping_country) ? s.shipping_country : []
+    const row = countries.find((c: { country?: string }) => String(c?.country ?? '').trim().toUpperCase() === want)
+    const price = row?.price
+    const amount = typeof price?.amount_incl_taxes === 'number' ? price.amount_incl_taxes : price?.amount
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) continue
+    out.push({
+      id: String(s.id ?? ''),
+      name: String(s.name ?? ''),
+      price: amount,
+      currency: String(price?.currency_code ?? ''),
+      default: s.default === true,
+    })
+  }
+  return out.sort((a, b) => a.price - b.price)
 }
 
 class Channel {

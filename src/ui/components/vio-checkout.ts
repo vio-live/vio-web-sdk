@@ -8,11 +8,18 @@
  * non-Apple device, or no Stripe key configured).
  */
 
-import { LitElement, css, html } from 'lit'
+import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
+import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
-import { formatPrice, getGlobalCurrency } from '../../core/types.js'
+import { formatPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
+import {
+  buyerRefOf,
+  type PaymentSuccessDetail,
+  type PaymentSuccessResult,
+} from '../../core/analytics/analytics-manager.js'
+import { gatewayHasBuyerRef } from '../../core/api/cart-queries.js'
 import type { CartLineItem } from '../../core/cart/types.js'
 import type {
   CheckoutChangeDetail,
@@ -46,8 +53,19 @@ import {
   type AdyenSession,
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
+import { isValidPhone } from '../../core/checkout/phone.js'
+import { storageGet } from '../../core/safe-storage.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
+import {
+  renderSponsorMark,
+  resolveSponsorIdentity,
+  sponsorDetail,
+  usableLogo,
+  whenBootstrapped,
+} from '../sponsor-identity.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path.
  * (Duplicated in vio-cart.ts — tiny constant, avoids a shared-module dance.) */
@@ -56,6 +74,11 @@ const STRIPE_LOGO_SRC =
   encodeURIComponent(
     '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
+
+/** Said when a pay button is pressed on a cart with nothing to pay for. */
+const EMPTY_CART_MESSAGE = 'Handlekurven er tom.'
+/** Said when the chosen delivery could not be saved on the cart before a hosted payment. */
+const SHIPPING_NOT_SAVED_MESSAGE = 'Kunne ikke lagre fraktmetoden. Prøv igjen.'
 
 export class VioCheckout extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
@@ -91,6 +114,16 @@ export class VioCheckout extends LitElement {
   @state() private verifyingReturn: string | null = null
   /** The checkout whose confirmation is on screen — see fillOrderNumber. */
   private confirmedCheckoutId: string | null = null
+  /**
+   * Whose order is being confirmed (or verified, back from a payment page):
+   * the CHECKOUT's sponsor — from the return URL (`vio_sponsor`,
+   * `checkout_id`) or the state it was paid in — and how it was named before
+   * the cart was cleared. The header and the confirmation name it; never the
+   * page's attribution. See checkoutSponsorIdentity.
+   */
+  @state() private orderSponsor: { sponsorId: number; checkoutId?: string; snapshot?: CheckoutSponsor } | null = null
+  /** The bootstrap that names the checkout's sponsor was asked for (once per checkout) — see watchSponsorBootstrap. */
+  private sponsorBootstrapAsked = false
   /** Snapshot of the placed order, for the confirmation screen. */
   @state() private confirmedOrder: {
     items: CartLineItem[]
@@ -229,6 +262,7 @@ export class VioCheckout extends LitElement {
     firstName: '',
     lastName: '',
     email: '',
+    phone: '',
     address: '',
     postalCode: '',
     city: '',
@@ -242,6 +276,15 @@ export class VioCheckout extends LitElement {
   private readonly dialogFocus = new DialogFocus({
     host: this,
     container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    close: () => this.close(),
+    canClose: () => !this.paymentInFlight,
+  })
+  /** Phones: the page behind is locked, and the sheet closes by pulling the bar or the top bar down — not mid-payment. */
+  private readonly bottomSheet = new BottomSheet({
+    host: this,
+    sheet: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
+    dragZones: '.handle, .topbar',
     close: () => this.close(),
     canClose: () => !this.paymentInFlight,
   })
@@ -335,6 +378,8 @@ export class VioCheckout extends LitElement {
       this.paymentNotice = null
       this.verifyingReturn = null
       this.confirmedCheckoutId = null
+      this.orderSponsor = null
+      this.sponsorBootstrapAsked = false
       this.express = false
       this.availableMethods = null
       this.paymentMethodsResolved = false
@@ -447,8 +492,8 @@ export class VioCheckout extends LitElement {
        from the right instead of the full-screen overlay. */
     .modal.as-side {
       inset: 0 0 0 auto;
-      width: min(440px, 100%);
-      max-width: 440px;
+      width: min(var(--vio-checkout-width, 440px), 100%);
+      max-width: var(--vio-checkout-width, 440px);
       transform: translateX(100%);
       border-radius: 0;
       box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
@@ -463,8 +508,8 @@ export class VioCheckout extends LitElement {
     @media (min-width: 601px) {
       .modal {
         inset: 0 0 0 auto;
-        width: min(440px, 100%);
-        max-width: 440px;
+        width: min(var(--vio-checkout-width, 440px), 100%);
+        max-width: var(--vio-checkout-width, 440px);
         transform: translateX(100%);
         border-radius: 0;
         box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
@@ -501,7 +546,10 @@ export class VioCheckout extends LitElement {
         height: 92vh;
         border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        overscroll-behavior: contain;
       }
+      /* Pulled down to close (bottom-sheet.ts): the browser must not take the gesture for a scroll. */
+      .handle, .topbar { touch-action: none; }
       .handle {
         display: flex;
         justify-content: center;
@@ -533,6 +581,33 @@ export class VioCheckout extends LitElement {
       font-size: 24px;
       font-weight: 400;
       margin: 0;
+    }
+    .topbar-title {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    /* Who the shopper buys from — the checkout's sponsor, compact under the heading. */
+    .topbar-sponsor {
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      line-height: 1.3;
+      color: var(--vio-color-text-secondary, #666);
+    }
+    .topbar-sponsor-logo {
+      display: block;
+      width: auto;
+      height: 18px;
+      max-width: 120px;
+      object-fit: contain;
+    }
+    .topbar-sponsor-name {
+      color: var(--vio-color-text, #0a0a0a);
+      font-weight: 600;
     }
     .close {
       background: none;
@@ -600,6 +675,8 @@ export class VioCheckout extends LitElement {
       transition: border-color 0.15s;
     }
     .field input:focus { border-bottom-color: var(--vio-color-text, #0a0a0a); }
+    .field input[aria-invalid='true'] { border-bottom-color: var(--vio-color-accent, #c14a3b); }
+    .field-error { margin-top: 4px; font-size: 12px; color: var(--vio-color-accent, #c14a3b); }
 
     .payment-grid {
       display: grid;
@@ -849,7 +926,7 @@ export class VioCheckout extends LitElement {
       width: 48px;
       height: 48px;
       border-radius: 50%;
-      background: #2e7d32;
+      background: var(--vio-confirm-check-bg, #2e7d32);
       color: #fff;
       display: flex;
       align-items: center;
@@ -859,10 +936,26 @@ export class VioCheckout extends LitElement {
     }
     .confirm-title {
       font-family: var(--vio-font-serif, Georgia, serif);
-      font-size: 24px;
-      font-weight: 400;
+      font-size: var(--vio-confirm-title-size, 24px);
+      font-weight: var(--vio-confirm-title-weight, 400);
       margin: 0;
     }
+    /* The brand the order is with: its logo over the thanks, its name in it. */
+    .confirm-brand { display: flex; align-items: center; }
+    .confirm-brand-logo {
+      display: block;
+      width: auto;
+      height: var(--vio-confirm-logo-height, 40px);
+      max-width: var(--vio-confirm-logo-max-width, 220px);
+      object-fit: contain;
+    }
+    .confirm-sponsor {
+      font-size: var(--vio-confirm-text-size, 14px);
+      line-height: 1.4;
+      color: var(--vio-color-text, #0a0a0a);
+      margin: 4px 0 0;
+    }
+    .confirm-sponsor strong { font-weight: 600; }
     .confirm-text {
       font-size: 14px;
       color: var(--vio-color-text-secondary, #666);
@@ -1063,6 +1156,8 @@ export class VioCheckout extends LitElement {
     checkoutId: string,
   ): void {
     if (outcome === 'paid') {
+      // Named while the cart still can: clearing it takes its sponsorName.
+      this.setOrderSponsor(sponsorId, checkoutId)
       if (sponsorId > 0) Vio.cart.clearSponsorCart(sponsorId)
       this.confirmedOrder = {
         items: [],
@@ -1073,19 +1168,14 @@ export class VioCheckout extends LitElement {
       this.orderConfirmed = true
       this.open = true
       void this.fillOrderNumber(checkoutId, sponsorId)
-      this.dispatchEvent(
-        new CustomEvent('vio:payment-success', {
-          bubbles: true,
-          composed: true,
-          detail: { method: vioMethod, sponsorId, orderId: checkoutId },
-        }),
-      )
+      void this.emitPaymentSuccess({ method: vioMethod, sponsorId, orderId: checkoutId }, checkoutId, sponsorId)
     } else if (outcome === 'duplicate') {
       this.paymentError = CART_PAID_MESSAGE
       this.open = true
     } else if (outcome === 'failed') {
       this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
       this.open = true
+      returnCancelled({ method: vioMethod, sponsorId, source: 'checkout', checkoutId })
     } else if (sawStatus) {
       // Backend reachable but the checkout is still processing (webhook not
       // landed yet). Fail-closed: keep the cart, set expectations.
@@ -1156,6 +1246,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'kustom'
+        this.setOrderSponsor(sponsorId, kustomReturn.checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1185,7 +1276,9 @@ export class VioCheckout extends LitElement {
             // Kustom's own receipt, in the light DOM, projected into the
             // receipt view — which does not depend on the cart we clear.
             const spId = this.checkoutState?.sponsorId ?? 0
-            this.showProviderReceipt('kustom', spId, order)
+            // Kustom's `order` is its own (order_id, checkout_id are Kustom's):
+            // Vio's checkout id comes from the return URL.
+            this.showProviderReceipt('kustom', spId, order, kustomReturn.checkoutId)
             await this.updateComplete
             const container = this.lightContainer('vio-kustom-checkout-container', 'vio-kustom')
             Vio.checkout.renderKustomSnippet(container, order.html_snippet)
@@ -1216,6 +1309,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'qliro'
+        this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1253,12 +1347,12 @@ export class VioCheckout extends LitElement {
             const result = { order: { orderId: order.order_id }, chargedTotal: order.total_price }
             this.qliroMountedOrderId = order.order_id
             if (order.html_snippet) {
-              this.showProviderReceipt('qliro', spId, result)
+              this.showProviderReceipt('qliro', spId, result, checkoutId)
               await this.updateComplete
               const container = this.lightContainer('vio-qliro-checkout-container', 'vio-qliro')
               Vio.checkout.renderKustomSnippet(container, order.html_snippet)
             } else {
-              this.confirmOrder('qliro', spId, result)
+              this.confirmOrder('qliro', spId, result, checkoutId)
             }
           } else if (order?.html_snippet) {
             // Not completed (OnHold, still InProcess): Qliro's own screen explains
@@ -1292,6 +1386,7 @@ export class VioCheckout extends LitElement {
         // BEFORE open()/selectPaymentMethod(): both emit, and the render they
         // schedule must already see it — see `returningFrom`.
         this.returningFrom = 'walley'
+        this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
           const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
           if (spIdToUse) {
@@ -1324,9 +1419,12 @@ export class VioCheckout extends LitElement {
             }
             if (order.status === 'PurchaseCompleted') {
               // Walley's receipt stays on screen — see showProviderReceipt.
-              this.showProviderReceipt('walley', this.checkoutState?.sponsorId ?? 0, {
-                orderId: order.order_id,
-              })
+              this.showProviderReceipt(
+                'walley',
+                this.checkoutState?.sponsorId ?? 0,
+                { orderId: order.order_id },
+                checkoutId,
+              )
             }
           }
         } catch (err) {
@@ -1346,8 +1444,7 @@ export class VioCheckout extends LitElement {
       // fires payment-complete — don't double-handle while it's pending.
       if (
         vioMethod === 'klarna' &&
-        typeof sessionStorage !== 'undefined' &&
-        sessionStorage.getItem('vio.klarna.pending.v1')
+        storageGet('session', 'vio.klarna.pending.v1')
       ) {
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
         return
@@ -1363,6 +1460,7 @@ export class VioCheckout extends LitElement {
         this.cleanReturnQueryParams(ADYEN_RETURN_QUERY_KEYS)
         if (!adyenReturn) return
         this.returningFrom = 'adyen'
+        this.setOrderSponsor(sponsorId, checkoutId)
         this.adyenSettled = true
         this.autoSelectAttempted = true
         if (!this.checkoutState) {
@@ -1433,6 +1531,9 @@ export class VioCheckout extends LitElement {
             }
           }
         }
+        // Whose checkout this is: the return URL's sponsor and checkout — not
+        // the page's, and not whichever cart happens to be first here.
+        this.setOrderSponsor(sponsorId, checkoutId)
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen med Vipps…'
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
@@ -1448,6 +1549,7 @@ export class VioCheckout extends LitElement {
         let outcome: 'paid' | 'failed' | 'pending' | 'duplicate' = 'pending'
         let sawStatus = false
         if (checkoutId) {
+          this.setOrderSponsor(sponsorId, checkoutId)
           this.open = true
           this.verifyingReturn = 'Bekrefter betalingen…'
           for (const delayMs of VioCheckout.RETURN_VERIFY_DELAYS_MS) {
@@ -1528,11 +1630,17 @@ export class VioCheckout extends LitElement {
     this.unmountKlarna()
     this.unmountNexi()
     this.unmountAdyen()
+    // A payment event still waiting for its buyer reference goes out now, without it.
+    for (const settle of [...this.pendingSuccessEmits]) settle()
+    this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has('open')) this.dialogFocus.update(this.open)
+    if (changed.has('open')) {
+      this.dialogFocus.update(this.open)
+      this.bottomSheet.update(this.open)
+    }
     // Opening the overlay: make sure the real shippings are loaded. Gated on
     // items.length — fetching shippings for an empty cart is wasted work and
     // can race the cart's own in-flight mutations.
@@ -1548,6 +1656,13 @@ export class VioCheckout extends LitElement {
     // the auto-selection at load time was skipped on purpose.
     if (changed.has('open') && this.open) {
       this.autoSelectSoleMethod()
+    }
+    // Opening on a cart: the lines and the total are the SERVER's — a line
+    // another tab added, a cart another tab paid — before the shopper reads
+    // them and pays (CartManager.refreshFromServer; the manager follows the
+    // cart and emits, which re-reads `items` and the subtotal here).
+    if (changed.has('open') && this.open && this.checkoutState?.sponsorId && !this.orderConfirmed) {
+      void Vio.cart.refreshFromServer(this.checkoutState.sponsorId)
     }
     // A sole Klarna or Apple Pay can turn usable after the list resolved (its
     // script loads, the browser answers). One more try, only on that flip —
@@ -1574,6 +1689,9 @@ export class VioCheckout extends LitElement {
       this.unmountStripe()
       this.paymentError = null
     }
+    // A return lands before the bootstrap: ask for it once, so the header
+    // and the confirmation name the sponsor when it arrives.
+    this.watchSponsorBootstrap()
     // A checkout taken out of the page (a route change, the host re-rendering
     // it) creates no payment sessions. Its own teardown unmounts the widgets,
     // and the update that follows would otherwise mount them again, detached —
@@ -1675,7 +1793,33 @@ export class VioCheckout extends LitElement {
     )
   }
 
-  /** Whether all mandatory Leveringsadresse fields are filled. */
+  /** The shipping country the mobile's calling code defaults to (no +prefix typed). */
+  private get phoneCountry(): string {
+    return String(this.form.country || getGlobalCountryCode())
+  }
+
+  /**
+   * The mobile is required only for the standard Vipps payment — shopcart
+   * does not ask Vipps for the profile there. Every other method takes it
+   * when given and never waits for it (a host that pre-fills the form with
+   * `setAddress()` and no phone keeps working).
+   */
+  private get phoneRequired(): boolean {
+    return this.checkoutState?.paymentMethod === 'vipps'
+  }
+
+  /** A number typed that is not usable (nothing said while the field is empty). */
+  private get phoneError(): boolean {
+    const raw = String(this.form.phone ?? '').trim()
+    return raw.length > 0 && !isValidPhone(raw, this.phoneCountry)
+  }
+
+  /** The mobile as the chosen method needs it: valid when required, else anything. */
+  private get phoneReady(): boolean {
+    return !this.phoneRequired || isValidPhone(this.form.phone, this.phoneCountry)
+  }
+
+  /** Whether all mandatory Leveringsadresse fields are filled (the mobile only for Vipps). */
   private get isAddressValid(): boolean {
     const f = this.form
     if (!f) return false
@@ -1685,7 +1829,8 @@ export class VioCheckout extends LitElement {
       f.email && String(f.email).trim().length > 0 && String(f.email).includes('@') &&
       f.address && String(f.address).trim().length > 0 &&
       f.postalCode && String(f.postalCode).trim().length > 0 &&
-      f.city && String(f.city).trim().length > 0,
+      f.city && String(f.city).trim().length > 0 &&
+      this.phoneReady,
     )
   }
 
@@ -1710,7 +1855,9 @@ export class VioCheckout extends LitElement {
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
         // Which Stripe: the flow travels in the method's own config, and the
-        // list is memoised, so this costs nothing extra.
+        // list is memoised, so this costs nothing extra. (Vipps here is always
+        // the standard payment — see startVippsFromCheckout — whatever the
+        // brand's Express switch says.)
         this.stripeMode = await Vio.checkout.getStripeMode(spId)
       } else {
         this.availableMethods = null
@@ -1983,21 +2130,45 @@ export class VioCheckout extends LitElement {
   }
 
   /**
-   * Vipps from the checkout: Express when the channel allows it, so the
-   * shopper picks the delivery inside the app — our rate on the cart is the
-   * one preselected there — and never silently keeps the default our form
-   * chose for them. When the cart cannot have Express (several suppliers)
-   * the backend says so without creating a payment, and the plain payment
-   * follows: profile shared, the rate already on the cart.
+   * Vipps from the checkout: the STANDARD payment, always (Mote & Livsstil,
+   * 2026-10-28). The shopper filled our form — name, address, mobile — and
+   * chose the delivery with its price here; the payment carries that address
+   * and the rate on the cart, and Vipps only approves and pays. Express (the
+   * app filling in name and address) is the product detail's «Kjøp nå med
+   * Vipps» alone, even when the brand has Express on.
    */
   private async startVippsFromCheckout(): Promise<void> {
     const sponsorId = this.checkoutState?.sponsorId
-    const express = await Vio.checkout.getVippsExpressEnabled(sponsorId)
-    if (express) {
-      const res = await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: true })
-      if (res?.payment_url) return
+    await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: false })
+  }
+
+  /**
+   * The chosen delivery on the cart before a hosted payment is minted (its
+   * total depends on it). False — and the payment must not start — when it
+   * could not be saved: the selected rate has no supplier to save it under,
+   * or the backend refused. A cart with no rates at all has nothing to save.
+   */
+  private async persistSelectedShipping(method: string): Promise<boolean> {
+    if (this.availableShippingsList.length === 0) return true
+    const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
+    if (!selectedOpt?.supplierId) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[VioCheckout] no supplier for the selected shipping — ${method} not started`)
+      }
+      return false
     }
-    await Vio.checkout.startVippsPayment(sponsorId, this.form)
+    try {
+      const updated = await Vio.checkout.updateShippingsBySupplier(
+        [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
+        this.checkoutState?.sponsorId,
+      )
+      return updated != null
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[VioCheckout] updateShippingsBySupplier on ${method} pay failed:`, err)
+      }
+      return false
+    }
   }
 
   private async onApplePay(): Promise<void> {
@@ -2022,6 +2193,12 @@ export class VioCheckout extends LitElement {
     if (this.shippingBlocked) return
     this.paymentError = null
     this.paymentNotice = null
+    // Never a payment for an empty cart or one of 0 kr (another tab may have
+    // paid or emptied it while this one was open).
+    if (!this.cartPayable) {
+      this.paymentError = EMPTY_CART_MESSAGE
+      return
+    }
     // Apple Pay collects address, shipping AND email inside its own sheet —
     // skip the manual form validation entirely.
     if (method === 'apple-pay') {
@@ -2049,12 +2226,14 @@ export class VioCheckout extends LitElement {
       Vio.checkout.selectPaymentMethod('nexi')
       return
     }
-    // Vipps collects address, delivery AND email in its own flow (Express,
-    // 2026-09-29) — nothing of ours has to be filled in first, so one click
-    // selects it and starts it. An email the shopper already typed (the
-    // "Kontakt" section, or another method's form) travels along.
-    if (method !== 'vipps') {
-      const missing = !this.isAddressValid
+    // Every method that pays after our form needs it complete — Vipps too
+    // (2026-10-28: the checkout's Vipps is the standard payment, it carries
+    // our address and delivery; Express lives on the product detail).
+    {
+      // The mobile counts for the method being paid with (Vipps), even before
+      // the state says it is the selected one.
+      const phoneMissing = method === 'vipps' && !isValidPhone(this.form.phone, this.phoneCountry)
+      const missing = !this.isAddressValid || phoneMissing
         ? 'Vennligst fyll ut alle feltene i leveringsadresse.'
         : !this.hasSelectedShipping
           ? 'Vennligst velg en fraktmetode.'
@@ -2093,21 +2272,14 @@ export class VioCheckout extends LitElement {
         this.stripeRequested = true
         return
       }
-      // Persist the chosen shipping before the link is minted (total depends on it).
-      const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
-      if (selectedOpt?.supplierId) {
-        try {
-          await Vio.checkout.updateShippingsBySupplier(
-            [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
-            this.checkoutState?.sponsorId,
-          )
-        } catch (err) {
-          if (typeof console !== 'undefined') {
-            console.warn('[VioCheckout] updateShippingsBySupplier on stripe pay failed:', err)
-          }
-        }
-      }
+      // Persist the chosen shipping before the link is minted (total depends
+      // on it); a delivery that could not be saved starts no payment.
       this.stripeLoading = true
+      if (!(await this.persistSelectedShipping('stripe'))) {
+        this.stripeLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
       void Vio.checkout
         .startStripePayment(this.checkoutState?.sponsorId, this.form)
         .catch((err: unknown) => {
@@ -2122,11 +2294,20 @@ export class VioCheckout extends LitElement {
     }
     if (method === 'vipps') {
       this.vippsLoading = true
+      // The delivery Vipps will charge for is the one saved on the cart: not
+      // saved, no payment.
+      if (!(await this.persistSelectedShipping('vipps'))) {
+        this.vippsLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
+      const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.checkoutState?.sponsorId, source: 'checkout' })
       void this.startVippsFromCheckout()
         .catch((err: unknown) => {
           if (typeof console !== 'undefined') {
             console.warn('[VioCheckout] Vipps payment could not start:', err)
           }
+          redirect.fail(errorText(err))
           this.paymentError = friendlyPaymentError(errorText(err), 'vipps')
         })
         .finally(() => {
@@ -2144,7 +2325,11 @@ export class VioCheckout extends LitElement {
     const s = this.checkoutState
     if (!s || !s.paymentMethod) return
     if (this.shippingBlocked) return
-    if (s.paymentMethod !== 'vipps' && !this.isAddressValid) {
+    if (!this.cartPayable) {
+      this.paymentError = EMPTY_CART_MESSAGE
+      return
+    }
+    if (!this.isAddressValid) {
       this.paymentError = 'Vennligst fyll ut alle feltene i leveringsadresse.'
       return
     }
@@ -2167,16 +2352,25 @@ export class VioCheckout extends LitElement {
    * the confirmation screen, emits `vio:payment-success`, and clears the
    * paid sponsor's cart so the badge + drawer reflect the purchase.
    */
-  private confirmOrder(method: PaymentMethod, sponsorId: number, result?: unknown): void {
+  private confirmOrder(
+    method: PaymentMethod,
+    sponsorId: number,
+    result?: unknown,
+    returnCheckoutId?: string,
+  ): void {
     // Snapshot the order BEFORE clearing the cart — the confirmation needs it.
     const r = (result ?? {}) as { order?: { orderId?: string }; chargedTotal?: number }
     const shippingPrice = this.shippingMajor()
     const email = String(this.form.email ?? '').trim()
-    // Before the cart is cleared: the checkout id goes with it.
-    const checkoutId = this.checkoutState?.checkoutId
+    // Before the cart is cleared: the checkout id goes with it. Back from a
+    // redirect the state was re-opened without one, so the return URL's id
+    // is passed in explicitly.
+    const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
     // An id a provider hands back is ITS order (Qliro's, say), not Vio's: it
     // is the provider's reference, under the provider's name.
     const providerOrderId = r.order?.orderId != null ? String(r.order.orderId) : ''
+    // Who the order is with, named before the cart is cleared.
+    this.setOrderSponsor(sponsorId, checkoutId)
     this.confirmedOrder = {
       items: [...this.items],
       currency: this.checkoutState?.currency ?? '',
@@ -2195,15 +2389,161 @@ export class VioCheckout extends LitElement {
     // A redirect completion lands with the overlay closed — open it so the
     // confirmation screen is visible.
     this.open = true
-    this.dispatchEvent(
-      new CustomEvent('vio:payment-success', {
+    void this.fillOrderNumber(checkoutId, sponsorId)
+    // `checkoutId` is Vio's own reference for the purchase — what the
+    // redirect path already sends as `orderId`; analytics falls back to it
+    // when the provider's result carries no order id. The cart is cleared
+    // after the event, as always (analytics reads it from the event).
+    void this.emitPaymentSuccess(
+      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      checkoutId,
+      sponsorId,
+      () => Vio.cart.clearSponsorCart(sponsorId),
+    )
+  }
+
+  /** Longest `vio:payment-success` waits for the checkout's buyer reference, and when it asks a second time. */
+  private static readonly BUYER_REF_WAIT_MS = 2_500
+  private static readonly BUYER_REF_RETRY_AT_MS = 1_200
+
+  /** Payment events still waiting for their buyer reference: settled early (without it) when the page hides or the element leaves. */
+  private readonly pendingSuccessEmits = new Set<() => void>()
+
+  /**
+   * `vio:payment-success` for the host and analytics — with the buyer
+   * reference (`buyerRef`: shopcart's keyed hash of the email → analytics
+   * `buyer_id`) when the checkout can say it. An emitter whose own answer
+   * carried it (Apple Pay, Klarna native) sends at once; the others (a
+   * redirect return, Stripe / Adyen / Nexi in the drawer, a provider's
+   * receipt) ask the checkout — at once and, while it has neither order nor
+   * reference, again at 1.2 s, since a webhook may write the checkout a
+   * moment after the redirect — within 2.5 s, and
+   * send without it when the answer is late or empty. Nothing is asked when
+   * it cannot help (the gateway has no `buyer_ref` yet; a confirmation that
+   * already answered). Only the event waits — the screen is already the
+   * confirmation — and not past the page: when the page hides (`pagehide`,
+   * `visibilitychange`) or the element leaves, the event goes out at once
+   * without the reference. Exactly one event per call. `afterwards` runs
+   * right after the event, so a path keeps the order it always had (the cart
+   * is cleared after the event). When that answer already has Vio's order
+   * number, the event carries it too (`orderNumber`): it is the purchase's
+   * `order_id`, and analytics need not ask again.
+   */
+  private async emitPaymentSuccess(
+    detail: PaymentSuccessDetail,
+    checkoutId: string | undefined,
+    sponsorId: number,
+    afterwards?: () => void,
+  ): Promise<void> {
+    let done = false
+    // The order's sponsor as named now (the cart may be cleared by the time
+    // the event goes out), and again when it does (the bootstrap may land).
+    const sponsorAtStart = this.sponsorOfOrder(sponsorId, checkoutId)
+    const finish = (found: { buyerRef?: string; orderNumber?: number } = {}) => {
+      if (done) return
+      done = true
+      const named = this.sponsorOfOrder(sponsorId, checkoutId)
+      const sponsor = named.sponsor ? named : sponsorAtStart
+      const withSponsor: PaymentSuccessDetail = sponsor.sponsor ? { ...detail, ...sponsor } : detail
+      const event = new CustomEvent('vio:payment-success', {
         bubbles: true,
         composed: true,
-        detail: { method, sponsorId, result },
-      }),
-    )
-    Vio.cart.clearSponsorCart(sponsorId)
-    void this.fillOrderNumber(checkoutId, sponsorId)
+        detail:
+          found.buyerRef || found.orderNumber
+            ? {
+                ...withSponsor,
+                ...(found.buyerRef ? { buyerRef: found.buyerRef } : {}),
+                ...(found.orderNumber ? { orderNumber: found.orderNumber } : {}),
+              }
+            : withSponsor,
+      })
+      this.dispatchEvent(event)
+      // Detached while waiting (the host removed the drawer): the event cannot
+      // bubble up to the window, where analytics listens — hand it over there.
+      if (!this.isConnected && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('vio:payment-success', { detail: event.detail }))
+      }
+      try {
+        afterwards?.()
+      } catch {
+        /* never break the confirmation */
+      }
+    }
+    const known = buyerRefOf(detail)
+    if (known || !checkoutId || !this.shouldAskBuyerRef(detail)) {
+      finish({ buyerRef: known })
+      return
+    }
+    const settleEarly = () => finish()
+    const onVisibility = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') settleEarly()
+    }
+    this.pendingSuccessEmits.add(settleEarly)
+    window.addEventListener('pagehide', settleEarly)
+    document.addEventListener('visibilitychange', onVisibility)
+    try {
+      finish(await this.askBuyerRef(checkoutId, sponsorId, () => done))
+    } catch {
+      finish()
+    } finally {
+      this.pendingSuccessEmits.delete(settleEarly)
+      window.removeEventListener('pagehide', settleEarly)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }
+
+  /** Whether asking the checkout for the buyer reference can still help. */
+  private shouldAskBuyerRef(detail: PaymentSuccessDetail): boolean {
+    if (typeof Vio.checkout.getOrderReference !== 'function') return false
+    // The gateway refused `buyer_ref` on this page load: asking cannot answer it.
+    if (!gatewayHasBuyerRef()) return false
+    // Apple Pay and Klarna native confirmations select `buyer_ref` themselves: what they did not bring, nobody has.
+    if ((detail.method === 'apple-pay' || detail.method === 'klarna') && detail.result) return false
+    return true
+  }
+
+  /**
+   * The buyer reference of a checkout: asked at once and, when that answer
+   * failed or has neither the reference nor an order yet (the webhook has not
+   * written the checkout), again at 1.2 s — all within 2.5 s. An order
+   * without a reference is a settled answer: the backend has none, asking
+   * again cannot help. Whatever the answer said of the order number comes
+   * back with it. `{}` when the time is up, when the answer stopped mattering
+   * (`stopped()`) or on failure.
+   */
+  private async askBuyerRef(
+    checkoutId: string,
+    sponsorId: number,
+    stopped: () => boolean,
+  ): Promise<{ buyerRef?: string; orderNumber?: number }> {
+    const started = Date.now()
+    const remaining = () => VioCheckout.BUYER_REF_WAIT_MS - (Date.now() - started)
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    const timeUp = new Promise<null>((resolve) => {
+      deadline = setTimeout(() => resolve(null), VioCheckout.BUYER_REF_WAIT_MS)
+    })
+    try {
+      for (const at of [0, VioCheckout.BUYER_REF_RETRY_AT_MS]) {
+        const wait = Math.min(at - (Date.now() - started), remaining())
+        if (wait > 0) await Promise.race([new Promise((resolve) => setTimeout(resolve, wait)), timeUp])
+        if (stopped() || remaining() <= 0) return {}
+        try {
+          const reference = await Promise.race([
+            Vio.checkout.getOrderReference(checkoutId, sponsorId || undefined),
+            timeUp,
+          ])
+          if (reference === null) return {} // time is up
+          const order = reference.orderNumber ? { orderNumber: reference.orderNumber } : {}
+          if (reference.buyerRef) return { buyerRef: reference.buyerRef, ...order }
+          if (reference.orderNumber !== null) return order // settled without one
+        } catch {
+          /* ask again, or give up */
+        }
+      }
+      return {}
+    } finally {
+      clearTimeout(deadline)
+    }
   }
 
   /** Waits between asks for the Vio order number: the order is often born a
@@ -2274,6 +2614,15 @@ export class VioCheckout extends LitElement {
     )
   }
 
+  /**
+   * A total above 0 — every pay button needs it. The state's subtotal follows
+   * the cart (CheckoutManager.onCartChange): a cart emptied or paid in
+   * another tab drops it to 0 here.
+   */
+  private get cartPayable(): boolean {
+    return (this.checkoutState?.subtotal ?? 0) > 0
+  }
+
   private orderTotal(): string {
     const s = this.checkoutState
     if (!s) return ''
@@ -2333,7 +2682,10 @@ export class VioCheckout extends LitElement {
       >
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">
-          <h2 class="heading">${this.orderConfirmed ? 'Takk!' : this.heading}</h2>
+          <div class="topbar-title">
+            <h2 class="heading">${this.orderConfirmed ? 'Takk!' : this.heading}</h2>
+            ${this.renderTopbarSponsor()}
+          </div>
           <button class="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
@@ -2350,6 +2702,92 @@ export class VioCheckout extends LitElement {
         </div>
       </div>
     `
+  }
+
+  /**
+   * Remember whose order this is and how it is named right now, before the
+   * cart that names it is cleared. Whose: the sponsor this tab remembered for
+   * the checkout when it was created (exact for that checkout id), else the
+   * one given (the return URL's `vio_sponsor`, the state it was paid in),
+   * else the open state's — a return without `vio_sponsor` (Qliro, Walley)
+   * re-opens the state with whichever cart comes first, which is a guess.
+   */
+  private setOrderSponsor(sponsorId: number | undefined, checkoutId: string | undefined): void {
+    try {
+      const checkout = checkoutId || undefined
+      const id =
+        rememberedCheckoutSponsor(checkout)?.sponsorId ??
+        (sponsorId && sponsorId > 0 ? sponsorId : undefined) ??
+        this.checkoutState?.sponsorId
+      if (!id) return
+      const named = checkoutSponsorOf(resolveSponsorIdentity(id, checkout))
+      const previous = this.orderSponsor
+      const snapshot = named ?? (previous && previous.sponsorId === id ? previous.snapshot : undefined)
+      this.orderSponsor = { sponsorId: id, ...(checkout ? { checkoutId: checkout } : {}), ...(snapshot ? { snapshot } : {}) }
+    } catch {
+      /* naming the sponsor never costs a confirmation */
+    }
+  }
+
+  /**
+   * Who this checkout is with, as a shopper sees it: the order being
+   * confirmed / verified (`orderSponsor`), else the open checkout's own
+   * sponsor (`checkoutState.sponsorId`) — named by `Vio.sponsorIdentity`,
+   * which falls back to this tab's memory of the checkout and the cart; the
+   * name taken before the cart was cleared last. Never the page's
+   * attribution. `null` when nothing names it.
+   */
+  private checkoutSponsorIdentity(): CheckoutSponsor | null {
+    const o = this.orderSponsor
+    if (o) return checkoutSponsorOf(resolveSponsorIdentity(o.sponsorId, o.checkoutId)) ?? o.snapshot ?? null
+    const s = this.checkoutState
+    return s?.sponsorId ? (checkoutSponsorOf(resolveSponsorIdentity(s.sponsorId, s.checkoutId)) ?? null) : null
+  }
+
+  /**
+   * `{ sponsor }` for the payment event — the same sponsor the screen names
+   * (`orderSponsor`, set by every path right before it emits): named now, else
+   * as named before the cart was cleared; `{}` when nothing names it.
+   */
+  private sponsorOfOrder(sponsorId: number, checkoutId: string | undefined): { sponsor?: CheckoutSponsor } {
+    try {
+      const o = this.orderSponsor
+      const sameOrder = !!o && (o.checkoutId ?? undefined) === (checkoutId || undefined)
+      const id = sameOrder ? o!.sponsorId : sponsorId > 0 ? sponsorId : undefined
+      const live = sponsorDetail(id, checkoutId)
+      if (live.sponsor) return live
+      if (sameOrder && o!.snapshot) return { sponsor: o!.snapshot }
+    } catch {
+      /* the event goes out without it */
+    }
+    return {}
+  }
+
+  /**
+   * Ask once per checkout for the bootstrap when it is not there yet and a
+   * sponsor has to be named (a redirect return renders before it), then
+   * render again — the name and the logo appear when it lands.
+   */
+  private watchSponsorBootstrap(): void {
+    if (this.sponsorBootstrapAsked || !this.open || Vio.bootstrapCache) return
+    if (!this.orderSponsor && !this.checkoutState?.sponsorId) return
+    this.sponsorBootstrapAsked = true
+    void whenBootstrapped().then(() => this.requestUpdate())
+  }
+
+  /**
+   * The checkout's sponsor in the header — «Du handler hos <logo|name>»
+   * («Du har handlet hos» on a provider's receipt). Not on our own
+   * confirmation, which says it in its body.
+   */
+  private renderTopbarSponsor() {
+    if (this.orderConfirmed) return nothing
+    const sponsor = this.checkoutSponsorIdentity()
+    const mark = renderSponsorMark(this, sponsor, { logo: 'topbar-sponsor-logo', name: 'topbar-sponsor-name' })
+    if (mark === nothing) return nothing
+    return html`<p class="topbar-sponsor" part="sponsor">
+      <span>${this.providerReceipt ? 'Du har handlet hos' : 'Du handler hos'}</span> ${mark}
+    </p>`
   }
 
   /**
@@ -2384,24 +2822,24 @@ export class VioCheckout extends LitElement {
     method: 'qliro' | 'walley' | 'kustom',
     sponsorId: number,
     result?: unknown,
+    returnCheckoutId?: string,
   ): void {
     this.providerReceipt = method
     this.confirmedMethod = method
     this.open = true
-    this.dispatchEvent(
-      new CustomEvent('vio:payment-success', {
-        bubbles: true,
-        composed: true,
-        detail: { method, sponsorId, result },
-      }),
+    // Before the cart is cleared below: the checkout id goes with it. Back
+    // from a redirect the state was re-opened without one (`Vio.checkout.open`
+    // knows no checkout yet), so the return URL's id is passed in explicitly.
+    const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
+    this.setOrderSponsor(sponsorId, checkoutId)
+    void this.emitPaymentSuccess(
+      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      checkoutId,
+      sponsorId,
+      () => {
+        if (sponsorId) Vio.cart.clearSponsorCart(sponsorId)
+      },
     )
-    if (sponsorId) {
-      try {
-        Vio.cart.clearSponsorCart(sponsorId)
-      } catch {
-        /* noop */
-      }
-    }
   }
 
   /** Back from the payment page, asking whether it was paid — and nothing
@@ -2424,12 +2862,22 @@ export class VioCheckout extends LitElement {
     details.push(['Betalingsmåte', o?.paidWith || this.methodLabel(this.confirmedMethod)])
     if (o?.providerRef) details.push([o.providerRef.label, o.providerRef.value])
     if (email) details.push(['Kvittering til', email])
+    // Who the order is with: the checkout's sponsor (see checkoutSponsorIdentity).
+    const sponsor = this.checkoutSponsorIdentity()
     return html`
-      <section class="confirmation">
+      <section class="confirmation" part="confirmation">
+        ${usableLogo(sponsor)
+          ? html`<div class="confirm-brand" part="sponsor">
+              ${renderSponsorMark(this, sponsor, { logo: 'confirm-brand-logo', name: 'confirm-brand-name' })}
+            </div>`
+          : ''}
         <header class="confirm-head">
           <div class="confirm-check" aria-hidden="true">✓</div>
           <div>
-            <h3 class="confirm-title">Takk for bestillingen!</h3>
+            <h3 class="confirm-title" part="confirm-title">Takk for bestillingen!</h3>
+            ${sponsor?.name
+              ? html`<p class="confirm-sponsor" part="confirm-sponsor">Du har handlet hos <strong>${sponsor.name}</strong>.</p>`
+              : ''}
             <p class="confirm-text">
               Betalingen er bekreftet.${email
                 ? html` Du får en ordrebekreftelse på e-post.`
@@ -2438,7 +2886,7 @@ export class VioCheckout extends LitElement {
           </div>
         </header>
 
-        <dl class="confirm-details">
+        <dl class="confirm-details" part="confirm-details">
           ${details.map(
             ([k, v]) =>
               html`<div><dt>${k}</dt><dd class=${k === o?.providerRef?.label ? 'ref' : ''}>${v}</dd></div>`,
@@ -3572,8 +4020,6 @@ export class VioCheckout extends LitElement {
   private renderCheckoutBody() {
     const method = this.checkoutState?.paymentMethod
     const showCompleteCta = !!method && !this.isExpressMethod(method)
-    // Vipps collects the address in its own flow; it only needs an email.
-    const isVipps = method === 'vipps'
     // Method first (Angelo, 2026-09-22): our delivery form is asked only once
     // the shopper has chosen a method that needs it. Asking it up front made
     // anyone who then chose Nexi, Qliro, Kustom or Walley type it all again
@@ -3621,6 +4067,25 @@ export class VioCheckout extends LitElement {
                 @input=${(e: InputEvent) =>
                   this.onFieldChange('email', (e.target as HTMLInputElement).value)}
               />
+            </div>
+            <div class="field">
+              <label for="vio-checkout-phone">${this.phoneRequired ? 'Mobilnummer *' : 'Mobilnummer (valgfritt)'}</label>
+              <input
+                id="vio-checkout-phone"
+                class="phone-input"
+                type="tel"
+                ?required=${this.phoneRequired}
+                inputmode="tel"
+                autocomplete="tel"
+                placeholder=${this.phoneCountry.toUpperCase() === 'NO' ? '8 siffer' : '+46 70 123 45 67'}
+                aria-invalid=${this.phoneError ? 'true' : 'false'}
+                .value=${this.form.phone ?? ''}
+                @input=${(e: InputEvent) =>
+                  this.onFieldChange('phone', (e.target as HTMLInputElement).value)}
+              />
+              ${this.phoneError
+                ? html`<div class="field-error" role="alert">Skriv et gyldig mobilnummer (med landskode, f.eks. +46, hvis det ikke er norsk)</div>`
+                : ''}
             </div>
             <div class="field">
               <label>Adresse *</label>
@@ -3692,25 +4157,6 @@ export class VioCheckout extends LitElement {
           `
             : ''}
 
-          ${isVipps
-            ? html`
-                <section class="section">
-                  <div class="section-label">Kontakt</div>
-                  <div class="field">
-                    <label>E-post * <span style="font-weight:400;opacity:0.6">(for kvittering — adresse fylles ut i Vipps)</span></label>
-                    <input
-                      type="email"
-                      required
-                      autocomplete="email"
-                      .value=${this.form.email}
-                      @input=${(e: InputEvent) =>
-                        this.onFieldChange('email', (e.target as HTMLInputElement).value)}
-                    />
-                  </div>
-                </section>
-              `
-            : ''}
-
           <section class="section">
             <div class="section-label">
               ${needsOurForm ? 'Steg 2' : 'Betaling'}
@@ -3758,7 +4204,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('stripe')}
-                          ?disabled=${this.stripeLoading || !this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${this.stripeLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -3776,7 +4222,12 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('vipps')}
-                          ?disabled=${this.vippsLoading}
+                          ?disabled=${this.vippsLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
+                          title=${!this.isAddressValid
+                            ? 'Vennligst fyll ut leveringsadresse'
+                            : !this.hasSelectedShipping
+                              ? 'Vennligst velg en fraktmetode'
+                              : ''}
                         >
                           ${this.vippsLoading
                             ? 'Går til Vipps…'
@@ -3789,7 +4240,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${() => void this.onPay('apple-pay')}
-                          ?disabled=${this.applePayInProgress || !this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${this.applePayInProgress || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -3807,7 +4258,7 @@ export class VioCheckout extends LitElement {
                         <button
                           class="payment-btn primary complete-cta"
                           @click=${this.onCompleteOrder}
-                          ?disabled=${!this.isAddressValid || !this.hasSelectedShipping}
+                          ?disabled=${!this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
                             ? 'Vennligst fyll ut leveringsadresse'
                             : !this.hasSelectedShipping
@@ -3964,8 +4415,8 @@ export class VioCheckout extends LitElement {
                   <div class="order-row">
                     <span>Frakt${this.shippingMajor() > 0 && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
                     <span>${this.shippingMajor() > 0
-                      ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
-                      : this.shippingLabel}</span>
+                        ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
+                        : this.shippingLabel}</span>
                   </div>
                   <div class="order-row total">
                     <span>Totalt</span><span>${this.payTotalLabel()}</span>

@@ -10,9 +10,10 @@
  * those are handled by the host page's direct cart logic.
  */
 
-import { LitElement, css, html } from 'lit'
+import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
+import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import {
   formatPrice,
@@ -24,6 +25,13 @@ import {
 } from '../../core/types.js'
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { BottomSheet } from '../bottom-sheet.js'
+import { SlotRegistration } from '../slot-registration.js'
+import { toCampaignId } from '../../core/slots.js'
+import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
+
+/** How long «Lagt i handlekurven» stays without a tap. */
+const ADDED_TOAST_MS = 8000
 
 interface SelectedOptions {
   [optionName: string]: string
@@ -44,6 +52,103 @@ export class VioProductDetail extends LitElement {
   /** Subscribe to `vio:product-click` on the document and auto-open. */
   @property({ type: Boolean, attribute: 'auto-open' }) autoOpen = true
   @property({ type: String }) currency = 'NOK'
+  /**
+   * Slot this detail belongs to (ADR-0027). Optional: without it the detail
+   * registers itself as `detail-N`. Carried by every event it emits. A
+   * `vio:product-click` that names a slot (every card does — its own or the
+   * carousel's) takes precedence while that product is open. The attribute is
+   * `vio-slot`, not `slot` (HTML's own).
+   */
+  @property({ type: String, attribute: 'vio-slot' }) vioSlot = ''
+  /** Human name of the slot for the dashboard (`vio-slot-name`). Optional. */
+  @property({ type: String, attribute: 'vio-slot-name' }) vioSlotName = ''
+  /**
+   * Scope of the auto id (`article-123-detail-1`). Inherited: this attribute,
+   * else the nearest ancestor's `data-vio-scope` (a page sets it ONCE on
+   * `<body>` and every block gets a per-page slot). Optional.
+   */
+  @property({ type: String, attribute: 'vio-scope' }) vioScope = ''
+  /** Human label of the scope (` · Title` in the slot name); inherited from `data-vio-scope-name`. */
+  @property({ type: String, attribute: 'vio-scope-name' }) vioScopeName = ''
+  /**
+   * The campaign this element's PAGE belongs to (ADR-0034, amendment 3).
+   * Inherited: this attribute, else the nearest ancestor's `data-vio-campaign`,
+   * else `Vio.init({ campaignId })`. A dashboard assignment of the slot wins
+   * over it. Optional.
+   */
+  @property({ type: String, attribute: 'vio-campaign' }) vioCampaign = ''
+  /** Per-element override of the content (article) id the events carry; see `Vio.content()`. */
+  @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
+  /** Per-element override of the content title. */
+  @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
+  /**
+   * No «Lagt i handlekurven» toast after «Legg i handlekurv» — for a host
+   * that answers `vio:added-to-cart` with its own (opening its cart drawer,
+   * say). Off by default: the toast shows.
+   */
+  @property({ type: Boolean, attribute: 'no-added-toast' }) noAddedToast = false
+  private readonly slotRegistration = new SlotRegistration(this, 'detail')
+  /** What the click that opened the detail carried ('' when nothing), and for which product. */
+  private eventSlot = ''
+  private eventContentId = ''
+  private eventContentTitle = ''
+  private eventCampaignId: number | undefined = undefined
+  private eventProductId = ''
+
+  /** The card's context applies to the product it opened — not to one the host opened by hand later. */
+  private get fromCard(): boolean {
+    return this.eventProductId !== '' && this.eventProductId === String(this.productId)
+  }
+
+  /** The slot id in effect for this element: `vio-slot`, else the auto id (`detail-N`). Read-only. */
+  get effectiveSlot(): string {
+    return this.slotRegistration.effective
+  }
+
+  /** The element's own page campaign (`vio-campaign` / ancestor), if any; `Vio.init`'s applies otherwise. */
+  get effectiveCampaignId(): number | undefined {
+    return this.slotRegistration.campaignId
+  }
+
+  /** The slot the open product is attributed to: the opening card's, else this element's. */
+  private get activeSlot(): string {
+    return (this.fromCard && this.eventSlot) || this.effectiveSlot
+  }
+
+  /** The page-campaign candidates of the open product: the opening card's, then this element's own and its ancestor's. */
+  private get activeCampaignHint(): number[] {
+    const own = this.slotRegistration.campaignHint
+    return this.fromCard && this.eventCampaignId !== undefined ? [this.eventCampaignId, ...own] : own
+  }
+
+  private slotAttributes() {
+    return {
+      vioSlot: this.vioSlot,
+      vioSlotName: this.vioSlotName,
+      vioScope: this.vioScope,
+      vioScopeName: this.vioScopeName,
+      vioCampaign: this.vioCampaign,
+    }
+  }
+
+  /** Attribution every event of the open product carries (`Vio.attribution` of the opening card's slot, else this element's). */
+  private attribution() {
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.activeSlot, {
+            sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+            campaignId: this.activeCampaignHint,
+          })
+        : { slot: this.activeSlot || undefined }
+    const contentId = (this.fromCard && this.eventContentId) || this.vioContentId
+    const contentTitle = (this.fromCard && this.eventContentTitle) || this.vioContentTitle
+    return {
+      ...base,
+      componentTemplateId: 'product-detail',
+      ...(contentId ? { contentId } : {}),
+      ...(contentTitle ? { contentTitle } : {}),
+    }
+  }
 
   @state() private product: Product | null = null
   /**
@@ -54,17 +159,55 @@ export class VioProductDetail extends LitElement {
    */
   @state() private sellerName: string | null = null
   @state() private sellerSettled = false
+  /**
+   * The cheapest shipping rate of the product for the page's market, in the
+   * product's currency — under the price as «Frakt fra X» («Gratis frakt» at
+   * 0). null = not known (not asked yet, none, or another currency): only the
+   * right of withdrawal is said then.
+   */
+  @state() private shippingFrom: { price: number; currency: string } | null = null
   @state() private isLoading = false
   @state() private fetchError = ''
   @state() private selectedOptions: SelectedOptions = {}
+  /** The option a buy button asked for and the shopper has not chosen yet ('' = none asked). */
+  @state() private selectionPrompt = ''
   @state() private quantity = 1
   @state() private activeImageIndex = 0
+  /** The thumbnail row is wider than its box (arrows shown with a mouse). */
+  @state() private thumbsOverflow = false
+  @state() private thumbsAtStart = true
+  @state() private thumbsAtEnd = false
+  /** The top bar's logo file is square-ish: a mark, so its name goes beside it. */
+  @state() private logoSquare = false
   @state() private adding = false
+  /**
+   * «Lagt i handlekurven» after an add, with «Til kassen» and «Fortsett å
+   * handle» (Mote & Livsstil, 2026-10-28: an add closed the detail and said
+   * nothing). Outlives the detail: the brand and attribution of the add.
+   */
+  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown> } | null = null
+  private addedToastTimer: ReturnType<typeof setTimeout> | null = null
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buy buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /**
+   * The brand's methods are being asked for. Meanwhile the buy zone shows a
+   * neutral placeholder, never the buttons of every method: «null = render
+   * all» painted Stripe and Klarna for a Vipps-only brand until the answer
+   * came (Mote & Livsstil, 2026-10-28).
+   */
+  @state() private methodsLoading = false
+  /**
+   * The brand's Vipps is KNOWN to run Express: its method list came back,
+   * with Vipps and no `config.express: false`. Only then does the line under
+   * the button say the app fills in name and address — never on a guess
+   * after a failed lookup.
+   */
+  @state() private vippsExpress = false
+  /** Whose methods `availableMethods` are — another brand's are not shown while its own load. */
+  private methodsSponsorId = 0
   @state() private vippsOfficial = false
   /** Race guard: only the latest fetch may write state (two quick taps on
    * different cards would otherwise let the slow response win). */
@@ -73,21 +216,60 @@ export class VioProductDetail extends LitElement {
   private optMapCache = new WeakMap<object, { map: Record<string, string>; titleParts: string[] }>()
   /** Pre-prepared Apple Pay handle — show() fires synchronously on tap. */
   private applePayHandle: { show: () => Promise<void> } | null = null
+  /** The amount `applePayHandle`'s sheet shows (product × quantity when it was prepared). */
+  private applePayAmount: number | null = null
+  /** The amount the latest preparation was asked for — a newer one supersedes it. */
+  private applePayAskedFor: number | null = null
   /** Keyboard and focus while open: Escape closes, Tab stays inside, focus returns to the opener. */
   private readonly dialogFocus = new DialogFocus({
     host: this,
     container: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
     close: () => this.close(),
   })
+  /** Phones: the page behind is locked, and the sheet closes by pulling the bar or the top bar down. */
+  private readonly bottomSheet = new BottomSheet({
+    host: this,
+    sheet: () => this.renderRoot.querySelector<HTMLElement>('.modal'),
+    backdrop: () => this.renderRoot.querySelector<HTMLElement>('.backdrop'),
+    dragZones: '.handle, .topbar',
+    close: () => this.close(),
+  })
 
   private boundProductClick = (e: Event): void => {
     if (!this.autoOpen) return
-    const ev = e as CustomEvent<{ productId: string; sponsorId: string; currency?: string }>
+    const ev = e as CustomEvent<{
+      productId: string
+      sponsorId: string
+      currency?: string
+      slot?: string
+      campaignId?: number | string
+      contentId?: string | number
+      contentTitle?: string
+    }>
     const productIdNum = parseInt(ev.detail.productId, 10)
     // Skip non-numeric IDs (affiliate products) — host handles those.
     if (Number.isNaN(productIdNum)) return
-    const sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
-    if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) return
+    const slot = typeof ev.detail.slot === 'string' ? ev.detail.slot.trim() : ''
+    let sponsorIdNum = parseInt(ev.detail.sponsorId, 10)
+    if (Number.isNaN(sponsorIdNum) || sponsorIdNum <= 0) {
+      // A card without a sponsor: the primary of the campaign its slot shows.
+      const fromSlot =
+        typeof Vio.campaignForSlot === 'function'
+          ? Number(
+              Vio.campaignForSlot(slot || this.effectiveSlot || null, {
+                campaignId: [ev.detail.campaignId, ...this.slotRegistration.campaignHint],
+              })?.primarySponsor?.id,
+            )
+          : NaN
+      if (!Number.isFinite(fromSlot) || fromSlot <= 0) return
+      sponsorIdNum = fromSlot
+    }
+    this.eventSlot = slot
+    this.eventCampaignId = toCampaignId(ev.detail.campaignId)
+    this.eventProductId = String(ev.detail.productId)
+    this.eventContentId =
+      ev.detail.contentId !== undefined && ev.detail.contentId !== null ? String(ev.detail.contentId).trim() : ''
+    this.eventContentTitle = typeof ev.detail.contentTitle === 'string' ? ev.detail.contentTitle.trim() : ''
     this.productId = ev.detail.productId
     this.sponsorId = sponsorIdNum
     // The event may carry the page currency; otherwise use the global one.
@@ -136,7 +318,10 @@ export class VioProductDetail extends LitElement {
         height: 92vh;
         border-radius: var(--vio-radius-xl, 16px) var(--vio-radius-xl, 16px) 0 0;
         box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.08);
+        overscroll-behavior: contain;
       }
+      /* Pulled down to close (bottom-sheet.ts): the browser must not take the gesture for a scroll. */
+      .handle, .topbar { touch-action: none; }
       .handle {
         display: flex;
         justify-content: center;
@@ -157,8 +342,8 @@ export class VioProductDetail extends LitElement {
     @media (min-width: 601px) {
       .modal {
         inset: 0 0 0 auto;
-        width: min(440px, 100%);
-        max-width: 440px;
+        width: min(var(--vio-detail-width, 440px), 100%);
+        max-width: var(--vio-detail-width, 440px);
         border-radius: 0;
         box-shadow: -8px 0 24px rgba(0, 0, 0, 0.1);
         transform: translateX(100%);
@@ -172,29 +357,59 @@ export class VioProductDetail extends LitElement {
         max-width: none;
         grid-template-columns: 1fr;
         gap: 20px;
-        padding: 20px 24px 40px;
+        padding: var(--vio-detail-padding-top, 0px) var(--vio-detail-padding-x, var(--vio-space-lg, 24px)) 40px;
       }
-      .modal .name { font-size: 26px; line-height: 1.2; }
-      .modal .gallery-main { width: 100%; }
+      .modal .name { font-size: var(--vio-detail-title-size, 26px); line-height: 1.2; }
+      .modal .gallery-main { width: auto; }
     }
 
     .topbar {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 20px var(--vio-space-lg, 24px);
+      gap: 16px;
+      min-height: var(--vio-detail-topbar-height, 64px);
+      box-sizing: border-box;
+      padding: 10px var(--vio-detail-padding-x, var(--vio-space-lg, 24px));
       position: sticky;
       top: 0;
       background: var(--vio-color-surface, #fff);
       border-bottom: 1px solid var(--vio-color-border, #e5e5e5);
       z-index: 1;
     }
-    .topbar-brand {
-      font-size: 12px;
+    /* Who sells it, top left beside the close: the sponsor's logo, else its name. */
+    .topbar-sponsor { flex: 1 1 auto; display: flex; align-items: center; gap: 10px; min-width: 0; }
+    /* The logo box clips, so --vio-detail-logo-zoom can crop the white a
+       square file carries around its mark. */
+    .topbar-logo-box {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      height: var(--vio-detail-logo-height, 44px);
+      max-width: var(--vio-detail-logo-max-width, 220px);
+      overflow: hidden;
+    }
+    .topbar-logo {
+      display: block;
+      width: auto;
+      height: 100%;
+      max-width: var(--vio-detail-logo-max-width, 220px);
+      object-fit: contain;
+      object-position: left center;
+      transform: scale(var(--vio-detail-logo-zoom, 1));
+      transform-origin: center;
+    }
+    /* A square (or near) logo is a mark, not a wordmark: say whose it is. */
+    .topbar-sponsor:not(.is-square) .topbar-mark-name { display: none; }
+    .topbar-name {
+      font-size: var(--vio-detail-logo-name-size, 13px);
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
       color: var(--vio-color-text-secondary, #666);
-      font-weight: 500;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .close {
       background: none;
@@ -220,51 +435,110 @@ export class VioProductDetail extends LitElement {
       gap: 64px;
     }
     @media (max-width: 800px) {
-      .body { grid-template-columns: 1fr; gap: 32px; padding: 24px var(--vio-space-lg, 24px) 64px; }
+      .body {
+        grid-template-columns: 1fr;
+        gap: 24px;
+        padding: var(--vio-detail-padding-top, 0px) var(--vio-detail-padding-x, var(--vio-space-lg, 24px)) 64px;
+      }
     }
 
-    /* Gallery */
-    .gallery { display: flex; flex-direction: column; gap: 16px; }
+    /* Gallery. One fixed proportion for every image (4:5 by default) that the
+       image fills (cover): no white bars, and the panel never jumps between
+       photos of different shapes (Angelo, 2026-10-22). Its side margin is
+       --vio-detail-image-inset (the panel's padding by default; 0 = edge to
+       edge). Fit, proportion, a height cap and a zoom (to crop a white margin
+       baked into the file) are the host's to set. */
+    .gallery { display: flex; flex-direction: column; gap: var(--vio-detail-gallery-gap, 12px); min-width: 0; }
     .gallery-main {
-      aspect-ratio: 1;
-      background: var(--vio-color-surface-muted, #f2f2f2);
+      position: relative;
+      margin-inline: calc(
+        var(--vio-detail-image-inset, var(--vio-detail-padding-x, var(--vio-space-lg, 24px))) -
+          var(--vio-detail-padding-x, var(--vio-space-lg, 24px))
+      );
+      aspect-ratio: var(--vio-detail-image-aspect, 4 / 5);
+      max-height: var(--vio-detail-image-max-height, 85vh);
+      background: var(--vio-detail-image-bg, var(--vio-color-surface-muted, #f2f2f2));
+      border-radius: var(--vio-detail-image-radius, 0);
       display: flex;
       align-items: center;
       justify-content: center;
       overflow: hidden;
     }
     .gallery-main img {
+      display: block;
       width: 100%;
       height: 100%;
-      object-fit: contain;
-      padding: 24px;
-      box-sizing: border-box;
+      max-height: var(--vio-detail-image-max-height, 85vh);
+      object-fit: var(--vio-detail-image-fit, cover);
+      object-position: var(--vio-detail-image-position, center);
+      transform: scale(var(--vio-detail-image-zoom, 1));
     }
+    /* Thumbnails: one row, never a second line — swipe on touch, arrows with a
+       mouse; the selected one scrolls into view by itself. */
+    .thumbs { position: relative; min-width: 0; }
     .gallery-thumbs {
       display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
+      gap: var(--vio-detail-thumb-gap, 8px);
+      overflow-x: auto;
+      scroll-snap-type: x proximity;
+      scroll-behavior: smooth;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
     }
+    .gallery-thumbs::-webkit-scrollbar { display: none; }
     .gallery-thumb {
-      width: 72px;
-      height: 72px;
+      flex: 0 0 auto;
+      width: var(--vio-detail-thumb-size, 64px);
+      height: var(--vio-detail-thumb-size, 64px);
       background: var(--vio-color-surface-muted, #f2f2f2);
-      border: 1px solid transparent;
+      border: var(--vio-detail-thumb-border-width, 1px) solid transparent;
+      border-radius: var(--vio-detail-thumb-radius, 0);
       cursor: pointer;
       padding: 0;
       overflow: hidden;
+      scroll-snap-align: start;
+      box-sizing: border-box;
+      opacity: var(--vio-detail-thumb-opacity, 1);
     }
     .gallery-thumb img {
+      display: block;
       width: 100%;
       height: 100%;
-      object-fit: contain;
-      padding: 6px;
-      box-sizing: border-box;
+      object-fit: var(--vio-detail-thumb-fit, cover);
     }
-    .gallery-thumb.active { border-color: var(--vio-color-text, #0a0a0a); }
+    .gallery-thumb.active {
+      border-color: var(--vio-detail-thumb-active-color, var(--vio-color-text, #0a0a0a));
+      opacity: 1;
+    }
+    .thumbs-arrow {
+      display: none;
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      z-index: 1;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+      background: var(--vio-color-surface, #fff);
+      color: var(--vio-color-text, #0a0a0a);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+      cursor: pointer;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      font: 16px/1 sans-serif;
+    }
+    .thumbs-arrow.prev { left: -6px; }
+    .thumbs-arrow.next { right: -6px; }
+    .thumbs-arrow:disabled { visibility: hidden; }
+    @media (hover: hover) and (pointer: fine) {
+      .thumbs.overflows .thumbs-arrow { display: flex; }
+    }
 
     /* Info column */
-    .info { display: flex; flex-direction: column; gap: 24px; }
+    .info { display: flex; flex-direction: column; gap: var(--vio-detail-info-gap, 20px); min-width: 0; }
     .brand {
       font-size: 12px;
       text-transform: uppercase;
@@ -274,8 +548,8 @@ export class VioProductDetail extends LitElement {
     }
     .name {
       font-family: var(--vio-font-serif, Georgia, serif);
-      font-size: clamp(28px, 4vw, 40px);
-      font-weight: 400;
+      font-size: var(--vio-detail-title-size, clamp(28px, 4vw, 40px));
+      font-weight: var(--vio-detail-title-weight, 400);
       line-height: 1.15;
       margin: 0;
       letter-spacing: -0.01em;
@@ -286,13 +560,18 @@ export class VioProductDetail extends LitElement {
       gap: 16px;
     }
     .price {
-      font-size: 24px;
-      font-weight: 700;
+      font-size: var(--vio-detail-price-size, 24px);
+      font-weight: var(--vio-detail-price-weight, 700);
     }
     .compare-at {
       font-size: 16px;
       color: var(--vio-color-text-tertiary, #999);
       text-decoration: line-through;
+    }
+    .delivery-note {
+      margin-top: calc(var(--vio-detail-info-gap, 20px) * -0.6);
+      font-size: 13px;
+      color: var(--vio-color-text-secondary, #666);
     }
     .stock {
       font-size: 12px;
@@ -305,22 +584,43 @@ export class VioProductDetail extends LitElement {
     .stock.out-of-stock { color: var(--vio-color-text-tertiary, #999); }
 
     /* Option pickers */
-    .option-group { display: flex; flex-direction: column; gap: 8px; }
+    .option-group { display: flex; flex-direction: column; gap: 6px; }
+    /* The prompt sits on the label's own line: tapping a buy button before
+       choosing must not push the pills down under the shopper's finger. */
     .option-label {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 1.4em;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
       color: var(--vio-color-text-secondary, #666);
       font-weight: 500;
     }
-    .option-values { display: flex; flex-wrap: wrap; gap: 8px; }
+    /* Sizes: compact, still comfortable to tap. wrap → several lines;
+       nowrap → one line that scrolls sideways. */
+    .option-values {
+      display: flex;
+      flex-wrap: var(--vio-detail-option-wrap, wrap);
+      gap: var(--vio-detail-option-gap, 6px);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .option-values::-webkit-scrollbar { display: none; }
     .option-pill {
-      padding: 10px 18px;
+      flex: 0 0 auto;
+      box-sizing: border-box;
+      min-height: var(--vio-detail-option-height, 36px);
+      min-width: var(--vio-detail-option-height, 36px);
+      padding: 0 var(--vio-detail-option-padding-x, 12px);
+      border-radius: var(--vio-detail-option-radius, 0);
       background: #fff;
       border: 1px solid var(--vio-color-border, #e5e5e5);
       cursor: pointer;
       font-family: inherit;
-      font-size: 13px;
+      font-size: var(--vio-detail-option-font-size, 13px);
       font-weight: 500;
       color: inherit;
       transition: border-color 0.15s, background 0.15s;
@@ -338,6 +638,78 @@ export class VioProductDetail extends LitElement {
       background: repeating-linear-gradient(-45deg, #fafafa, #fafafa 5px, #f0f0f0 5px, #f0f0f0 10px);
     }
     .option-pill.unavailable:hover { border-color: var(--vio-color-border, #e5e5e5); }
+    /* The value chosen, beside the option's name: «Størrelse: M». */
+    .option-chosen { color: var(--vio-color-text, #0a0a0a); font-weight: 700; }
+    /* A buy button was tapped before choosing: say what is missing. */
+    .option-prompt {
+      text-transform: none;
+      letter-spacing: normal;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vio-color-accent, #c14a3b);
+    }
+    .option-group.needs-choice .option-pill:not(.unavailable) {
+      border-color: var(--vio-color-accent, #c14a3b);
+    }
+
+    /* The buy zone: Vipps first, then quantity + add to cart, then the other
+       ways to pay. --vio-detail-buy-position: sticky pins it to the bottom of
+       the panel while the shopper scrolls (mobile, mostly). */
+    .buy {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vio-detail-buy-gap, 10px);
+      position: var(--vio-detail-buy-position, static);
+      bottom: 0;
+      z-index: 2;
+      background: var(--vio-detail-buy-bg, var(--vio-color-surface, #fff));
+      padding: var(--vio-detail-buy-padding, 0);
+      box-shadow: var(--vio-detail-buy-shadow, none);
+    }
+    .buy > * { margin-top: 0 !important; }
+    /* The buy zone and the description, apart from the name, price and stock:
+       a pinned buy zone can slide up over what is in this box (the
+       description) but never above it — never over the name, the price or
+       the stock line (Mote & Livsstil, 2026-10-28). */
+    .purchase { display: flex; flex-direction: column; gap: var(--vio-detail-info-gap, 20px); }
+    /* The pickers live in the buy zone: when it is pinned to the bottom of the
+       panel (desktop, or a host's sticky), it can never cover them — they
+       travel with the buttons they gate (Mote & Livsstil, 2026-10-28). */
+    .buy-options {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vio-detail-info-gap, 20px);
+      padding-bottom: 4px;
+    }
+    /* Where the express buttons go while the brand's methods load: neutral,
+       the height of one button, no method named. */
+    .buy-pending {
+      height: var(--vio-detail-button-height, 52px);
+      border-radius: var(--vio-detail-button-radius, 0);
+      background: linear-gradient(
+        100deg,
+        var(--vio-color-surface-muted, #f1f1f1) 30%,
+        rgba(255, 255, 255, 0.65) 50%,
+        var(--vio-color-surface-muted, #f1f1f1) 70%
+      );
+      background-size: 200% 100%;
+      animation: vio-skeleton-shimmer 1.4s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .buy-pending { animation: none; background: var(--vio-color-surface-muted, #f1f1f1); }
+    }
+    /* Under the buttons: who the shopper is buying from. */
+    .seller-note {
+      margin: 2px 0 0;
+      font-size: var(--vio-detail-seller-note-size, 12px);
+      line-height: 1.4;
+      color: var(--vio-color-text-secondary, #666);
+      text-align: var(--vio-detail-seller-note-align, center);
+    }
+    .seller-note strong { font-weight: 600; color: var(--vio-color-text, #0a0a0a); }
+    .seller-links { display: block; margin-top: 2px; }
+    .seller-links a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .seller-links a + a::before { content: '·'; display: inline-block; margin: 0 6px; text-decoration: none; }
 
     /* Qty + CTA row */
     .qty-cta-row {
@@ -353,7 +725,7 @@ export class VioProductDetail extends LitElement {
     }
     .qty-btn {
       width: 44px;
-      height: 56px;
+      height: var(--vio-detail-button-height, 52px);
       background: #fff;
       border: none;
       cursor: pointer;
@@ -371,7 +743,9 @@ export class VioProductDetail extends LitElement {
       background: var(--vio-color-text, #0a0a0a);
       color: var(--vio-color-text-on-primary, #fff);
       border: none;
-      padding: 18px 24px;
+      min-height: var(--vio-detail-button-height, 52px);
+      border-radius: var(--vio-detail-button-radius, 0);
+      padding: 0 24px;
       font-size: 12px;
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
@@ -456,6 +830,14 @@ export class VioProductDetail extends LitElement {
     }
     .buy-vipps:hover:not(:disabled) { background: #ec4f1c; }
     .buy-vipps:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Under the Express button: what happens in the app. */
+    .vipps-note {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--vio-color-text-secondary, #666);
+      text-align: center;
+    }
     /* Vipps' own button (web component) — same slot, their drawing. */
     .buy-vipps-official { display: block; width: 100%; margin-top: 10px; cursor: pointer; }
     /* Apple Pay express button — black, per Apple's button guidelines. Only
@@ -481,19 +863,49 @@ export class VioProductDetail extends LitElement {
     .buy-applepay:disabled { opacity: 0.5; cursor: not-allowed; }
 
     /* Description */
-    .description {
-      font-size: 14px;
-      line-height: 1.6;
-      color: var(--vio-color-text-secondary, #444);
-      margin-top: 8px;
-    }
-    .description-label {
+    /* The description folds: a tap opens it, so it does not take the page. */
+    .description-block { border-top: 1px solid var(--vio-color-border, #e5e5e5); }
+    .description-block > summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 0;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: var(--vio-tracking-label, 0.1em);
       color: var(--vio-color-text-secondary, #666);
-      font-weight: 500;
-      margin-bottom: 8px;
+      font-weight: 600;
+    }
+    .description-block > summary::-webkit-details-marker { display: none; }
+    .description-block > summary::after {
+      content: '';
+      width: 8px;
+      height: 8px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-2px);
+      transition: transform 0.15s ease;
+    }
+    .description-block[open] > summary::after { transform: rotate(-135deg) translateY(-2px); }
+    .description {
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--vio-color-text-secondary, #444);
+      padding-bottom: 14px;
+      white-space: pre-line;
+    }
+    /* Desktop: the description above, the buy zone at the bottom of the panel
+       (sticky). Phones keep the order as it is: buy, then the description. */
+    @media (min-width: 601px) {
+      .description-block { order: 1; }
+      .buy {
+        order: 2;
+        position: var(--vio-detail-buy-position, sticky);
+        padding: var(--vio-detail-buy-padding, 12px 0 16px);
+        box-shadow: var(--vio-detail-buy-shadow, 0 -1px 0 var(--vio-color-border, #e5e5e5));
+      }
     }
 
     /* Skeleton loader: shimmer placeholders mirroring the product layout
@@ -532,6 +944,49 @@ export class VioProductDetail extends LitElement {
         background: var(--vio-color-surface-muted, #f1f1f1);
       }
     }
+    /* «Lagt i handlekurven»: above the page, below where a thumb reaches. */
+    .added-toast {
+      position: fixed;
+      left: 50%;
+      bottom: max(16px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      z-index: 1102;
+      width: min(420px, calc(100vw - 32px));
+      box-sizing: border-box;
+      padding: 14px 16px;
+      background: var(--vio-color-surface, #fff);
+      color: var(--vio-color-text, #0a0a0a);
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+      border-radius: var(--vio-radius-lg, 8px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      font-family: var(--vio-font-sans, -apple-system, sans-serif);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .added-toast-text { font-size: 14px; font-weight: 600; }
+    .added-toast-text::before { content: '✓ '; color: #2e7d32; }
+    .added-toast-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .added-toast-actions button {
+      min-height: 44px;
+      padding: 0 12px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: var(--vio-detail-button-radius, 0);
+    }
+    .added-toast-checkout {
+      background: var(--vio-color-text, #0a0a0a);
+      color: var(--vio-color-text-on-primary, #fff);
+      border: 1px solid var(--vio-color-text, #0a0a0a);
+    }
+    .added-toast-continue {
+      background: transparent;
+      color: var(--vio-color-text, #0a0a0a);
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+    }
+
     .error {
       padding: 80px 24px;
       text-align: center;
@@ -542,29 +997,99 @@ export class VioProductDetail extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    this.slotRegistration.connect(this.slotAttributes())
     void this.loadVippsButton()
     document.addEventListener('vio:product-click', this.boundProductClick)
   }
 
   override disconnectedCallback(): void {
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = null
     document.removeEventListener('vio:product-click', this.boundProductClick)
+    this.slotRegistration.clear()
+    this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
-    if (changed.has('open')) this.dialogFocus.update(this.open)
+    if (changed.has('open')) {
+      this.dialogFocus.update(this.open)
+      this.bottomSheet.update(this.open)
+    }
+    if (changed.has('product') || changed.has('open')) this.measureThumbs()
+    // The sheet shows an amount fixed when it is prepared: another quantity or
+    // variant (another price) prepares it again, so it shows what is bought.
+    if ((changed.has('quantity') || changed.has('selectedOptions')) && this.product && this.applePayAskedFor !== null) {
+      if (this.unitPrice * this.quantity !== this.applePayAskedFor) this.prepareApplePaySheet()
+    }
+    if (changed.has('activeImageIndex')) this.revealActiveThumb()
+    this.measureLogo()
+    // The React wrappers set properties after mount.
+    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
+      this.slotRegistration.sync(this.slotAttributes())
+    }
   }
 
-  show(): void { this.open = true }
+  private thumbRow(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>('.gallery-thumbs')
+  }
+
+  /** Arrows only when the row overflows; each one off at its own end. */
+  private measureThumbs(): void {
+    const row = this.thumbRow()
+    if (!row) return
+    const overflow = row.scrollWidth > row.clientWidth + 1
+    if (overflow !== this.thumbsOverflow) this.thumbsOverflow = overflow
+    this.onThumbsScroll()
+  }
+
+  private onThumbsScroll = (): void => {
+    const row = this.thumbRow()
+    if (!row) return
+    const atStart = row.scrollLeft <= 1
+    const atEnd = row.scrollLeft + row.clientWidth >= row.scrollWidth - 1
+    if (atStart !== this.thumbsAtStart) this.thumbsAtStart = atStart
+    if (atEnd !== this.thumbsAtEnd) this.thumbsAtEnd = atEnd
+  }
+
+  /** One arrow press moves most of a visible row. */
+  private scrollThumbs(direction: 1 | -1): void {
+    const row = this.thumbRow()
+    if (row) row.scrollBy({ left: direction * row.clientWidth * 0.8 })
+  }
+
+  /** The selected thumbnail is always visible: the row scrolls to it, the page never does. */
+  private revealActiveThumb(): void {
+    const row = this.thumbRow()
+    const thumb = row?.querySelectorAll<HTMLElement>('.gallery-thumb')[this.activeImageIndex]
+    if (!row || !thumb) return
+    const left = thumb.offsetLeft - row.offsetLeft
+    if (left < row.scrollLeft || left + thumb.offsetWidth > row.scrollLeft + row.clientWidth) {
+      row.scrollTo({ left: Math.max(0, left - (row.clientWidth - thumb.offsetWidth) / 2) })
+    }
+  }
+
+  show(): void {
+    this.open = true
+    this.hideAddedToast()
+  }
   close(): void {
     this.open = false
     // Reset state after the slide-out animation completes.
     setTimeout(() => {
       if (!this.open) {
+        // What the opening card said belongs to that product, not the next.
+        this.eventSlot = ''
+        this.eventContentId = ''
+        this.eventContentTitle = ''
+        this.eventCampaignId = undefined
+        this.eventProductId = ''
         this.product = null
         this.sellerName = null
         this.sellerSettled = false
+        this.shippingFrom = null
         this.selectedOptions = {}
+        this.selectionPrompt = ''
         this.quantity = 1
         this.activeImageIndex = 0
         this.fetchError = ''
@@ -586,6 +1111,7 @@ export class VioProductDetail extends LitElement {
     this.fetchError = ''
     this.sellerName = null
     this.sellerSettled = false
+    this.shippingFrom = null
 
     // Fetch with retry: the commerce backend intermittently returns
     // "Authentication failed" under concurrent requests (many cards + the
@@ -624,6 +1150,7 @@ export class VioProductDetail extends LitElement {
     this.optMapCache = new WeakMap()
     this.product = products?.[0] ?? null
     if (this.product) void this.loadSeller(productIdNum, seq)
+    if (this.product) void this.loadShippingFrom(productIdNum, seq)
     if (this.product) {
       // Analytics (auto): the detail opened with a concrete product.
       try {
@@ -633,7 +1160,7 @@ export class VioProductDetail extends LitElement {
         Vio.analytics.track('view_item', {
           context: {
             sponsorId: this.sponsorId > 0 ? Number(this.sponsorId) : undefined,
-            componentTemplateId: 'product-detail',
+            ...this.attribution(),
           },
           commerce: {
             items: [
@@ -657,27 +1184,22 @@ export class VioProductDetail extends LitElement {
     }
 
     if (this.product) {
-      // Auto-select the first value of each option (so qty + add fire correctly
-      // even when the user doesn't actively pick).
+      // Nothing is chosen for the shopper: an option with a single value is
+      // the only one preselected (there is nothing to choose). A size picked
+      // for them was bought without being looked at — the first size, the
+      // wrong one (Mote & Livsstil, 2026-10-28). The buy buttons ask for the
+      // missing choice instead (requireSelection).
       const initial: SelectedOptions = {}
       for (const opt of this.product.options ?? []) {
         const values = normalizeValues(opt.values)
-        if (values.length > 0) initial[opt.name] = values[0]!
+        if (values.length === 1) initial[opt.name] = values[0]!
       }
       this.selectedOptions = initial
+      this.selectionPrompt = ''
       // Pre-prepare Apple Pay so its sheet can open synchronously on tap
       // (Apple blocks it otherwise). The button only shows if Apple Pay actually
       // works (real Stripe account + domain registered for Apple Pay).
-      void Vio.checkout
-        .prepareApplePayFor(this.unitPrice * this.quantity, this.currency)
-        .then((handle) => {
-          this.applePayHandle = handle
-          this.applePayOk = handle.available
-        })
-        .catch(() => {
-          this.applePayHandle = null
-          this.applePayOk = false
-        })
+      this.prepareApplePaySheet()
       void this.loadAvailablePaymentMethods()
     }
     this.isLoading = false
@@ -687,16 +1209,32 @@ export class VioProductDetail extends LitElement {
   private async loadAvailablePaymentMethods(): Promise<void> {
     const spId =
       this.sponsorId ||
+      (typeof Vio.campaignForSlot === 'function'
+        ? Number(Vio.campaignForSlot(this.activeSlot || null, { campaignId: this.activeCampaignHint })?.primarySponsor?.id)
+        : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
+    if (spId !== this.methodsSponsorId) {
+      this.availableMethods = null
+      this.vippsExpress = false
+    }
+    this.methodsSponsorId = spId
+    this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(spId)) as
         | Array<{ name: string }>
         | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        // Read from the list itself (getVippsExpressEnabled answers «yes»
+        // when it cannot tell; the line must not).
+        const vipps = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }>).find(
+          (m) => String(m?.name ?? '').toLowerCase() === 'vipps',
+        )
+        this.vippsExpress = !!vipps && vipps.config?.find((c) => c?.name === 'express')?.value !== 'false'
       } else {
         this.availableMethods = null
+        this.vippsExpress = false
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
@@ -704,11 +1242,20 @@ export class VioProductDetail extends LitElement {
       }
       // Unknown (not "none") — render everything rather than nothing.
       this.availableMethods = null
+      this.vippsExpress = false
+    } finally {
+      this.methodsLoading = false
     }
+  }
+
+  /** The methods are still on their way: a placeholder stands where the buttons go. */
+  private get methodsPending(): boolean {
+    return this.methodsLoading && this.availableMethods === null
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
+    if (this.methodsPending) return false
     return isMethodEnabled(this.availableMethods, ...names)
   }
 
@@ -952,29 +1499,108 @@ export class VioProductDetail extends LitElement {
     return price?.amount_incl_taxes ?? price?.amount ?? 0
   }
 
+  /**
+   * There is something to pay for — whether the express buttons show. With
+   * every option chosen, the chosen variant's price; before that, the
+   * product's or any variant's: the first variant (what `unitPrice` falls
+   * back to) at 0 must not hide Vipps for a size that costs 699.
+   */
+  private get hasPrice(): boolean {
+    if (!this.missingOption()) return this.unitPrice > 0
+    const priceOf = (p: { amount_incl_taxes?: number | null; amount?: number } | null | undefined) =>
+      Number(p?.amount_incl_taxes ?? p?.amount ?? 0)
+    return (
+      priceOf(this.product?.price) > 0 ||
+      (this.product?.variants ?? []).some((v) => priceOf(v.price) > 0)
+    )
+  }
+
   private get compareAt(): number | null {
     const v = this.selectedVariant()
     const price = v?.price ?? this.product?.price
     return price?.compare_at_incl_taxes ?? price?.compare_at ?? null
   }
 
+  /** The options the shopper has to choose (those with values), in order. */
+  private choosableOptions(): ProductOption[] {
+    return (this.product?.options ?? []).filter((o) => normalizeValues(o.values).length > 0)
+  }
+
+  /** The first option still without a value, or null when every one is chosen. */
+  private missingOption(): ProductOption | null {
+    return this.choosableOptions().find((o) => !String(this.selectedOptions[o.name] ?? '').trim()) ?? null
+  }
+
+  /**
+   * Units that can be sold. With every option chosen, the chosen variant's;
+   * before that, the most any variant still matching the partial choice has
+   * — so the stepper and «Utsolgt» do not speak for a variant (the first
+   * one) the shopper never picked.
+   */
   private get availableQuantity(): number {
+    if (this.missingOption() && Array.isArray(this.product?.variants) && this.product!.variants.length > 0) {
+      const sel = this.selectedOptions
+      const qtys = this.product!.variants
+        .filter((v) => this.variantMatchesSelection(v, sel))
+        .map((v) => this.variantSellableQty(v))
+      return qtys.length > 0 ? Math.max(0, ...qtys) : 0
+    }
     const v = this.selectedVariant()
     if (v) return this.variantSellableQty(v)
     return this.product?.quantity ?? 0
   }
 
+  /**
+   * «Få igjen — N stk» only for the variant actually chosen: before a size is
+   * picked the count belonged to the first variant, which said «Få igjen» of
+   * a product with plenty of other sizes.
+   */
   private stockLabel(): { text: string; cls: 'in-stock' | 'low-stock' | 'out-of-stock' } {
     const qty = this.availableQuantity
     if (qty <= 0) return { text: 'Utsolgt', cls: 'out-of-stock' }
-    if (qty <= 3) return { text: `Få igjen — ${qty} stk`, cls: 'low-stock' }
+    if (qty <= 3 && !this.missingOption()) return { text: `Få igjen — ${qty} stk`, cls: 'low-stock' }
     return { text: 'På lager', cls: 'in-stock' }
+  }
+
+  /** «Velg størrelse» for a size, «Velg farge» for a colour… */
+  private promptFor(option: ProductOption): string {
+    const name = String(option.name ?? '').trim()
+    if (!name || /^(st(ø|o)rrelse|str\.?|size)$/i.test(name)) return 'Velg størrelse'
+    return `Velg ${name.toLowerCase()}`
+  }
+
+  /**
+   * Every buy button goes through here first: with an option not chosen yet,
+   * nothing is added or paid — the picker says what is missing and comes
+   * into view (it sits right above the buttons, inside the buy zone).
+   */
+  private requireSelection(): boolean {
+    const missing = this.missingOption()
+    if (!missing) {
+      this.selectionPrompt = ''
+      return true
+    }
+    this.selectionPrompt = missing.name
+    void this.updateComplete.then(() => {
+      const group = this.renderRoot.querySelector<HTMLElement>('.option-group.needs-choice')
+      group?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
+    })
+    return false
   }
 
   /** Pick an option value. If the exact combination doesn't exist, jump to an
    * in-stock variant that carries the value and adopt its full option map
    * (keeps the selection always resolvable to a real variant). */
   private selectOption(optionName: string, value: string): void {
+    this.applyOption(optionName, value)
+    if (this.selectionPrompt && !this.missingOption()) this.selectionPrompt = ''
+    else if (this.selectionPrompt) this.selectionPrompt = this.missingOption()?.name ?? ''
+    // The chosen variant may have fewer units than the stepper shows.
+    const max = this.availableQuantity
+    if (max > 0 && this.quantity > max) this.quantity = max
+  }
+
+  private applyOption(optionName: string, value: string): void {
     const newSelection = { ...this.selectedOptions, [optionName]: value }
     const exactInStock = this.product?.variants?.find(
       (v) => this.variantMatchesSelection(v, newSelection) && this.variantSellableQty(v) > 0,
@@ -1034,24 +1660,26 @@ export class VioProductDetail extends LitElement {
   private addCurrentToCart(): number | undefined {
     if (!this.product) return undefined
     const variant = this.selectedVariant()
-    const sponsor = Vio.bootstrapCache?.primarySponsor
-    const secondaries = Vio.bootstrapCache?.secondarySponsors ?? []
-    const sponsorName =
-      sponsor?.id === this.sponsorId
-        ? sponsor.name
-        : secondaries.find((s) => s.id === this.sponsorId)?.name
+    // The brand's display name by the one rule (config and campaigns[] sponsors).
+    const sponsorName = resolveSponsorIdentity(this.sponsorId)?.name || undefined
+    // Where these units come from: the campaign the place showed, the place,
+    // this element and the article — the purchase is split per campaign from
+    // it, and Commerce writes it on the order (ADR-0035).
+    const { campaignId, slot, contentId, componentTemplateId, contentUrl, contentTitle } = this.attribution()
     Vio.cart.addProduct({
       product: this.product,
       sponsorId: this.sponsorId,
       sponsorName,
       quantity: this.quantity,
       variantId: variant?.id,
+      origin: { campaignId, slot, contentId, componentKind: componentTemplateId, contentUrl, contentTitle },
     })
     return variant?.id
   }
 
   private async addToCart(): Promise<void> {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.adding = true
     try {
       const variantId = this.addCurrentToCart()
@@ -1064,13 +1692,57 @@ export class VioProductDetail extends LitElement {
             sponsorId: this.sponsorId,
             quantity: this.quantity,
             variantId,
+            ...this.attribution(),
           },
         }),
       )
+      this.showAddedToast()
       this.close()
     } finally {
       this.adding = false
     }
+  }
+
+  /** The toast after an add; it goes by itself after a while. */
+  private showAddedToast(): void {
+    if (this.noAddedToast) return
+    this.addedToast = {
+      sponsorId: this.sponsorId,
+      detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
+    }
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = setTimeout(() => this.hideAddedToast(), ADDED_TOAST_MS)
+  }
+
+  private hideAddedToast(): void {
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = null
+    this.addedToast = null
+  }
+
+  /** «Til kassen»: the checkout of the brand just added to — the host opens it on `vio:checkout-open`, as from the cart. */
+  private toastToCheckout(): void {
+    const toast = this.addedToast
+    this.hideAddedToast()
+    if (!toast) return
+    const cart = Vio.cart.getCart(toast.sponsorId)
+    const total = (cart?.items ?? []).reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
+    // Nothing to pay for (removed meanwhile, or 0 kr): no checkout.
+    if (!cart || cart.items.length === 0 || !(total > 0)) return
+    this.dispatchEvent(new CustomEvent('vio:checkout-open', { bubbles: true, composed: true, detail: toast.detail }))
+  }
+
+  private renderAddedToast() {
+    if (!this.addedToast) return nothing
+    return html`
+      <div class="added-toast" part="added-toast" role="status" aria-live="polite">
+        <div class="added-toast-text">Lagt i handlekurven</div>
+        <div class="added-toast-actions">
+          <button class="added-toast-checkout" part="added-toast-checkout" @click=${this.toastToCheckout}>Til kassen</button>
+          <button class="added-toast-continue" part="added-toast-continue" @click=${this.hideAddedToast}>Fortsett å handle</button>
+        </div>
+      </div>
+    `
   }
 
   /**
@@ -1081,6 +1753,7 @@ export class VioProductDetail extends LitElement {
    */
   private async buyWithKlarna(): Promise<void> {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.adding = true
     try {
       this.addCurrentToCart()
@@ -1089,7 +1762,7 @@ export class VioProductDetail extends LitElement {
         new CustomEvent('vio:checkout-open', {
           bubbles: true,
           composed: true,
-          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true },
+          detail: { sponsorId: this.sponsorId, paymentMethod: 'klarna', express: true, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
         }),
       )
     } finally {
@@ -1114,13 +1787,14 @@ export class VioProductDetail extends LitElement {
    */
   private buyNow(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, express: false },
+        detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1138,31 +1812,73 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
+    // Nothing to pay for: no Vipps payment of 0 kr (CheckoutManager refuses it too).
+    if (!(this.unitPrice > 0)) return
+    // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
+    // not on this product (see buyNow). Straight to Vipps only when the cart
+    // is empty, so what the Vipps page lists is what was tapped; with lines
+    // already in it, the product is added and the checkout opens first, with
+    // every line and the total, Vipps preselected (Mote & Livsstil,
+    // 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
+    // with the product bought «nå», and only Vipps' page had said so).
+    if ((Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0) {
+      this.addCurrentToCart()
+      this.close()
+      this.openCheckoutWithVipps()
+      return
+    }
+    // The overlay first, then the close: no empty moment, no second tap.
+    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.sponsorId, source: 'detail' })
     this.addCurrentToCart()
     this.close()
-    void this.startVippsExpressOrCheckout()
+    void this.startVippsExpressOrCheckout(redirect)
   }
 
-  private async startVippsExpressOrCheckout(): Promise<void> {
+  /**
+   * The Vipps button will open the app with Express (see buyWithVipps): the
+   * brand has Express on, and this brand's cart is empty — with lines in it
+   * the checkout opens first.
+   */
+  private vippsGoesStraightToApp(): boolean {
+    return this.vippsExpress && (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) === 0
+  }
+
+  private async startVippsExpressOrCheckout(redirect: PaymentRedirectHandle): Promise<void> {
     let fallback = true
     try {
       // The seller may have switched Express off on its Vipps row: then the
       // button is an ordinary way into the checkout, with Vipps preselected.
-      if (!(await Vio.checkout.getVippsExpressEnabled(this.sponsorId))) throw new Error('express off')
-      const res = await Vio.checkout.startVippsExpress(this.sponsorId)
-      // A redirect is on its way; anything else opens the checkout.
-      fallback = !res?.payment_url
+      if (!(await Vio.checkout.getVippsExpressEnabled(this.sponsorId))) {
+        redirect.abort('express-off')
+      } else {
+        const res = await Vio.checkout.startVippsExpress(this.sponsorId)
+        // A redirect is on its way; anything else opens the checkout.
+        fallback = !res?.payment_url
+        if (fallback) redirect.abort('not-started')
+      }
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn('[VioProductDetail] Vipps Express not started:', err)
       }
+      redirect.fail(err instanceof Error ? err.message : String(err))
     }
     if (!fallback) return
+    this.openCheckoutWithVipps()
+  }
+
+  /** The ordinary way in, Vipps preselected: the host opens the checkout on `vio:checkout-open`. */
+  private openCheckoutWithVipps(): void {
+    this.openCheckoutWith('vipps')
+  }
+
+  /** The ordinary way in with a method preselected: the host opens the checkout on `vio:checkout-open`. */
+  private openCheckoutWith(paymentMethod: 'vipps' | 'apple-pay'): void {
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'vipps', express: false },
+        detail: { sponsorId: this.sponsorId, paymentMethod, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
   }
@@ -1170,15 +1886,36 @@ export class VioProductDetail extends LitElement {
   /** Buy with Stripe — opens the checkout with Stripe preselected. */
   private buyWithStripe(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false },
+        detail: { sponsorId: this.sponsorId, paymentMethod: 'stripe', express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
       }),
     )
+  }
+
+  /** Prepare the Apple Pay sheet for this product × quantity; the newest preparation wins. */
+  private prepareApplePaySheet(): void {
+    const amount = this.unitPrice * this.quantity
+    this.applePayAskedFor = amount
+    void Vio.checkout
+      .prepareApplePayFor(amount, this.currency)
+      .then((handle) => {
+        if (this.applePayAskedFor !== amount) return
+        this.applePayHandle = handle
+        this.applePayAmount = amount
+        this.applePayOk = handle.available
+      })
+      .catch(() => {
+        if (this.applePayAskedFor !== amount) return
+        this.applePayHandle = null
+        this.applePayAmount = null
+        this.applePayOk = false
+      })
   }
 
   /**
@@ -1186,9 +1923,28 @@ export class VioProductDetail extends LitElement {
    * Apple Pay sheet keeps the user gesture: add to cart → open checkout (sets
    * state) → launch the sheet. On authorize, `payment-complete` drives the
    * confirmation drawer (same path as the in-checkout Apple Pay button).
+   *
+   * The sheet's amount is fixed before the tap (Apple blocks a sheet opened
+   * after an await, so it cannot wait for the server's cart), while the
+   * charge is the sponsor's WHOLE cart. So the sheet opens only when it shows
+   * what will be charged: an empty cart, and a sheet prepared for this
+   * product × quantity. Otherwise — lines already in the cart (as with Vipps,
+   * see buyWithVipps), or a quantity whose sheet is still being prepared —
+   * the product is added and the checkout opens with Apple Pay preselected:
+   * every line and the total on screen, and its own Apple Pay button pays
+   * that total.
    */
   private buyWithApplePay(): void {
     if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    if (!this.requireSelection()) return
+    if (!(this.unitPrice > 0)) return
+    const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
+    if (cartHasLines || this.applePayAmount !== this.unitPrice * this.quantity) {
+      this.addCurrentToCart()
+      this.close()
+      this.openCheckoutWith('apple-pay')
+      return
+    }
     this.addCurrentToCart()
     try {
       Vio.checkout.open(this.sponsorId)
@@ -1203,6 +1959,42 @@ export class VioProductDetail extends LitElement {
     // On approval, show() dispatches payment-complete → the confirmation drawer.
     void this.applePayHandle.show()
     this.close()
+  }
+
+  /**
+   * The product's cheapest rate for the page's market — the rates the
+   * backend cart offers for its line. A rate in another currency than the
+   * product's price is not shown (never a price the shopper would not pay).
+   */
+  private async loadShippingFrom(productId: number, seq: number): Promise<void> {
+    let rates: Array<{ price: number; currency: string }> | null = null
+    try {
+      const product = Vio.commerceFor(this.sponsorId).channel.product as {
+        getShippingRates?: (id: number, o?: { currency?: string }) => Promise<Array<{ price: number; currency: string }> | null>
+      }
+      rates = typeof product.getShippingRates === 'function'
+        ? await product.getShippingRates(productId, { currency: this.currency })
+        : null
+    } catch {
+      rates = null
+    }
+    if (seq !== this.fetchSeq) return // another product opened meanwhile
+    const currency = String(this.product?.price?.currency_code ?? this.currency ?? '').toUpperCase()
+    const usable = (rates ?? []).filter((r) => !r.currency || r.currency.toUpperCase() === currency)
+    const cheapest = usable[0]
+    this.shippingFrom = cheapest ? { price: cheapest.price, currency: cheapest.currency || currency } : null
+  }
+
+  /** Under the price: «Frakt fra X · 14 dagers angrerett» (or «Gratis frakt · …»). */
+  private renderDeliveryNote() {
+    const ship = this.shippingFrom
+    const shipping = ship ? (ship.price <= 0 ? 'Gratis frakt' : `Frakt fra ${formatPrice(ship.price, ship.currency)}`) : ''
+    return html`<div class="delivery-note" part="delivery-note">
+      ${shipping ? html`<span part="delivery-shipping">${shipping}</span><span aria-hidden="true"> · </span>` : ''}<span
+        part="delivery-withdrawal"
+        >14 dagers angrerett</span
+      >
+    </div>`
   }
 
   /** The seller's Company name; the brand when there is none; nothing while asking. */
@@ -1223,18 +2015,81 @@ export class VioProductDetail extends LitElement {
     this.sellerSettled = true
   }
 
+  /**
+   * Who sells the product, top left beside the close (Mote & Livsstil,
+   * 2026-10-22): the logo of the sponsor the product was fetched with — the
+   * product's brand, never the article's — with its name as `alt`; without a
+   * logo that loads, its name; without an identity, the seller's Company name
+   * (or the product's brand) once known. Size: --vio-detail-logo-height.
+   */
+  private renderTopbarSponsor() {
+    const identity = resolveSponsorIdentity(this.sponsorId)
+    const mark = identity ? renderSponsorMark(this, identity, { logo: 'topbar-logo', name: 'topbar-name' }) : nothing
+    if (mark !== nothing) {
+      // A logo: in a clipping box (for the zoom), and — when the file turns
+      // out square, a mark rather than a wordmark — with the name beside it,
+      // so the shopper can tell whose it is.
+      if (identity && usableLogo(identity)) {
+        return html`<span class="topbar-logo-box">${mark}</span
+          ><span class="topbar-name topbar-mark-name">${identity.name}</span>`
+      }
+      return mark
+    }
+    const name = this.headerName()
+    return name ? html`<span class="topbar-name">${name}</span>` : nothing
+  }
+
+  /**
+   * Under the buy buttons: «Du handler direkte hos {brand}.» — the brand the
+   * product was fetched with (the sponsor; its Company name or the product's
+   * brand when no identity is known), never the article's. Nothing when no
+   * name is known.
+   */
+  private renderSellerNote() {
+    const identity = resolveSponsorIdentity(this.sponsorId)
+    const name = identity?.name || this.headerName()
+    if (!name) return nothing
+    // The brand's own pages, when it gave them (Settings → Brand): its terms
+    // and its returns policy, opened in a new tab.
+    const links = [
+      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer" part="seller-terms">Kjøpsvilkår</a>` : null,
+      identity?.refundPolicyUrl ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer" part="seller-refund">Angrerett og retur</a>` : null,
+    ].filter(Boolean)
+    return html`<p class="seller-note" part="seller-note">
+      Du handler direkte hos <strong>${name}</strong>.${links.length ? html`<span class="seller-links">${links}</span>` : nothing}
+    </p>`
+  }
+
+  /** Square-ish logo (4:5 to 5:4) → the top bar shows the name beside it. */
+  private measureLogo(): void {
+    const img = this.renderRoot.querySelector<HTMLImageElement>('.topbar-logo')
+    if (!img) {
+      if (this.logoSquare) this.logoSquare = false
+      return
+    }
+    const decide = () => {
+      if (!img.naturalWidth || !img.naturalHeight) return
+      const ratio = img.naturalWidth / img.naturalHeight
+      const square = ratio >= 0.8 && ratio <= 1.25
+      if (square !== this.logoSquare) this.logoSquare = square
+    }
+    if (img.complete) decide()
+    else img.addEventListener('load', decide, { once: true })
+  }
+
   override render() {
     return html`
       <div class="backdrop" @click=${this.close}></div>
       <div class="modal" role="dialog" aria-modal="true" aria-label="Produkt" tabindex="-1">
         <div class="handle" @click=${this.close} aria-hidden="true"></div>
-        <div class="topbar">
-          <span class="topbar-brand">${this.headerName()}</span>
-          <button class="close" @click=${this.close} aria-label="Lukk">×</button>
+        <div class="topbar" part="topbar">
+          <div class="topbar-sponsor ${this.logoSquare ? 'is-square' : ''}" part="sponsor">${this.renderTopbarSponsor()}</div>
+          <button class="close" part="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
         ${this.renderBody()}
       </div>
+      ${this.renderAddedToast()}
     `
   }
 
@@ -1265,37 +2120,55 @@ export class VioProductDetail extends LitElement {
 
     return html`
       <div class="body">
-        <div class="gallery">
-          <div class="gallery-main">
+        <div class="gallery" part="gallery">
+          <div class="gallery-main" part="image">
             ${activeImage?.url
               ? html`<img src=${activeImage.url} alt=${p.title} />`
               : ''}
           </div>
           ${images.length > 1
             ? html`
-                <div class="gallery-thumbs">
-                  ${images.map(
-                    (img, idx) => html`
-                      <button
-                        class="gallery-thumb ${idx === this.activeImageIndex ? 'active' : ''}"
-                        @click=${() => (this.activeImageIndex = idx)}
-                        aria-label=${`Bilde ${idx + 1}`}
-                      >
-                        <img src=${img.url} alt="" />
-                      </button>
-                    `,
-                  )}
+                <div class="thumbs ${this.thumbsOverflow ? 'overflows' : ''}">
+                  <button
+                    class="thumbs-arrow prev"
+                    part="thumbs-arrow"
+                    aria-label="Forrige bilder"
+                    ?disabled=${this.thumbsAtStart}
+                    @click=${() => this.scrollThumbs(-1)}
+                  >‹</button>
+                  <div class="gallery-thumbs" part="thumbs" @scroll=${this.onThumbsScroll}>
+                    ${images.map(
+                      (img, idx) => html`
+                        <button
+                          class="gallery-thumb ${idx === this.activeImageIndex ? 'active' : ''}"
+                          part=${idx === this.activeImageIndex ? 'thumb thumb-active' : 'thumb'}
+                          @click=${() => (this.activeImageIndex = idx)}
+                          aria-label=${`Bilde ${idx + 1}`}
+                          aria-current=${idx === this.activeImageIndex ? 'true' : 'false'}
+                        >
+                          <img src=${img.url} alt="" loading="lazy" />
+                        </button>
+                      `,
+                    )}
+                  </div>
+                  <button
+                    class="thumbs-arrow next"
+                    part="thumbs-arrow"
+                    aria-label="Neste bilder"
+                    ?disabled=${this.thumbsAtEnd}
+                    @click=${() => this.scrollThumbs(1)}
+                  >›</button>
                 </div>
               `
             : ''}
         </div>
 
-        <div class="info">
-          ${p.brand ? html`<div class="brand">${p.brand}</div>` : ''}
-          <h2 class="name">${p.title}</h2>
+        <div class="info" part="info">
+          ${p.brand ? html`<div class="brand" part="brand">${p.brand}</div>` : ''}
+          <h2 class="name" part="title">${p.title}</h2>
 
           <div class="price-row">
-            <span class="price">${formatPrice(this.unitPrice, p.price.currency_code)}</span>
+            <span class="price" part="price">${formatPrice(this.unitPrice, p.price.currency_code)}</span>
             ${showCompare
               ? html`<span class="compare-at">${formatPrice(
                   compare,
@@ -1304,11 +2177,53 @@ export class VioProductDetail extends LitElement {
               : ''}
           </div>
 
-          <div class="stock ${stock.cls}">${stock.text}</div>
+          ${this.renderDeliveryNote()}
 
-          ${this.renderOptionPickers(p.options)}
+          <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
 
-          <div class="qty-cta-row">
+          <div class="purchase">
+          <div class="buy" part="buy">
+          ${p.options.length > 0
+            ? html`<div class="buy-options" part="buy-options">${this.renderOptionPickers(p.options)}</div>`
+            : ''}
+          ${this.methodsPending && this.availableQuantity > 0
+            ? html`<div class="buy-pending" part="buy-pending" role="status" aria-label="Laster betalingsmåter"></div>`
+            : ''}
+          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps')
+            ? this.vippsOfficial
+              ? html`
+                  <vipps-mobilepay-button
+                    class="buy-vipps-official"
+                    part="buy-vipps"
+                    brand="vipps"
+                    language="no"
+                    verb="buy"
+                    variant="primary"
+                    rounded="true"
+                    stretched="true"
+                    role="button"
+                    aria-label="Kjøp nå med Vipps"
+                    @click=${this.buyWithVipps}
+                  ></vipps-mobilepay-button>
+                `
+              : html`
+                  <button
+                    class="buy-vipps"
+                    part="buy-vipps"
+                    @click=${this.buyWithVipps}
+                    ?disabled=${this.adding}
+                    aria-label="Kjøp nå med Vipps"
+                  >
+                    <span>Kjøp nå med</span>
+                    <span class="vipps-badge">vipps</span>
+                  </button>
+                `
+            : ''}
+          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps') && this.vippsGoesStraightToApp()
+            ? html`<p class="vipps-note" part="vipps-note">Vipps fyller inn navn og adresse – du godkjenner og betaler i appen</p>`
+            : ''}
+
+          <div class="qty-cta-row" part="quantity-row">
             <div class="qty-stepper">
               <button
                 class="qty-btn"
@@ -1330,6 +2245,7 @@ export class VioProductDetail extends LitElement {
             </div>
             <button
               class="add-to-cart"
+              part="add-to-cart"
               @click=${this.addToCart}
               ?disabled=${this.availableQuantity <= 0 || this.adding}
             >
@@ -1356,6 +2272,7 @@ export class VioProductDetail extends LitElement {
             : ''}
 
           ${this.availableQuantity > 0 &&
+          this.hasPrice &&
           this.applePayOk &&
           this.methodEnabled('apple-pay', 'applepay')
             ? html`
@@ -1406,43 +2323,18 @@ export class VioProductDetail extends LitElement {
               `
             : ''}
 
-          ${this.availableQuantity > 0 && this.methodEnabled('vipps')
-            ? this.vippsOfficial
-              ? html`
-                  <vipps-mobilepay-button
-                    class="buy-vipps-official"
-                    brand="vipps"
-                    language="no"
-                    verb="buy"
-                    variant="primary"
-                    rounded="true"
-                    stretched="true"
-                    role="button"
-                    aria-label="Kjøp nå med Vipps"
-                    @click=${this.buyWithVipps}
-                  ></vipps-mobilepay-button>
-                `
-              : html`
-                  <button
-                    class="buy-vipps"
-                    @click=${this.buyWithVipps}
-                    ?disabled=${this.adding}
-                    aria-label="Kjøp nå med Vipps"
-                  >
-                    <span>Kjøp nå med</span>
-                    <span class="vipps-badge">vipps</span>
-                  </button>
-                `
-            : ''}
+          ${this.renderSellerNote()}
+          </div>
 
           ${p.description
             ? html`
-                <div>
-                  <div class="description-label">Beskrivelse</div>
+                <details class="description-block" part="description">
+                  <summary>Beskrivelse</summary>
                   <div class="description">${this.stripHtml(p.description)}</div>
-                </div>
+                </details>
               `
             : ''}
+          </div>
         </div>
       </div>
     `
@@ -1453,10 +2345,19 @@ export class VioProductDetail extends LitElement {
     return html`${options.map((opt) => {
       const values = normalizeValues(opt.values)
       if (values.length === 0) return ''
+      const chosen = String(this.selectedOptions[opt.name] ?? '').trim()
+      const asked = this.selectionPrompt === opt.name && !chosen
       return html`
-        <div class="option-group">
-          <div class="option-label">${opt.name}</div>
-          <div class="option-values">
+        <div class="option-group ${asked ? 'needs-choice' : ''}" part="option-group">
+          <div class="option-label" part="option-label">
+            <span
+              >${opt.name}${chosen ? html`: <span class="option-chosen" part="option-chosen">${chosen}</span>` : ''}</span
+            >
+            ${asked
+              ? html`<span class="option-prompt" part="option-prompt" role="alert">${this.promptFor(opt)}</span>`
+              : ''}
+          </div>
+          <div class="option-values" part="options">
             ${values.map((val) => {
               const available = this.isValueAvailable(opt.name, val)
               const currentVal = this.selectedOptions[opt.name] ?? ''
@@ -1465,6 +2366,7 @@ export class VioProductDetail extends LitElement {
               return html`
                 <button
                   class="option-pill ${available ? '' : 'unavailable'}"
+                  part=${isSelected ? 'option option-selected' : 'option'}
                   @click=${() => this.selectOption(opt.name, val)}
                   aria-pressed=${isSelected}
                   ?disabled=${!available}

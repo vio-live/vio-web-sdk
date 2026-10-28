@@ -198,6 +198,71 @@ export interface VioThemeOverrides {
   spaceMd?: string
   spaceLg?: string
   spaceXl?: string
+  /* Product detail, cart, checkout, confirmation and the hand-over to a
+   * payment page (0.28) — layout knobs a host needs to fit its own design.
+   * Every one is a `--vio-*` custom property too (README → Styling). */
+  /** Product detail panel width on desktop (default `440px`). */
+  detailWidth?: string
+  /** Side padding of the detail (default the `lg` space, `24px`). */
+  detailPaddingX?: string
+  /** Height of the selling brand's logo in the detail's top bar (default `44px`; width follows its proportions). A square logo gets the brand's name beside it. */
+  detailLogoHeight?: string
+  /** Zoom on that logo inside its box (default `1`); e.g. `1.8` crops the white around a mark in a square file. */
+  detailLogoZoom?: string
+  /** Product name size in the detail. */
+  detailTitleSize?: string
+  /** Price size in the detail (default `24px`). */
+  detailPriceSize?: string
+  /** How the main image fits its box: `cover` (fills it, crops the overflow — default) or `contain` (whole image, bars where the shapes differ). */
+  detailImageFit?: string
+  /** Main image box proportion, the same for every image so the panel never jumps: `4 / 5` (default), `1 / 1`, `3 / 4`, or `auto` (each image its own). */
+  detailImageAspect?: string
+  /** Cap on the main image's height (default `85vh`). */
+  detailImageMaxHeight?: string
+  /** Zoom on the main image (default `1`); e.g. `1.15` to crop a white margin baked into the file. */
+  detailImageZoom?: string
+  /** Side margin of the main image (default: the panel's padding, aligned with the text); `0` = edge to edge. */
+  detailImageInset?: string
+  /** Background behind the main image (default the muted surface). */
+  detailImageBg?: string
+  /** Thumbnail size (default `64px`). One row, scrolls sideways. */
+  detailThumbSize?: string
+  /** Space between thumbnails (default `8px`). */
+  detailThumbGap?: string
+  /** Thumbnail corners (default `0`). */
+  detailThumbRadius?: string
+  /** Border of the selected thumbnail (default the text colour). */
+  detailThumbActiveColor?: string
+  /** Height (and min width) of a size / option button (default `36px`). */
+  detailOptionHeight?: string
+  /** Space between option buttons (default `6px`). */
+  detailOptionGap?: string
+  /** Option button corners (default `0`). */
+  detailOptionRadius?: string
+  /** `wrap` (default, several lines) or `nowrap` (one line that scrolls). */
+  detailOptionWrap?: string
+  /** Height of the quantity stepper and «Legg i handlekurv» (default `52px`). */
+  detailButtonHeight?: string
+  /** Corners of «Legg i handlekurv» (default `0`). */
+  detailButtonRadius?: string
+  /** `sticky` or `static`: whether the buy zone (Vipps, quantity, add to cart) stays at the bottom of the panel while scrolling. Default: `static` on phones, `sticky` on desktop (with the description above it). */
+  detailBuyPosition?: string
+  /** Shadow over a sticky buy zone, e.g. `0 -8px 16px rgba(0,0,0,.06)`. */
+  detailBuyShadow?: string
+  /** Cart drawer width on desktop (default `440px`). */
+  cartWidth?: string
+  /** Checkout panel width on desktop (default `440px`). */
+  checkoutWidth?: string
+  /** Height of the brand's logo on the confirmation (default `40px`). */
+  confirmLogoHeight?: string
+  /** «Takk for bestillingen!» size (default `24px`). */
+  confirmTitleSize?: string
+  /** Background of the confirmation's check mark (default green). */
+  confirmCheckBg?: string
+  /** Background of the «Åpner Vipps …» overlay (default translucent white). */
+  redirectBg?: string
+  /** Spinner colour of that overlay (default Vipps orange). */
+  redirectSpinner?: string
 }
 
 const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
@@ -221,6 +286,37 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   spaceMd: '--vio-space-md',
   spaceLg: '--vio-space-lg',
   spaceXl: '--vio-space-xl',
+  detailWidth: '--vio-detail-width',
+  detailPaddingX: '--vio-detail-padding-x',
+  detailLogoHeight: '--vio-detail-logo-height',
+  detailLogoZoom: '--vio-detail-logo-zoom',
+  detailTitleSize: '--vio-detail-title-size',
+  detailPriceSize: '--vio-detail-price-size',
+  detailImageFit: '--vio-detail-image-fit',
+  detailImageAspect: '--vio-detail-image-aspect',
+  detailImageMaxHeight: '--vio-detail-image-max-height',
+  detailImageZoom: '--vio-detail-image-zoom',
+  detailImageInset: '--vio-detail-image-inset',
+  detailImageBg: '--vio-detail-image-bg',
+  detailThumbSize: '--vio-detail-thumb-size',
+  detailThumbGap: '--vio-detail-thumb-gap',
+  detailThumbRadius: '--vio-detail-thumb-radius',
+  detailThumbActiveColor: '--vio-detail-thumb-active-color',
+  detailOptionHeight: '--vio-detail-option-height',
+  detailOptionGap: '--vio-detail-option-gap',
+  detailOptionRadius: '--vio-detail-option-radius',
+  detailOptionWrap: '--vio-detail-option-wrap',
+  detailButtonHeight: '--vio-detail-button-height',
+  detailButtonRadius: '--vio-detail-button-radius',
+  detailBuyPosition: '--vio-detail-buy-position',
+  detailBuyShadow: '--vio-detail-buy-shadow',
+  cartWidth: '--vio-cart-width',
+  checkoutWidth: '--vio-checkout-width',
+  confirmLogoHeight: '--vio-confirm-logo-height',
+  confirmTitleSize: '--vio-confirm-title-size',
+  confirmCheckBg: '--vio-confirm-check-bg',
+  redirectBg: '--vio-redirect-bg',
+  redirectSpinner: '--vio-redirect-spinner',
 }
 
 /**

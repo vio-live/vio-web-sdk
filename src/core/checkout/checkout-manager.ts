@@ -10,8 +10,16 @@
  * a method) and `payment-complete` (vendor sheet completed successfully).
  */
 
+import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
+import {
+  checkoutSponsorOf,
+  rememberCheckoutSponsor,
+  rememberedCheckoutSponsor,
+  type CheckoutSponsor,
+  type SponsorIdentity,
+} from '../sponsor-identity.js'
 import { Configuration } from '../configuration.js'
 import {
   createStripeIntent,
@@ -104,7 +112,12 @@ import {
   type AdyenDropinHandle,
 } from './payments/adyen.js'
 import { SDK_VERSION } from '../version.js'
+import { normalizeBuyerRef } from '../buyer-ref.js'
 import {
+  BUYER_REF_FIELD,
+  withBuyerRef,
+  getCheckoutReference as gqlGetCheckoutReference,
+  type CheckoutReference,
   confirmPaymentApplePay as gqlConfirmPaymentApplePay,
   createCheckout as gqlCreateCheckout,
   createPaymentApplePay as gqlCreatePaymentApplePay,
@@ -113,7 +126,6 @@ import {
   getAvailablePaymentMethods as gqlGetAvailablePaymentMethods,
   getCartGraphQLOptions,
   getCheckout as gqlGetCheckout,
-  getCheckoutOrderNumber as gqlGetCheckoutOrderNumber,
   getLineItemsBySupplier as gqlGetLineItemsBySupplier,
   updateCheckout as gqlUpdateCheckout,
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
@@ -144,6 +156,8 @@ function describeError(err: unknown): string {
   return String(err)
 }
 
+/** sessionStorage key of the last confirmed Klarna token (a retry never confirms it twice). */
+const KLARNA_CONFIRMED_KEY = 'vio.klarna.confirmed.v1'
 /** sessionStorage key for a pending Klarna purchase (survives redirect). */
 const KLARNA_PENDING_KEY = 'vio.klarna.pending.v1'
 
@@ -214,6 +228,8 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
   },
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
+import { parsePhone } from './phone.js'
+import type { CheckoutAttributionWire } from './attribution.js'
 
 // MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
 
@@ -240,13 +256,14 @@ mutation CreatePaymentKlarnaNative($checkoutId: String!, $countryCode: String, $
 }
 `
 
-const CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION = `
+/** With `buyer_ref` (new on the gateway, see cart-queries `withBuyerRef`) or without it, for a gateway that predates it. */
+const confirmPaymentKlarnaNativeMutation = (withRef: boolean) => `
 mutation ConfirmPaymentKlarnaNative($checkoutId: String!, $authorizationToken: String!, $autoCapture: Boolean, $billingAddress: KlarnaNativeAddressInput, $shippingAddress: KlarnaNativeAddressInput, $customer: KlarnaNativeCustomerInput) {
   Payment {
     ConfirmPaymentKlarnaNative(checkout_id: $checkoutId, authorization_token: $authorizationToken, auto_capture: $autoCapture, billing_address: $billingAddress, shipping_address: $shippingAddress, customer: $customer) {
       order_id
       checkout_id
-      fraud_status
+      fraud_status${withRef ? `\n      ${BUYER_REF_FIELD}` : ''}
       order {
         order_id
         status
@@ -378,6 +395,11 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
 
   if (!firstName && !lastName && !address1 && !city && !zip) return null
 
+  // The mobile the form asked for (the courier texts it): national digits +
+  // calling code — from its own +prefix, else the shipping country's — the
+  // shape the order's address keeps. Not a usable number: none is sent.
+  const phone = parsePhone(address.phone, country_code)
+
   return {
     first_name: firstName,
     last_name: lastName,
@@ -385,7 +407,13 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
     city: city,
     zip: zip,
     country_code: country_code,
+    ...(phone ? { phone: phone.phone, phone_code: phone.phone_code } : {}),
   }
+}
+
+/** Every field the backend needs to ship to it (the shape `buildCheckoutAddress` returns). */
+function isCompleteCheckoutAddress(a: Record<string, unknown> | null): boolean {
+  return !!a && ['first_name', 'last_name', 'address1', 'city', 'zip'].every((k) => String(a[k] ?? '').trim().length > 0)
 }
 
 /**
@@ -426,6 +454,16 @@ function adyenReturnUrl(params: Record<string, unknown>): string {
   const bare = new URL(page.toString())
   bare.search = ''
   return build(bare)
+}
+
+/**
+ * The SDK's own name of a payment method (`vipps`, `apple-pay`, `stripe`…):
+ * the backend's spelling ("Vipps", "Apple Pay") lowered, spaces to dashes.
+ */
+function paymentMethodName(method: unknown): string | undefined {
+  if (typeof method !== 'string') return undefined
+  const name = method.trim().toLowerCase().replace(/\s+/g, '-')
+  return name || undefined
 }
 
 function resolveHttpsReturnUrl(
@@ -516,8 +554,72 @@ export interface KlarnaPaymentsHandle {
   unmount(): void
 }
 
+/**
+ * What the facade lends the manager. `orderAttribution` answers the
+ * attribution of the order about to be created for a sponsor's cart
+ * (`Vio.orderAttribution`, ADR-0035 phase B) — the surface, the page's
+ * campaign, the page and the entry; sent as `attribution` on `CreateCheckout`
+ * and on the `UpdateCheckout` before paying. Optional: without it (a manager
+ * built apart from the facade) nothing is sent and nothing changes.
+ */
+export interface CheckoutManagerDeps {
+  orderAttribution?: (
+    sponsorId: number,
+  ) => Promise<CheckoutAttributionWire | undefined> | CheckoutAttributionWire | undefined
+  /**
+   * Who a sponsor is (`Vio.sponsorIdentity`): remembered per checkout when one
+   * is created, and answered with `getOrderReference`. Optional: without it
+   * the memory keeps only whose checkout it is, and the cart's name.
+   */
+  sponsorIdentity?: (
+    sponsorId: number | undefined,
+    opts?: { checkoutId?: string | null },
+  ) => SponsorIdentity | null
+}
+
+/** What `getOrderReference` answers: the checkout's reference plus, when it can be named, its sponsor. */
+export type OrderReference = CheckoutReference & {
+  /** The sponsor the order is with — the checkout's, by the `Vio.sponsorIdentity` rule. */
+  sponsor?: CheckoutSponsor
+}
+
+/**
+ * Whether a brand's payment methods include Stripe with a publishable key —
+ * the only case where the page needs Stripe.js (cards, Apple Pay).
+ */
+export function usesStripe(methods: unknown): boolean {
+  if (!Array.isArray(methods)) return false
+  return methods.some((m) => {
+    if (String(m?.name ?? '').toLowerCase() !== 'stripe') return false
+    const config = Array.isArray(m?.config) ? m.config : []
+    const key = config.find((c: { name?: string }) => c?.name === 'publishableKey')?.value
+    return typeof key === 'string' && key.startsWith('pk_')
+  })
+}
+
+/** What the lines add up to (unit price × quantity). */
+function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
+  return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
+}
+
 export class CheckoutManager extends EventTarget {
-  private state: CheckoutState | null = null
+  private currentStateValue: CheckoutState | null = null
+  /**
+   * Every write of the state goes through here: a state that names its
+   * backend checkout is remembered with its sponsor (see
+   * `rememberSponsorOfCheckout`), whatever path created the checkout.
+   */
+  private get state(): CheckoutState | null {
+    return this.currentStateValue
+  }
+  private set state(next: CheckoutState | null) {
+    this.currentStateValue = next
+    if (next?.checkoutId && next.sponsorId) this.rememberSponsorOfCheckout(next.checkoutId, next.sponsorId)
+  }
+  /** The last checkout + identity written to the memory — the state is set on every keystroke of the form. */
+  private lastRememberedSponsor = ''
+  /** Backend checkouts this page load announced with `vio:checkout-created`: one event each. */
+  private readonly announcedCheckouts = new Set<string>()
   /** Counts `open()` calls — see CheckoutState.session. */
   private sessionSeq = 0
   private applePayAvailableCache: boolean | null = null
@@ -567,17 +669,60 @@ export class CheckoutManager extends EventTarget {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private paymentMethodsPromises = new Map<number, Promise<any>>()
 
-  constructor(private readonly cartManager: CartManager) {
+  constructor(
+    private readonly cartManager: CartManager,
+    private readonly deps: CheckoutManagerDeps = {},
+  ) {
     super()
-    // Warm Stripe.js early: Apple Pay's sheet must open synchronously inside
-    // the tap gesture, so the library can't be lazy-loaded at click time.
-    preloadStripeJs()
+    // Stripe.js (~300 KB) is warmed only for a brand that uses it: here when
+    // the host configured a key, otherwise when the brand's payment methods
+    // come back with one (getAvailablePaymentMethods). Apple Pay's sheet must
+    // open synchronously inside the tap, and its button waits for that same
+    // key, so the library is still there before the tap.
+    if (Configuration.isInitialized && Configuration.get()?.stripePublishableKey) {
+      preloadStripeJs()
+    }
+    // The cart under an open checkout can change without a tap in it: the
+    // server's lines taken when the checkout opens and right before it is
+    // built (CartManager.refreshFromServer), a stock clamp, another tab. The
+    // state's subtotal was computed at open(); it follows the cart from here.
+    // (Tests hand in plain stubs for the cart: nothing to listen to there.)
+    if (typeof (cartManager as Partial<EventTarget>).addEventListener === 'function') {
+      cartManager.addEventListener('change', () => this.onCartChange())
+    }
+  }
+
+  /** The open checkout's lines as a signature, to tell a real change from an echo. */
+  private cartSignature(sponsorId: number): string {
+    return (this.cartManager.getCart(sponsorId)?.items ?? [])
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
+      .join('|')
+  }
+
+  /** What the open checkout's cart looked like when it was last emitted. */
+  private lastCartSignature: string | null = null
+
+  /** The open checkout follows its cart: subtotal recomputed and `change` said when the lines differ. */
+  private onCartChange(): void {
+    const state = this.state
+    if (!state) return
+    const subtotal = this.cartManager.subtotalForSponsor(state.sponsorId)
+    const signature = this.cartSignature(state.sponsorId)
+    if (subtotal === state.subtotal && signature === this.lastCartSignature) return
+    this.lastCartSignature = signature
+    this.state = { ...state, subtotal }
+    this.emit()
   }
 
   open(sponsorId: number): CheckoutState {
     const cart = this.cartManager.getCart(sponsorId)
     if (!cart || cart.items.length === 0) {
       throw new Error(`[VioCheckout] sponsor ${sponsorId} has no cart items`)
+    }
+    // A cart whose lines add up to nothing is nothing to pay for: a checkout
+    // opened on it ends in a payment of 0 kr, or a provider refusing one.
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[VioCheckout] sponsor ${sponsorId} has a cart that totals 0`)
     }
     this.state = {
       sponsorId,
@@ -587,6 +732,7 @@ export class CheckoutManager extends EventTarget {
       // the host may have switched currency since the cart was created.
       currency: getGlobalCurrency(),
     }
+    this.lastCartSignature = this.cartSignature(sponsorId)
     this.emit()
     return this.state
   }
@@ -602,8 +748,34 @@ export class CheckoutManager extends EventTarget {
 
   /* eslint-disable @typescript-eslint/no-explicit-any */
 
-  /** Create the backend checkout for the sponsor's cart (auto-accepts terms). */
-  async createCheckout(sponsorId: number): Promise<any> {
+  /**
+   * The attribution of the order this sponsor's cart is about to become
+   * (ADR-0035 phase B), through the facade; `undefined` when there is none
+   * to give or it fails — attribution never costs a checkout.
+   */
+  private async attributionFor(sponsorId: number | undefined): Promise<CheckoutAttributionWire | undefined> {
+    if (!sponsorId || typeof this.deps.orderAttribution !== 'function') return undefined
+    try {
+      return (await this.deps.orderAttribution(sponsorId)) ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Create the backend checkout for the sponsor's cart (auto-accepts terms);
+   * born attributed when the facade knows the attribution. `paymentMethod` is
+   * the method it is created to pay with, when the caller knows it (else the
+   * state's): it goes on `vio:checkout-created`.
+   */
+  async createCheckout(sponsorId: number, paymentMethod?: PaymentMethod | string): Promise<any> {
+    // A line changed a moment ago may still be syncing — the checkout must be
+    // built on the cart that change produced, not on the one before it.
+    await this.cartManager.waitForCartMutations(sponsorId)
+    // And on the cart the SERVER has: the checkout takes every line of the
+    // backend cart, so the page shows those lines before anything is built on
+    // them (another tab may have added or paid; see CartManager.refreshFromServer).
+    await this.cartManager.refreshFromServer(sponsorId)
     const cart = this.cartManager.getCart(sponsorId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -613,7 +785,10 @@ export class CheckoutManager extends EventTarget {
       }
     }
     const opts = await getCartGraphQLOptions(sponsorId)
-    const checkout = await gqlCreateCheckout(cartId, opts)
+    const attribution = await this.attributionFor(sponsorId)
+    const checkout = attribution
+      ? await gqlCreateCheckout(cartId, opts, { attribution })
+      : await gqlCreateCheckout(cartId, opts)
     if (checkout?.id) {
       this.state = {
         ...(this.state ?? { sponsorId, subtotal: 0, currency: getGlobalCurrency() }),
@@ -622,6 +797,9 @@ export class CheckoutManager extends EventTarget {
         checkout,
       }
       this.emit()
+      this.announceCheckout(checkout.id, sponsorId, paymentMethod ?? this.state?.paymentMethod, {
+        campaignId: attribution?.campaign_id,
+      })
       try {
         const updated = await gqlUpdateCheckout(
           {
@@ -645,12 +823,67 @@ export class CheckoutManager extends EventTarget {
     return checkout
   }
 
-  /** Update the backend checkout (terms are re-asserted unless overridden). */
+  /**
+   * `vio:checkout-created` on `window` — `{ sponsorId, checkoutId,
+   * paymentMethod, campaignId?, redirect }` — the moment a backend checkout
+   * exists for a payment, before anything is asked of the provider. Analytics
+   * answers it with `add_payment_info` (ADR-0039: the one link from the
+   * order Commerce confirms back to this browser's session); `redirect: true`
+   * when the page is about to leave for the provider. Once per checkout per
+   * page load; never throws.
+   */
+  private announceCheckout(
+    checkoutId: string | undefined,
+    sponsorId: number,
+    paymentMethod: PaymentMethod | string | undefined,
+    opts: { redirect?: boolean; campaignId?: number } = {},
+  ): void {
+    if (!checkoutId || this.announcedCheckouts.has(checkoutId)) return
+    this.announcedCheckouts.add(checkoutId)
+    if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return
+    const method = paymentMethodName(paymentMethod)
+    try {
+      window.dispatchEvent(
+        new CustomEvent('vio:checkout-created', {
+          detail: {
+            sponsorId,
+            checkoutId,
+            ...(method ? { paymentMethod: method } : {}),
+            ...(typeof opts.campaignId === 'number' ? { campaignId: opts.campaignId } : {}),
+            redirect: opts.redirect === true,
+          },
+        }),
+      )
+    } catch {
+      /* an event never costs a payment */
+    }
+  }
+
+  /**
+   * Nothing is created or paid for a cart that is empty or totals 0 — as
+   * the SERVER has it (the callers read it from the server first). Throws,
+   * so a payment button ends in its error path, never at a provider asking
+   * for 0 kr.
+   */
+  private assertPayableCart(sponsorId: number): void {
+    const cart = this.cartManager.getCart(sponsorId)
+    if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} is empty — nothing to pay`)
+    }
+    if (!(cartTotal(cart.items) > 0)) {
+      throw new Error(`[CheckoutManager] the cart of sponsor ${sponsorId} totals 0 — nothing to pay`)
+    }
+  }
+
+  /** Update the backend checkout (terms are re-asserted unless overridden; the attribution rides along unless the caller gives its own). */
   async updateCheckout(variables: Record<string, unknown>, sponsorId?: number): Promise<any> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const spId = sponsorId ?? this.state?.sponsorId
+    const opts = await getCartGraphQLOptions(spId)
+    const attribution = 'attribution' in variables ? undefined : await this.attributionFor(spId)
     const fullVars = {
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
+      ...(attribution ? { attribution } : {}),
       ...variables,
     }
     const updated = await gqlUpdateCheckout(fullVars, opts)
@@ -672,14 +905,103 @@ export class CheckoutManager extends EventTarget {
    * receipt, and a receipt does not fail for it.
    */
   async getOrderNumber(checkoutId: string, sponsorId?: number): Promise<number | null> {
-    if (!checkoutId) return null
+    return (await this.getOrderReference(checkoutId, sponsorId)).orderNumber
+  }
+
+  /**
+   * What a paid checkout says of itself: the order number (as above) and the
+   * buyer reference — shopcart's keyed hash of the buyer's email, what the
+   * `vio:payment-success` detail carries as `buyerRef` and analytics sends as
+   * `buyer_id`. Never throws; `null` for whatever the API does not say.
+   */
+  async getOrderReference(checkoutId: string, sponsorId?: number): Promise<OrderReference> {
+    if (!checkoutId) return this.withSponsor({ orderNumber: null, buyerRef: null }, checkoutId, sponsorId)
+    // Concurrent asks for the same checkout (the receipt's order number and
+    // the payment event's buyer reference start together) share one request.
+    let request = this.referenceInFlight.get(checkoutId)
+    if (!request) {
+      const asked = (async (): Promise<CheckoutReference> => {
+        try {
+          const opts = await getCartGraphQLOptions(
+            sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId,
+          )
+          return await gqlGetCheckoutReference(checkoutId, opts)
+        } catch {
+          return { orderNumber: null, buyerRef: null }
+        } finally {
+          this.referenceInFlight.delete(checkoutId)
+        }
+      })()
+      this.referenceInFlight.set(checkoutId, asked)
+      request = asked
+    }
+    // After the answer: asking awaited the bootstrap, which names the sponsor.
+    return this.withSponsor(await request, checkoutId, sponsorId)
+  }
+
+  /**
+   * The sponsor of a checkout as `getOrderReference` carries it
+   * (`{ id, name, logoUrl }`): the given sponsor, else the one this tab
+   * remembered for the checkout, else the open checkout's when it IS that
+   * checkout — named by the `Vio.sponsorIdentity` rule. `undefined` when
+   * nothing names it; never throws.
+   */
+  private checkoutSponsor(checkoutId?: string | null, sponsorId?: number | string | null): CheckoutSponsor | undefined {
     try {
-      const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
-      return await gqlGetCheckoutOrderNumber(checkoutId, opts)
+      const id = sponsorId ?? this.sponsorIdOfCheckout(checkoutId ?? undefined)
+      const numeric = id === undefined || id === null || id === '' ? undefined : Number(id)
+      if (typeof this.deps.sponsorIdentity === 'function') {
+        return checkoutSponsorOf(this.deps.sponsorIdentity(numeric, { checkoutId: checkoutId ?? undefined }))
+      }
+      const memo = rememberedCheckoutSponsor(checkoutId ?? undefined)
+      if (memo && (numeric === undefined || memo.sponsorId === numeric) && (memo.name || memo.logoUrl)) {
+        return { id: memo.sponsorId, name: memo.name, logoUrl: memo.logoUrl }
+      }
+      return undefined
     } catch {
-      return null
+      return undefined
     }
   }
+
+  /** The sponsor id of a checkout: this tab's memory of it, else the open checkout's when it is that one. */
+  private sponsorIdOfCheckout(checkoutId: string | undefined): number | undefined {
+    if (!checkoutId) return undefined
+    const memo = rememberedCheckoutSponsor(checkoutId)
+    if (memo) return memo.sponsorId
+    return this.state?.checkoutId === checkoutId ? this.state.sponsorId : undefined
+  }
+
+  private withSponsor(reference: CheckoutReference, checkoutId: string, sponsorId?: number): OrderReference {
+    const sponsor = this.checkoutSponsor(checkoutId || undefined, sponsorId)
+    return sponsor ? { ...reference, sponsor } : reference
+  }
+
+  /**
+   * Remember whose checkout this is (`rememberCheckoutSponsor`), with the
+   * sponsor's name and logo as known now — so a confirmation after a redirect
+   * or a reload can name the brand. Written again only when something changed.
+   */
+  private rememberSponsorOfCheckout(checkoutId: string, sponsorId: number): void {
+    try {
+      let identity: SponsorIdentity | null = null
+      try {
+        identity = this.deps.sponsorIdentity?.(sponsorId, { checkoutId }) ?? null
+      } catch {
+        identity = null
+      }
+      const name = identity?.name || this.cartManager.getCart(sponsorId)?.sponsorName || ''
+      const logoUrl = identity?.logoUrl ?? null
+      const key = JSON.stringify([checkoutId, sponsorId, name, logoUrl])
+      if (key === this.lastRememberedSponsor) return
+      this.lastRememberedSponsor = key
+      rememberCheckoutSponsor(checkoutId, { sponsorId, name, logoUrl })
+    } catch {
+      /* the memory never costs a checkout */
+    }
+  }
+
+  /** In-flight `getOrderReference` per checkout id (see there). */
+  private referenceInFlight = new Map<string, Promise<CheckoutReference>>()
 
   /**
    * Payment methods enabled for the sponsor (backend-configured). Memoised per
@@ -702,6 +1024,7 @@ export class CheckoutManager extends EventTarget {
         // Never cache empty/failed responses — a transient blip would freeze
         // the payment grid for the whole page session.
         if (res) this.paymentMethodsCache.set(spId, res)
+        if (usesStripe(res)) preloadStripeJs()
         return res
       } finally {
         this.paymentMethodsPromises.delete(spId)
@@ -827,9 +1150,38 @@ export class CheckoutManager extends EventTarget {
     sponsorId: number | undefined,
     formData: unknown,
     extraUpdateVars: Record<string, unknown> = {},
+    /** The page leaves for the provider right after (Vipps, a Stripe payment link). */
+    leaving = false,
+    /** Vipps standard (not Express): our form's address goes on the checkout like any other method's. */
+    vippsWithAddress = false,
   ): Promise<{ spId: number; checkoutId: string; emailVal: string; opts: CartQueryOptions }> {
     const spId = sponsorId ?? this.state?.sponsorId
     if (!spId) throw new Error('[CheckoutManager] no sponsor for payment')
+    // The payment link is minted for the cart as it is AFTER any in-flight
+    // quantity change — never for the one before it — and as the SERVER has
+    // it: the provider's page shows every line of the backend cart, so the
+    // page shows them first (see CartManager.refreshFromServer).
+    await this.cartManager.waitForCartMutations(spId)
+    await this.cartManager.refreshFromServer(spId)
+    // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
+    this.assertPayableCart(spId)
+
+    // Vipps Express collects the address in its own flow — never push one onto
+    // the checkout for it (the backend rejects partial Vipps addresses). The
+    // standard Vipps payment (the checkout's) carries the form's address, and
+    // ONLY a complete one with a usable mobile — shopcart does not ask Vipps
+    // for the profile on it, so a payment without the address written would
+    // be an order with nowhere to ship. Checked before anything is created.
+    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
+    const addr =
+      typeof formData === 'object' && formData !== null ? formData : this.state?.address
+    const built = buildCheckoutAddress(addr)
+    if (isVipps && vippsWithAddress && !(isCompleteCheckoutAddress(built) && built?.phone)) {
+      throw new Error(
+        '[CheckoutManager] the standard Vipps payment needs the complete delivery address (name, street, postcode, city and a mobile number) — no payment started',
+      )
+    }
+    const addressObj = !isVipps ? built : vippsWithAddress ? built : null
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -840,21 +1192,24 @@ export class CheckoutManager extends EventTarget {
     }
 
     const opts = await getCartGraphQLOptions(spId)
+    // The order's attribution (ADR-0035 phase B): on the checkout when it is
+    // created here, and again on the update right before paying.
+    const attribution = await this.attributionFor(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
-      const checkoutRes = await gqlCreateCheckout(cartId, opts)
+      const checkoutRes = attribution
+        ? await gqlCreateCheckout(cartId, opts, { attribution })
+        : await gqlCreateCheckout(cartId, opts)
       checkoutId = checkoutRes?.id
+      this.announceCheckout(checkoutId, spId, String(extraUpdateVars.paymentMethod ?? '') || this.state?.paymentMethod, {
+        redirect: leaving,
+        campaignId: attribution?.campaign_id,
+      })
     }
     if (!checkoutId) {
       throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
     }
 
-    // Vipps collects the address in its own flow — never push one onto the
-    // checkout for it (the backend rejects partial Vipps addresses).
-    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
-    const addr =
-      typeof formData === 'object' && formData !== null ? formData : this.state?.address
-    const addressObj = !isVipps ? buildCheckoutAddress(addr) : null
     const emailVal =
       (typeof formData === 'string'
         ? formData
@@ -875,6 +1230,7 @@ export class CheckoutManager extends EventTarget {
       ...(hasEmail ? { email: emailVal } : {}),
       buyerAcceptsPurchaseConditions: true,
       buyerAcceptsTermsConditions: true,
+      ...(attribution ? { attribution } : {}),
       ...extraUpdateVars,
     }
     if (addressObj) {
@@ -933,6 +1289,7 @@ export class CheckoutManager extends EventTarget {
       sponsorId,
       formData,
       { paymentMethod: 'Stripe' },
+      true,
     )
     const successUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -965,16 +1322,25 @@ export class CheckoutManager extends EventTarget {
    * so the caller can open the ordinary checkout instead. Without the flag
    * the backend decides: Express while the cart has no delivery yet, a
    * plain payment once the shopper chose one in our form.
+   *
+   * `express: false` is the checkout's standard path (2026-10-28): the
+   * form's address — name, street, mobile — goes on the checkout before the
+   * payment is created, and the delivery already chosen on the cart is what
+   * Vipps charges for.
    */
   async startVippsPayment(
     sponsorId?: number,
     formData?: unknown,
     options: { express?: boolean } = {},
   ): Promise<any> {
+    const waitFor = sponsorId ?? this.state?.sponsorId
+    if (waitFor) await this.cartManager.waitForCartMutations(waitFor)
     const { spId, checkoutId, emailVal, opts } = await this.prepareRedirectPayment(
       sponsorId,
       formData,
       { paymentMethod: 'Vipps' },
+      true,
+      options.express === false,
     )
     const returnUrl = resolveHttpsReturnUrl(null, {
       vio_payment: 'success',
@@ -1045,7 +1411,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'kustom')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1141,7 +1507,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'qliro')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1251,7 +1617,7 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'walley')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1342,7 +1708,7 @@ export class CheckoutManager extends EventTarget {
     }
     if (!checkoutId) {
       // createCheckout(), NOT the raw mutation — see mountWalleyCheckout.
-      const checkoutRes = await this.createCheckout(spId)
+      const checkoutRes = await this.createCheckout(spId, 'nexi')
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -2016,7 +2382,7 @@ export class CheckoutManager extends EventTarget {
     return async (raw: ApplePayResult): Promise<unknown> => {
       let checkoutId = this.state?.checkoutId
       if (!checkoutId) {
-        const created = await this.createCheckout(spId)
+        const created = await this.createCheckout(spId, 'apple-pay')
         checkoutId = created?.id ?? this.state?.checkoutId
       }
       if (!checkoutId) {
@@ -2071,7 +2437,16 @@ export class CheckoutManager extends EventTarget {
           `[VioCheckout] Apple Pay confirmation failed (status: ${confirmRes?.status ?? 'none'})`,
         )
       }
-      return { orderId: confirmRes?.order_id, status: confirmRes?.status }
+      // The buyer reference rides along as `result.confirmation.buyerRef` (analytics `buyer_id`),
+      // the checkout it paid as `result.confirmation.checkoutId` (analytics `checkout_id`): the
+      // cart's express button has no checkout of its own to name.
+      const buyerRef = normalizeBuyerRef(confirmRes?.[BUYER_REF_FIELD])
+      return {
+        orderId: confirmRes?.order_id,
+        status: confirmRes?.status,
+        checkoutId,
+        ...(buyerRef ? { buyerRef } : {}),
+      }
     }
   }
 
@@ -2277,7 +2652,7 @@ export class CheckoutManager extends EventTarget {
     // 3. Backend checkout (CreatePaymentKlarnaNative requires a checkout_id).
     let checkoutId = ctx.checkoutId ?? this.state.checkoutId
     try {
-      const checkoutRes = await this.createCheckout(sponsorId)
+      const checkoutRes = await this.createCheckout(sponsorId, 'klarna')
       if (checkoutRes?.id) {
         checkoutId = checkoutRes.id
         ctx.checkoutId = checkoutRes.id
@@ -2332,6 +2707,7 @@ export class CheckoutManager extends EventTarget {
     if (nativeRes.checkout_id) {
       ctx.checkoutId = nativeRes.checkout_id
       this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+      this.announceCheckout(nativeRes.checkout_id, sponsorId, 'klarna')
     }
     if (nativeRes.session_id) {
       ctx.sessionId = nativeRes.session_id
@@ -2451,7 +2827,7 @@ export class CheckoutManager extends EventTarget {
     try {
       let checkoutId = ctx.checkoutId ?? this.state.checkoutId
       try {
-        const checkoutRes = await this.createCheckout(sponsorId)
+        const checkoutRes = await this.createCheckout(sponsorId, 'klarna')
         if (checkoutRes?.id) {
           checkoutId = checkoutRes.id
           ctx.checkoutId = checkoutRes.id
@@ -2499,6 +2875,7 @@ export class CheckoutManager extends EventTarget {
       if (nativeRes.checkout_id) {
         ctx.checkoutId = nativeRes.checkout_id
         this.state = { ...this.state, checkoutId: nativeRes.checkout_id }
+        this.announceCheckout(nativeRes.checkout_id, sponsorId, 'klarna')
       }
       if (nativeRes.session_id) {
         ctx.sessionId = nativeRes.session_id
@@ -2557,14 +2934,13 @@ export class CheckoutManager extends EventTarget {
    * the SDK's resumed `complete` event — finish creating the order + confirm.
    */
   async resumeKlarnaReturn(): Promise<void> {
-    if (typeof sessionStorage === 'undefined') return
-    const raw = sessionStorage.getItem(KLARNA_PENDING_KEY)
+    const raw = storageGet('session', KLARNA_PENDING_KEY)
     if (!raw) return
     let pending: KlarnaPendingContext
     try {
       pending = JSON.parse(raw) as KlarnaPendingContext
     } catch {
-      sessionStorage.removeItem(KLARNA_PENDING_KEY)
+      storageRemove('session', KLARNA_PENDING_KEY)
       return
     }
 
@@ -2639,10 +3015,9 @@ export class CheckoutManager extends EventTarget {
     // A token can only be confirmed once — a retry with an already-confirmed
     // token (network blip after a successful confirm) would create a second
     // order with autoCapture: double charge.
-    if (
-      typeof sessionStorage !== 'undefined' &&
-      sessionStorage.getItem('vio.klarna.confirmed.v1') === authorizationToken
-    ) {
+    // (Read through safe-storage: a storage that throws used to escape here
+    // with the in-flight flag still set — no Klarna order could follow.)
+    if (storageGet('session', KLARNA_CONFIRMED_KEY) === authorizationToken) {
       this.klarnaOrderInFlight = false
       return
     }
@@ -2659,23 +3034,29 @@ export class CheckoutManager extends EventTarget {
         customer: buildKlarnaCustomer(address),
       }
 
-      const json = await executeKlarnaGraphQL(
-        CONFIRM_PAYMENT_KLARNA_NATIVE_MUTATION,
-        variables,
-        ctx?.sponsorId ?? this.state?.sponsorId,
+      // Sent again without `buyer_ref` only when the gateway refused the
+      // selection (nothing ran) — a confirmation that ran is never repeated.
+      const json = await withBuyerRef((withRef) =>
+        executeKlarnaGraphQL(
+          confirmPaymentKlarnaNativeMutation(withRef),
+          variables,
+          ctx?.sponsorId ?? this.state?.sponsorId,
+        ),
       )
       const confirmRes = json?.data?.Payment?.ConfirmPaymentKlarnaNative
       if (!confirmRes) {
         throw new Error('Klarna order confirmation failed: missing response data')
       }
       const orderData = confirmRes.order || confirmRes
+      // The buyer reference (shopcart's hash of the email), for analytics `buyer_id`.
+      const buyerRef = normalizeBuyerRef(confirmRes[BUYER_REF_FIELD])
 
       // Success: only NOW is the pending context consumed (keeping it until
       // here lets the redirect path retry a confirm that never ran).
-      if (typeof sessionStorage !== 'undefined') {
-        sessionStorage.setItem('vio.klarna.confirmed.v1', authorizationToken)
-        sessionStorage.removeItem(KLARNA_PENDING_KEY)
-      }
+      // Never throws: a refusing storage keeps it in this page's memory, and
+      // the order just created is never reported as a failed payment.
+      storageSet('session', KLARNA_CONFIRMED_KEY, authorizationToken)
+      storageRemove('session', KLARNA_PENDING_KEY)
 
       // Synthesize a checkout state for the confirmation if the live one was
       // lost to a redirect reload.
@@ -2697,6 +3078,7 @@ export class CheckoutManager extends EventTarget {
                 typeof orderData?.order_amount === 'number'
                   ? orderData.order_amount / 100
                   : ctx.orderAmount / 100,
+              ...(buyerRef ? { buyerRef } : {}),
             },
           },
         }),

@@ -5,6 +5,37 @@
  * mental model stays consistent across platforms.
  */
 
+/**
+ * Where a unit in the cart came from (ADR-0027 / ADR-0034 / ADR-0035): the
+ * campaign the place showed when it was added, the place (`slot`), the kind
+ * of element it was added from, and the content (article: its id, URL and
+ * title). What `Vio.attribution(slot)` answers, minus the sponsor, plus the
+ * element's kind. The purchase is split per campaign from these, and since
+ * 0.26 Commerce receives them with every add (`origin` on the line, ADR-0035
+ * phase B) so the order knows where each unit was sold from.
+ */
+export interface CartOrigin {
+  campaignId?: number
+  slot?: string
+  contentId?: string
+  /**
+   * The kind of component the units were added from, as Commerce and the
+   * collector name it: `card` | `carousel` | `detail` for the SDK's elements
+   * (`componentKindOf()` — from the element's `componentTemplateId`, else
+   * the kind word in the slot id).
+   */
+  componentKind?: string
+  /** The page the units were added from (`content_url`, ≤ 2 048), kept so a later +1 from the cart credits the same page. */
+  contentUrl?: string
+  /** Its title (`content_title`, ≤ 255). */
+  contentTitle?: string
+}
+
+/** One origin of a line and how many of its units came from it. */
+export interface CartLineOrigin extends CartOrigin {
+  quantity: number
+}
+
 export interface CartLineItem {
   /** Unique local id for this line item (used for update/remove). */
   id: string
@@ -28,6 +59,12 @@ export interface CartLineItem {
   imageUrl: string
   /** Quantity. */
   quantity: number
+  /**
+   * Where the units came from, most recent last; their quantities add up to
+   * `quantity`. Absent on carts persisted before origins existed — read them
+   * through `lineOrigins()`, which fills the gap with an empty origin.
+   */
+  origins?: CartLineOrigin[]
   /** Selected shipping for this line (backend cart). */
   shipping?: unknown
   /** Shipping options offered by the backend for this line. */

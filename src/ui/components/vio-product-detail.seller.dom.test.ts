@@ -29,7 +29,7 @@ function deferred<T>() {
 }
 
 const header = (el: HTMLElement) =>
-  el.shadowRoot?.querySelector('.topbar-brand')?.textContent?.trim() ?? null
+  el.shadowRoot?.querySelector('.topbar-name')?.textContent?.trim() ?? ''
 
 let seller: ReturnType<typeof vi.fn>
 

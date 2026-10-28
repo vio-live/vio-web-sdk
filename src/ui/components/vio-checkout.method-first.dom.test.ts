@@ -24,10 +24,12 @@ const manager = Vio.checkout as any
 
 const FULL_FORM = {
   firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no',
-  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo',
+  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo', phone: '912 34 567',
 }
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   const proto = VioCheckout.prototype as any
   for (const m of ['loadAvailablePaymentMethods', 'refreshApplePay', 'refreshKlarna']) {
     vi.spyOn(proto, m).mockResolvedValue(undefined)

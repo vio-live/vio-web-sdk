@@ -9,7 +9,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Configuration } from '../configuration.js'
-import { AnalyticsManager } from './analytics-manager.js'
+import type { BootstrapResponse } from '../types.js'
+import {
+  AnalyticsManager,
+  buyerRefOf,
+  purchaseFromPaymentSuccess,
+  purchaseIdsOf,
+  resolveCampaignId,
+} from './analytics-manager.js'
 
 // ── Fake browser environment ────────────────────────────────────────────────
 
@@ -391,6 +398,1437 @@ describe('consentimiento (ePrivacy) y diagnósticos', () => {
     expect(ev.context.error_code).toBe('cart_error')
     expect(ev.props.message).toBe('AddItem failed')
     m.stop()
+  })
+})
+
+// ── Atribución: campaign_id, order_id y cabecera X-Api-Key ──────────────────
+
+type FakeLine = {
+  productId: number
+  variantId?: number
+  name?: string
+  brand?: string
+  unitPrice: number
+  quantity: number
+  currency: string
+  sponsorId: number
+}
+
+/** Lo mínimo del CartManager que lee el manager: carritos por sponsor + change. */
+function fakeCart(linesBySponsor: Record<number, FakeLine[]> = {}) {
+  const carts = new Map<number, { items: FakeLine[] }>()
+  for (const [sid, items] of Object.entries(linesBySponsor)) carts.set(Number(sid), { items })
+  return {
+    getAllCarts: () => carts,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }
+}
+
+function installFacade(bootstrapCache: unknown, cart = fakeCart()) {
+  ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = { bootstrapCache, cart }
+}
+
+function removeFacade() {
+  delete (globalThis as Record<string, unknown>).__VIO_FACADE__
+}
+
+const sponsor = (id: number) => ({ id, name: `Sponsor ${id}`, commerce: { apiKey: `key-${id}` } })
+
+/** Respuesta de `/v2/mobile/config` del micro: `campaign` + `campaigns[]`. */
+const BOOT: BootstrapResponse = {
+  campaign: { id: 10, name: 'Default', isActive: true, isPaused: false },
+  primarySponsor: sponsor(4),
+  secondarySponsors: [sponsor(5)],
+  campaigns: [
+    {
+      id: 12,
+      name: 'Newer',
+      isDefault: false,
+      status: 'active',
+      primarySponsor: sponsor(7),
+      secondarySponsors: [sponsor(8), sponsor(5)],
+      slots: [],
+    },
+    {
+      id: 10,
+      name: 'Default',
+      isDefault: true,
+      status: 'active',
+      primarySponsor: sponsor(4),
+      secondarySponsors: [sponsor(5)],
+      slots: [],
+    },
+    {
+      id: 13,
+      name: 'Paused',
+      isDefault: false,
+      status: 'paused',
+      primarySponsor: sponsor(9),
+      secondarySponsors: [],
+      slots: [],
+    },
+  ],
+}
+
+describe('campaign_id desde la respuesta real de /v2/mobile/config', () => {
+  afterEach(removeFacade)
+
+  const contextOf = async (context: Record<string, unknown>) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('el campaignId explícito del contexto gana sobre todo', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ campaignId: 99, sponsorId: 8 })).campaign_id).toBe(99)
+  })
+
+  it('un secundario de una campaña activa no-default atribuye a ESA campaña', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(12)
+  })
+
+  it('el primario de una campaña activa no-default atribuye a ESA campaña', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 7 })).campaign_id).toBe(12)
+  })
+
+  it('un sponsor en varias campañas activas va a la campaña por defecto', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 5 })).campaign_id).toBe(10)
+  })
+
+  it('un sponsor que solo está en una campaña pausada cae a campaign.id', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: 9 })).campaign_id).toBe(10)
+  })
+
+  it('sin sponsor en el evento, campaign.id', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({})).campaign_id).toBe(10)
+  })
+
+  it('acepta el sponsorId como string (los web components lo pasan por atributo)', async () => {
+    installFacade(BOOT)
+    expect((await contextOf({ sponsorId: '8' as unknown as number })).campaign_id).toBe(12)
+  })
+
+  it('sin bootstrap no inventa campaign_id, y el viejo `campaignId` plano ya no cuenta', async () => {
+    installFacade({ campaignId: 77, primarySponsor: sponsor(4) })
+    expect((await contextOf({ sponsorId: 4 })).campaign_id).toBeUndefined()
+    removeFacade()
+    expect((await contextOf({ sponsorId: 4 })).campaign_id).toBeUndefined()
+  })
+
+  it('un sponsor en varias campañas activas no-default (y no en la default) va a la primera que lista el backend', async () => {
+    installFacade({
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4) },
+        { id: 21, name: 'A', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)] },
+        { id: 22, name: 'B', status: 'active', primarySponsor: sponsor(8) },
+      ],
+    })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(21)
+  })
+
+  it('un campaigns[] malformado no rompe track(): cae a campaign.id', async () => {
+    installFacade({ campaign: { id: 10, name: 'Default' }, campaigns: 'nope' })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(10)
+
+    installFacade({
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [null, { id: 12, status: 'active', primarySponsor: sponsor(8), secondarySponsors: 'x' }, 7],
+    })
+    expect((await contextOf({ sponsorId: 8 })).campaign_id).toBe(12)
+    expect((await contextOf({ sponsorId: 9 })).campaign_id).toBe(10)
+
+    expect(() =>
+      resolveCampaignId({ sponsorId: 8 }, { campaign: { id: 3, name: 'x' }, campaigns: [{}] as never }),
+    ).not.toThrow()
+  })
+
+  it('resolveCampaignId es pura y sigue la misma cascada', () => {
+    expect(resolveCampaignId({ campaignId: 1, sponsorId: 8 }, BOOT)).toBe(1)
+    expect(resolveCampaignId({ sponsorId: 8 }, BOOT)).toBe(12)
+    expect(resolveCampaignId({ sponsorId: 5 }, BOOT)).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 9 }, BOOT)).toBe(10)
+    expect(resolveCampaignId({}, BOOT)).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 8 }, { campaign: { id: 3, name: 'x' } })).toBe(3)
+    expect(resolveCampaignId({ sponsorId: 8 }, null)).toBeUndefined()
+  })
+})
+
+describe('order_id coherente en purchase (cuatro emisores de vio:payment-success)', () => {
+  afterEach(removeFacade)
+
+  const fire = (detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent('vio:payment-success', { detail }) as unknown as Event,
+    )
+
+  const purchaseAfter = async (detail: unknown, cart = fakeCart()) => {
+    initVio()
+    installFacade(BOOT, cart)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire(detail)
+    await m.flush()
+    m.stop()
+    const ev = flushedBatches
+      .flatMap((b) => b.events)
+      .find((e) => e.name === 'purchase') as Record<string, any>
+    expect(ev).toBeDefined()
+    return ev
+  }
+
+  const line = (over: Partial<FakeLine> = {}): FakeLine => ({
+    productId: 408948,
+    name: 'Bonding Oil',
+    unitPrice: 300,
+    quantity: 1,
+    currency: 'NOK',
+    sponsorId: 4,
+    ...over,
+  })
+
+  it('retorno de redirect (Vipps/Klarna/Stripe): orderId = checkout id de Vio', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1' })
+    expect(ev.commerce.order_id).toBe('CHK-1')
+    expect(ev.commerce.payment_method).toBe('vipps')
+    expect(ev.context.sponsor_id).toBe(4)
+    expect(ev.context.campaign_id).toBe(10)
+  })
+
+  it('confirmOrder con result de Qliro: su order.orderId es del proveedor, order_id es el checkout de Vio', async () => {
+    const ev = await purchaseAfter(
+      {
+        method: 'qliro',
+        sponsorId: 4,
+        result: { order: { orderId: 3361254 }, chargedTotal: 5198 },
+        checkoutId: 'CHK-2',
+      },
+      fakeCart({ 4: [line({ unitPrice: 4999 })] }),
+    )
+    expect(ev.commerce.order_id).toBe('CHK-2')
+    expect(ev.commerce.value).toBe(4999) // el carrito, no lo cobrado (chargedTotal lleva envío)
+  })
+
+  it('recibo del proveedor (Walley): su orderId no cuenta, order_id es el checkout de Vio', async () => {
+    const ev = await purchaseAfter({
+      method: 'walley',
+      sponsorId: 4,
+      result: { orderId: 'W-9' },
+      checkoutId: 'CHK-3',
+    })
+    expect(ev.commerce.order_id).toBe('CHK-3')
+  })
+
+  it('value y currency salen SIEMPRE del carrito, no del result', async () => {
+    const ev = await purchaseAfter(
+      {
+        method: 'stripe',
+        sponsorId: 4,
+        result: { chargedTotal: 350, total: 999, currency: 'SEK' },
+        checkoutId: 'CHK-4',
+      },
+      fakeCart({ 4: [line()] }),
+    )
+    expect(ev.commerce.order_id).toBe('CHK-4')
+    expect(ev.commerce.value).toBe(300)
+    expect(ev.commerce.currency).toBe('NOK')
+    expect(ev.commerce.items[0].product_id).toBe('408948')
+  })
+
+  it('sin carrito ni snapshot, purchase sale sin value ni currency (nunca inventados)', async () => {
+    const ev = await purchaseAfter({ method: 'nexi', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-5' })
+    expect(ev.commerce.order_id).toBe('CHK-5')
+    expect(ev.commerce.value).toBeUndefined()
+    expect(ev.commerce.currency).toBeUndefined()
+  })
+
+  it('Apple Pay express desde el carrito: order_id es el de la confirmación del backend', async () => {
+    const ev = await purchaseAfter(
+      { method: 'apple-pay', result: { paymentMethodId: 'pm_1', confirmation: { orderId: 'ORD-77', status: 'paid' } } },
+      fakeCart({ 4: [line({ unitPrice: 200, quantity: 2 })] }),
+    )
+    expect(ev.commerce.order_id).toBe('ORD-77')
+    expect(ev.commerce.value).toBe(400)
+    expect(ev.commerce.payment_method).toBe('apple-pay')
+    expect(ev.context.sponsor_id).toBeUndefined()
+    expect(ev.context.campaign_id).toBe(10)
+  })
+
+  it('purchaseFromPaymentSuccess es pura: solo ids de Vio, nunca del proveedor ni totales', () => {
+    expect(purchaseFromPaymentSuccess({})).toEqual({})
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', checkoutId: 'D' })).toEqual({ orderId: 'A', checkoutId: 'A' })
+    expect(purchaseFromPaymentSuccess({ orderId: '', checkoutId: 'D' })).toEqual({ orderId: 'D', checkoutId: 'D' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { confirmation: { orderId: 42 } }, checkoutId: 'D' }),
+    ).toEqual({ orderId: '42', checkoutId: 'D' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } }, checkoutId: 'D' }),
+    ).toEqual({ orderId: 'D', checkoutId: 'D' })
+    expect(purchaseFromPaymentSuccess({ result: { orderId: 'B', order: { orderId: 'C' } } })).toEqual({})
+    expect(purchaseFromPaymentSuccess({ checkoutId: 'D', result: null })).toEqual({ orderId: 'D', checkoutId: 'D' })
+    expect(
+      purchaseFromPaymentSuccess({ result: { total: '12.5', chargedTotal: 99, currency: 'NOK' } }),
+    ).toEqual({})
+  })
+})
+
+describe('purchase: order_id es el número de orden de Vio, checkout_id siempre (ADR-0036)', () => {
+  /** Commerce compensa cancelaciones por el número de orden (4415): el purchase tiene que llevar ese, no el uuid del checkout. */
+  const CHK = '0b6f3c1e-2d4a-4f5b-9c8d-7e6f5a4b3c2d'
+  type Answer = { orderNumber: number | null; buyerRef?: string | null } | 'hang' | 'fail'
+
+  afterEach(removeFacade)
+
+  /**
+   * A page with the SDK's checkout manager: `getOrderReference` answers
+   * `answers` in turn (the last one from then on) — the same ask the receipt
+   * makes. Fake timers from the start, so every wait is the test's to advance.
+   */
+  const page = (answers: Answer[], cart = fakeCart({ 4: [paidLine()] })) => {
+    vi.useFakeTimers()
+    initVio()
+    let call = 0
+    const ask = vi.fn((_checkoutId: string, _sponsorId?: number) => {
+      const answer = answers[Math.min(call++, answers.length - 1)]!
+      if (answer === 'hang') return new Promise<never>(() => {})
+      if (answer === 'fail') return Promise.reject(new Error('network'))
+      return Promise.resolve({ orderNumber: answer.orderNumber, buyerRef: answer.buyerRef ?? null })
+    })
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: BOOT,
+      cart,
+      checkout: { getOrderReference: ask },
+    }
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    return { m, ask }
+  }
+
+  function paidLine(over: Partial<FakeLine> = {}): FakeLine {
+    return { productId: 408948, name: 'Bonding Oil', unitPrice: 300, quantity: 1, currency: 'NOK', sponsorId: 4, ...over }
+  }
+
+  const fire = (detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent('vio:payment-success', { detail }) as unknown as Event,
+    )
+
+  /** Every purchase sent so far (flushes the queue first). */
+  const purchases = async (m: AnalyticsManager) => {
+    await m.flush()
+    return flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+  }
+
+  it('número disponible al instante (en el detail): sale ya, sin preguntar — order_id 4415, checkout_id, order_id_kind order', async () => {
+    const { m, ask } = page([{ orderNumber: 1 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK, orderNumber: 4415 })
+    const [ev, ...rest] = await purchases(m)
+    expect(rest).toHaveLength(0)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK, value: 300, currency: 'NOK', payment_method: 'vipps' })
+    expect(ev!.props).toEqual({ order_id_kind: 'order' })
+    expect(ask).not.toHaveBeenCalled()
+    m.stop()
+  })
+
+  it('número disponible al instante (en el checkout): la primera pregunta lo trae, sin esperar ningún backoff', async () => {
+    const { m, ask } = page([{ orderNumber: 4415 }])
+    fire({ method: 'klarna', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+    expect(ev!.props).toEqual({ order_id_kind: 'order' })
+    expect(ask).toHaveBeenCalledTimes(1)
+    expect(ask).toHaveBeenCalledWith(CHK, 4)
+    m.stop()
+  })
+
+  it('número que llega al 3.er sondeo (0 / 0,5 / 1,5 s): nada sale antes; luego UN purchase con el número y el ts del pago', async () => {
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: null }, { orderNumber: 4415 }])
+    const paidAt = Date.now()
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK }) // retorno de redirect: el orderId es el checkout
+    // Mientras espera, la página cambia (el SDK limpia la URL del retorno, una SPA navega): el evento es el del pago.
+    const g = globalThis as Record<string, any>
+    g.location.href = 'https://host.example/otra'
+    g.document.title = 'Otra página'
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(await purchases(m)).toHaveLength(0) // ni la UI ni el pago esperan: solo el evento
+    expect(ask).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(1)
+    expect(ask).toHaveBeenCalledTimes(3)
+    expect(sent[0]!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK, value: 300 })
+    expect(sent[0]!.props).toEqual({ order_id_kind: 'order' })
+    expect(sent[0]!.ts).toBe(new Date(paidAt).toISOString())
+    expect(sent[0]!.context).toMatchObject({ content_url: 'https://host.example/article', content_title: 'Sneakers 2026 — trendy' })
+    // Ya no se pregunta más, ni sale nada más.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(ask).toHaveBeenCalledTimes(3)
+    expect(await purchases(m)).toHaveLength(1)
+    m.stop()
+  })
+
+  it('el carrito se lee al pago: vaciarlo mientras espera no cambia items ni value', async () => {
+    const cart = fakeCart({ 4: [paidLine({ unitPrice: 200, quantity: 2 })] })
+    const { m } = page([{ orderNumber: null }, { orderNumber: 4415 }], cart)
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK })
+    cart.getAllCarts().clear() // la UI vacía el carrito justo después del evento
+    await vi.advanceTimersByTimeAsync(500)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', value: 400, items: [expect.objectContaining({ product_id: '408948', quantity: 2 })] })
+    m.stop()
+  })
+
+  it('nunca llega: a los ~10 s sale igual con el checkoutId y order_id_kind checkout — tras 6 preguntas (0 / 0,5 / 1,5 / 3,5 / 6,5 / 9,5 s)', async () => {
+    const { m, ask } = page([{ orderNumber: null }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(9_499)
+    expect(await purchases(m)).toHaveLength(0)
+    expect(ask).toHaveBeenCalledTimes(5)
+    await vi.advanceTimersByTimeAsync(1)
+    const sent = await purchases(m)
+    expect(ask).toHaveBeenCalledTimes(6)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(sent[0]!.props).toEqual({ order_id_kind: 'checkout' })
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(ask).toHaveBeenCalledTimes(6)
+    expect(await purchases(m)).toHaveLength(1)
+    m.stop()
+  })
+
+  it('una respuesta que no llega nunca (o falla) no retiene el evento más de 10 s', async () => {
+    const hang = page(['hang'])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(await purchases(hang.m)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    const [ev] = await purchases(hang.m)
+    expect(ev!.commerce.order_id).toBe(CHK)
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+    expect(hang.ask).toHaveBeenCalledTimes(1)
+    hang.m.stop()
+
+    flushedBatches.length = 0
+    const failing = page(['fail', 'fail', { orderNumber: 4415 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    await vi.advanceTimersByTimeAsync(1_500)
+    const [late] = await purchases(failing.m)
+    expect(late!.commerce.order_id).toBe('4415') // un fallo se vuelve a preguntar
+    failing.m.stop()
+  })
+
+  it('checkout_id va siempre: redirect, drawer (confirmOrder / recibo del proveedor), Apple Pay desde el checkout y desde el carrito', async () => {
+    const { m } = page([{ orderNumber: 4415 }])
+    const details = [
+      { method: 'vipps', sponsorId: 4, orderId: 'chk-redirect' },
+      { method: 'qliro', sponsorId: 4, checkoutId: 'chk-drawer', result: { order: { orderId: 3361254 } } },
+      { method: 'walley', sponsorId: 4, checkoutId: 'chk-receipt', result: { orderId: 'W-9' } },
+      { method: 'apple-pay', sponsorId: 4, checkoutId: 'chk-apple', result: { confirmation: { orderId: '4416', checkoutId: 'chk-apple' } } },
+      { method: 'apple-pay', result: { confirmation: { orderId: '4417', checkoutId: 'chk-cart', status: 'SUCCESS' } } },
+    ]
+    for (const d of details) fire(d)
+    await vi.advanceTimersByTimeAsync(0)
+    const sent = await purchases(m)
+    // checkout_id → order_id. Apple Pay sale al instante; los demás tras la primera pregunta.
+    const byCheckout = Object.fromEntries(sent.map((e) => [e.commerce.checkout_id, e.commerce.order_id]))
+    expect(byCheckout).toEqual({
+      'chk-redirect': '4415',
+      'chk-drawer': '4415', // nunca 3361254, el id de Qliro
+      'chk-receipt': '4415', // nunca W-9, el de Walley
+      'chk-apple': '4416',
+      'chk-cart': '4417',
+    })
+    m.stop()
+  })
+
+  it('Apple Pay / Stripe embebido (sin redirección): sin espera extra', async () => {
+    // Apple Pay: la confirmación del backend YA trae el número — no se pregunta nada.
+    const apple = page([{ orderNumber: 1 }])
+    fire({ method: 'apple-pay', sponsorId: 4, checkoutId: CHK, result: { confirmation: { orderId: '4415', checkoutId: CHK } } })
+    const [a] = await purchases(apple.m)
+    expect(a!.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+    expect(a!.props).toEqual({ order_id_kind: 'order' })
+    expect(apple.ask).not.toHaveBeenCalled()
+    apple.m.stop()
+
+    // Stripe embebido: el drawer espera a que el webhook cree la orden antes de
+    // confirmar, así que el número está a la primera pregunta (o ya en el detail).
+    flushedBatches.length = 0
+    const stripe = page([{ orderNumber: 4420 }])
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK, result: { chargedTotal: 350 } })
+    await vi.advanceTimersByTimeAsync(0)
+    const [s] = await purchases(stripe.m)
+    expect(s!.commerce).toMatchObject({ order_id: '4420', checkout_id: CHK })
+    expect(stripe.ask).toHaveBeenCalledTimes(1)
+    stripe.m.stop()
+  })
+
+  it('no duplica: otro vio:payment-success del mismo checkout — esperando o ya enviado — no hace un segundo purchase', async () => {
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: 4415 }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    fire({ method: 'vipps', sponsorId: 4, checkoutId: CHK }) // mientras espera
+    await vi.advanceTimersByTimeAsync(500)
+    fire({ method: 'vipps', sponsorId: 4, checkoutId: CHK, orderNumber: 4415 }) // ya enviado
+    fire({ method: 'apple-pay', result: { confirmation: { orderId: '4415' } } }) // la misma orden, sin checkout
+    await vi.advanceTimersByTimeAsync(20_000)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.commerce.order_id).toBe('4415')
+    expect(ask).toHaveBeenCalledTimes(2) // una sola espera
+    m.stop()
+  })
+
+  it('el usuario cierra la página mientras espera: sale YA con el checkoutId (por beacon) y el número tardío no añade un segundo evento', async () => {
+    const beacons: Array<{ events: Array<Record<string, any>> }> = []
+    const { m, ask } = page([{ orderNumber: null }, { orderNumber: 4415 }])
+    let readBlob: Promise<void> = Promise.resolve()
+    vi.stubGlobal('navigator', {
+      sendBeacon: (_url: string, blob: Blob) => {
+        readBlob = blob.text().then((t) => void beacons.push(JSON.parse(t)))
+        return true
+      },
+    })
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    ;(globalThis as Record<string, any>).window.dispatchEvent(new Event('pagehide'))
+    await readBlob
+    const beaconed = beacons.flatMap((b) => b.events).filter((e) => e.name === 'purchase')
+    expect(beaconed).toHaveLength(1)
+    expect(beaconed[0]!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(beaconed[0]!.props).toEqual({ order_id_kind: 'checkout' })
+    // El número llega después: nada más sale, y se deja de preguntar.
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(m)).toHaveLength(0)
+    expect(beacons.flatMap((b) => b.events).filter((e) => e.name === 'purchase')).toHaveLength(1)
+    expect(ask).toHaveBeenCalledTimes(1)
+    m.stop()
+  })
+
+  it('una compra partida por campaña espera UNA vez y todos sus slices llevan el mismo número, ids de evento distintos y estables', async () => {
+    const { m, ask } = page(
+      [{ orderNumber: null }, { orderNumber: 4415 }],
+      fakeCart({ 4: [paidLine()], 7: [paidLine({ sponsorId: 7, productId: 1 })] }),
+    )
+    fire({ method: 'apple-pay', checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(500)
+    const sent = await purchases(m)
+    expect(sent).toHaveLength(2)
+    expect(ask).toHaveBeenCalledTimes(2)
+    for (const p of sent) {
+      expect(p.commerce).toMatchObject({ order_id: '4415', checkout_id: CHK })
+      expect(p.props).toMatchObject({ slices: 2, order_id_kind: 'order' })
+    }
+    expect(new Set(sent.map((p) => p.event_id)).size).toBe(2)
+    m.stop()
+  })
+
+  it('stop() con una compra esperando: entra en la cola con el checkoutId, no se pierde', async () => {
+    const { m } = page([{ orderNumber: null }])
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    m.stop()
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.order_id).toBe(CHK)
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+  })
+
+  it('sin gestor de checkout en la página (un host con su propio checkout) sale al instante, como antes', async () => {
+    vi.useFakeTimers()
+    initVio()
+    installFacade(BOOT, fakeCart({ 4: [paidLine()] }))
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire({ method: 'vipps', sponsorId: 4, orderId: CHK })
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: CHK, checkout_id: CHK })
+    expect(ev!.props).toEqual({ order_id_kind: 'checkout' })
+    m.stop()
+  })
+
+  it('el buyer_id que el pago no trajo lo puede traer la misma respuesta del checkout', async () => {
+    const { m } = page([{ orderNumber: 4415, buyerRef: 'brf_late' }])
+    fire({ method: 'klarna', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce).toMatchObject({ order_id: '4415', buyer_id: 'brf_late' })
+    m.stop()
+  })
+
+  it('purchaseIdsOf es pura: número (orderNumber → confirmation.orderId → orderId entero) y checkout (orderId uuid → checkoutId → confirmation.checkoutId)', () => {
+    expect(purchaseIdsOf({})).toEqual({})
+    expect(purchaseIdsOf(undefined)).toEqual({})
+    expect(purchaseIdsOf({ orderId: CHK })).toEqual({ orderId: CHK, checkoutId: CHK, orderIdKind: 'checkout' })
+    expect(purchaseIdsOf({ orderId: CHK, orderNumber: 4415 })).toEqual({ orderId: '4415', checkoutId: CHK, orderIdKind: 'order' })
+    expect(purchaseIdsOf({ orderId: 4415 })).toEqual({ orderId: '4415', orderIdKind: 'order' }) // un host que pasa el número
+    expect(purchaseIdsOf({ orderId: '4415', checkoutId: CHK })).toEqual({ orderId: '4415', checkoutId: CHK, orderIdKind: 'order' })
+    expect(purchaseIdsOf({ checkoutId: CHK, result: { confirmation: { orderId: 77 } } })).toEqual({
+      orderId: '77',
+      checkoutId: CHK,
+      orderIdKind: 'order',
+    })
+    expect(purchaseIdsOf({ result: { confirmation: { orderId: '', checkoutId: CHK } } })).toEqual({
+      orderId: CHK,
+      checkoutId: CHK,
+      orderIdKind: 'checkout',
+    })
+    // Los ids del proveedor nunca: ni result.orderId ni result.order.orderId.
+    expect(purchaseIdsOf({ result: { orderId: 'W-9', order: { orderId: 3361254 } } })).toEqual({})
+  })
+})
+
+describe('X-Api-Key en el fetch de eventos', () => {
+  it('manda la key en la cabecera además del body (el colector limita por key, no por IP)', async () => {
+    initVio()
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 202 }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    await m.flush()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [
+      string,
+      { headers: Record<string, string>; body: string },
+    ]
+    expect(url).toBe('https://events.test/v1/events')
+    expect(init.headers['X-Api-Key']).toBe('test-key')
+    expect(init.headers['Content-Type']).toBe('application/json')
+    expect(JSON.parse(init.body).apiKey).toBe('test-key')
+  })
+})
+
+describe('slot → campaign_id (ADR-0027): explícito → slot → sponsor → default', () => {
+  afterEach(removeFacade)
+
+  /** `campaigns[].slots[]` como lo manda el micro: solo ventanas abiertas. */
+  const SLOT_BOOT: BootstrapResponse = {
+    campaign: { id: 10, name: 'Default' },
+    primarySponsor: sponsor(4),
+    secondarySponsors: [sponsor(5)],
+    campaigns: [
+      {
+        id: 12,
+        name: 'Newer',
+        status: 'active',
+        primarySponsor: sponsor(7),
+        secondarySponsors: [sponsor(8)],
+        slots: [
+          { name: 'hero', platform: null },
+          { name: 'sidebar', platform: 'vev' },
+        ],
+      },
+      {
+        id: 10,
+        name: 'Default',
+        status: 'active',
+        isDefault: true,
+        primarySponsor: sponsor(4),
+        secondarySponsors: [sponsor(5)],
+        slots: [],
+      },
+      { id: 13, name: 'Paused', status: 'paused', primarySponsor: sponsor(9), slots: [{ name: 'footer' }] },
+    ],
+  }
+
+  const contextOf = async (context: Record<string, unknown>) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('la campaña asignada al slot gana sobre la regla del sponsor', () => {
+    // El sponsor 4 diría 10 (default); el slot `hero` está asignado a 12.
+    expect(resolveCampaignId({ slot: 'hero', sponsorId: 4 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'hero' }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('el campaignId explícito sigue ganando sobre el slot', () => {
+    expect(resolveCampaignId({ campaignId: 99, slot: 'hero', sponsorId: 4 }, SLOT_BOOT)).toBe(99)
+  })
+
+  it('un slot sin asignación vigente cae a la regla del sponsor, y sin sponsor al default', () => {
+    expect(resolveCampaignId({ slot: 'unknown', sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'unknown' }, SLOT_BOOT)).toBe(10)
+    // `footer` solo está en una campaña pausada: no cuenta.
+    expect(resolveCampaignId({ slot: 'footer', sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+    expect(resolveCampaignId({ slot: 'footer' }, SLOT_BOOT)).toBe(10)
+    expect(resolveCampaignId({ slot: '' , sponsorId: 8 }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('respeta la plataforma de Vio.init: una asignación solo-vev no aplica en web', () => {
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', platform: 'web' })
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(10)
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', platform: 'vev' })
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(12)
+    Configuration.reset()
+    // Sin init no hay plataforma: cualquier asignación cuenta.
+    expect(resolveCampaignId({ slot: 'sidebar' }, SLOT_BOOT)).toBe(12)
+  })
+
+  it('unos slots[] malformados no rompen track()', () => {
+    const boot = {
+      campaign: { id: 3, name: 'D' },
+      campaigns: [
+        { id: 4, status: 'active', slots: 'x' },
+        { id: 5, status: 'active', slots: [null, 7, { name: 'hero', startDate: 'bad', endDate: {} }] },
+      ],
+    } as unknown as BootstrapResponse
+    expect(() => resolveCampaignId({ slot: 'hero' }, boot)).not.toThrow()
+    expect(resolveCampaignId({ slot: 'hero' }, boot)).toBe(5)
+    expect(resolveCampaignId({ slot: 'hero' }, { campaign: { id: 3, name: 'D' }, campaigns: 'nope' } as never)).toBe(3)
+    expect(resolveCampaignId({ slot: 'hero' }, null)).toBeUndefined()
+  })
+
+  it('en el cable: campaign_id del slot y location_id = slot salvo locationId explícito', async () => {
+    installFacade(SLOT_BOOT)
+    const ctx = await contextOf({ slot: 'hero', sponsorId: 4 })
+    expect(ctx.campaign_id).toBe(12)
+    expect(ctx.location_id).toBe('hero')
+    expect(ctx.sponsor_id).toBe(4)
+    const explicit = await contextOf({ slot: 'hero', locationId: 'carousel-top' })
+    expect(explicit.location_id).toBe('carousel-top')
+    expect(explicit.campaign_id).toBe(12)
+    const none = await contextOf({ sponsorId: 4 })
+    expect(none.location_id).toBeUndefined()
+  })
+
+  it('los eventos vio:* de los componentes llevan el slot al contexto', async () => {
+    installFacade(SLOT_BOOT)
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 408948, sponsorId: 4, name: 'Bonding Oil', price: 300, slot: 'hero' },
+      }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 408948, sponsorId: 4, slot: 'hero' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, slot: ' hero ' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, slot: 7 } }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches.flatMap((b) => b.events)
+    const byName = (name: string) =>
+      events.filter((e) => e.name === name).map((e) => e.context as Record<string, unknown>)
+    expect(byName('select_item')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero', sponsor_id: 4 })
+    expect(byName('add_to_cart')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero' })
+    expect(byName('begin_checkout')[0]).toMatchObject({ campaign_id: 12, location_id: 'hero' })
+    // Un slot que no es string se ignora: cae a la regla del sponsor (4 → default).
+    expect(byName('begin_checkout')[1]).toMatchObject({ campaign_id: 10 })
+    expect(byName('begin_checkout')[1]!.location_id).toBeUndefined()
+    m.stop()
+  })
+})
+
+describe('content_id / content_title automáticos (el artículo va a analytics, no al slot)', () => {
+  afterEach(removeFacade)
+
+  const facadeWithContent = (content: { id?: string; title?: string }) => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => content,
+    }
+  }
+
+  const contextOf = async (context: Record<string, unknown> = {}) => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item', { context })
+    await m.flush()
+    return (flushedBatches.at(-1)!.events.at(-1)!.context ?? {}) as Record<string, unknown>
+  }
+
+  it('toma el contenido del facade (Vio.content()) cuando el evento no trae uno', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBe('article-123')
+    expect(ctx.content_title).toBe('Título del artículo')
+  })
+
+  it('el contentId / contentTitle explícitos del evento ganan', async () => {
+    facadeWithContent({ id: 'article-123', title: 'Título del artículo' })
+    const ctx = await contextOf({ contentId: 999, contentTitle: 'Mío' })
+    expect(ctx.content_id).toBe(999)
+    expect(ctx.content_title).toBe('Mío')
+  })
+
+  it('sin facade con content() sigue como antes: document.title y sin content_id', async () => {
+    installFacade({ campaign: { id: 1, name: 'x' } })
+    const ctx = await contextOf({})
+    expect(ctx.content_id).toBeUndefined()
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('B3: se lee en vivo en cada evento — un cambio de ruta/título en una SPA sale en el siguiente evento', async () => {
+    let current = { id: '/a', title: 'Article A' }
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = { bootstrapCache: null, cart: fakeCart(), content: () => current }
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    current = { id: '/b', title: 'Article B' }
+    m.track('view_item')
+    await m.flush()
+    const ctxs = flushedBatches.at(-1)!.events.filter((e) => e.name === 'view_item').map((e) => e.context as Record<string, unknown>)
+    expect(ctxs.map((c) => [c.content_id, c.content_title])).toEqual([['/a', 'Article A'], ['/b', 'Article B']])
+  })
+
+  it('un content() que lanza no rompe track()', async () => {
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: null,
+      cart: fakeCart(),
+      content: () => {
+        throw new Error('boom')
+      },
+    }
+    const ctx = await contextOf({})
+    expect(ctx.content_title).toBe('Sneakers 2026 — trendy')
+  })
+
+  it('los eventos vio:* llevan el override por elemento (vio-content-id / vio-content-title)', async () => {
+    facadeWithContent({ id: 'page', title: 'Page' })
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(
+      new CustomEvent('vio:product-click', {
+        detail: { productId: 1, sponsorId: 4, slot: 'card-1', contentId: 'art-9', contentTitle: ' Nine ' },
+      }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:added-to-cart', { detail: { productId: 1, sponsorId: 4, slot: 'card-1' } }) as unknown as Event,
+    )
+    win.dispatchEvent(
+      new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, contentId: 7 } }) as unknown as Event,
+    )
+    await m.flush()
+    const events = flushedBatches.flatMap((b) => b.events)
+    const ctxOf = (name: string) => events.find((e) => e.name === name)!.context as Record<string, unknown>
+    expect(ctxOf('select_item')).toMatchObject({ location_id: 'card-1', content_id: 'art-9', content_title: 'Nine' })
+    // Without an override the page's content applies.
+    expect(ctxOf('add_to_cart')).toMatchObject({ location_id: 'card-1', content_id: 'page', content_title: 'Page' })
+    expect(ctxOf('begin_checkout')).toMatchObject({ content_id: 7, content_title: 'Page' })
+    m.stop()
+  })
+})
+
+describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', () => {
+  afterEach(removeFacade)
+
+  /** Dos campañas activas con el MISMO sponsor (4): solo el origen las distingue. */
+  const TWO: BootstrapResponse = {
+    campaign: { id: 10, name: 'Default' },
+    primarySponsor: sponsor(4),
+    secondarySponsors: [],
+    campaigns: [
+      { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+      { id: 12, name: 'Hero', status: 'active', primarySponsor: sponsor(4), slots: [{ name: 'hero' }] },
+    ],
+  }
+
+  const line = (over: Partial<FakeLine> & { id?: string; origins?: unknown }) =>
+    ({
+      id: 'l',
+      productId: 1,
+      variantId: undefined,
+      name: 'Lamp',
+      brand: 'B',
+      unitPrice: 100,
+      currency: 'NOK',
+      quantity: 1,
+      sponsorId: 4,
+      ...over,
+    }) as FakeLine
+
+  const paid = async (lines: FakeLine[], detail: Record<string, unknown> = {}) => {
+    installFacade(TWO, fakeCart({ 4: lines }))
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4 } }) as unknown as Event)
+    win.dispatchEvent(
+      new CustomEvent('vio:payment-success', {
+        detail: { sponsorId: 4, method: 'klarna', orderId: 'chk-77', ...detail },
+      }) as unknown as Event,
+    )
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    return {
+      checkouts: events.filter((e) => e.name === 'begin_checkout'),
+      purchases: events.filter((e) => e.name === 'purchase'),
+    }
+  }
+
+  it('dos campañas en el carrito → dos purchase (y dos begin_checkout) con sus items, su value y el mismo order_id', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 3, origins: [
+        { campaignId: 12, slot: 'hero', contentId: 'art-1', quantity: 2 },
+        { campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 },
+      ] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 }] }),
+    ])
+    expect(purchases).toHaveLength(2)
+    expect(checkouts).toHaveLength(2)
+    const byCampaign = (list: Array<Record<string, unknown>>, id: number) =>
+      list.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!
+    const hero = byCampaign(purchases, 12)
+    const def = byCampaign(purchases, 10)
+    expect(hero.commerce).toMatchObject({ value: 200, currency: 'NOK', order_id: 'chk-77', payment_method: 'klarna' })
+    expect((hero.commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', quantity: 2, price: 100 }),
+    ])
+    expect(hero.context).toMatchObject({ campaign_id: 12, location_id: 'hero', content_id: 'art-1', sponsor_id: 4 })
+    expect(def.commerce).toMatchObject({ value: 150, order_id: 'chk-77' })
+    expect((def.commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', quantity: 1 }),
+      expect.objectContaining({ product_id: '2', quantity: 1 }),
+    ])
+    expect(def.context).toMatchObject({ campaign_id: 10, location_id: 'carousel-1', content_id: 'art-1' })
+    // El pedido sigue sumando: 200 + 150 = 350 = 3×100 + 1×50.
+    expect(byCampaign(checkouts, 12).commerce).toMatchObject({ value: 200 })
+    expect(byCampaign(checkouts, 10).commerce).toMatchObject({ value: 150 })
+  })
+
+  it('un carrito de una sola campaña se comporta como hoy: un purchase con todo', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [{ campaignId: 10, slot: 'carousel-1', quantity: 2 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }),
+    ])
+    expect(purchases).toHaveLength(1)
+    expect(checkouts).toHaveLength(1)
+    expect(purchases[0]!.commerce).toMatchObject({ value: 250, order_id: 'chk-77' })
+    expect((purchases[0]!.commerce as { items: unknown[] }).items).toHaveLength(2)
+    // Un solo slice cuyos orígenes nombran la campaña: el evento la lleva, y el slot único del slice.
+    expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4, location_id: 'carousel-1' })
+    // No slice props — only what its order_id is (the checkout id: this fake page has no checkout manager to ask).
+    expect((purchases[0]!).props).toEqual({ order_id_kind: 'checkout' })
+  })
+
+  it('un carrito SIN orígenes (0.22) sigue idéntico: un purchase, campaign_id por la regla del sponsor, sin location_id', async () => {
+    const { checkouts, purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2 }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }),
+    ])
+    expect(purchases).toHaveLength(1)
+    expect(checkouts).toHaveLength(1)
+    expect(purchases[0]!.commerce).toMatchObject({ value: 250, order_id: 'chk-77' })
+    expect(purchases[0]!.context).toMatchObject({ campaign_id: 10, sponsor_id: 4 })
+    expect((purchases[0]!.context as Record<string, unknown>).location_id).toBeUndefined()
+    expect((purchases[0]!.context as Record<string, unknown>).content_id).toBeUndefined()
+  })
+
+  it('B2: un slice único con campaña explícita distinta de la del sponsor (hero → 12, sponsor 4 secundario de 12)', async () => {
+    installFacade(
+      {
+        campaign: { id: 10, name: 'Default' },
+        primarySponsor: sponsor(4),
+        campaigns: [
+          { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+          { id: 12, name: 'Hero', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(4)], slots: [{ name: 'hero' }] },
+        ],
+      },
+      fakeCart({ 4: [line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] })] }),
+    )
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4 } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:payment-success', { detail: { sponsorId: 4, orderId: 'o-1' } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    for (const name of ['begin_checkout', 'purchase']) {
+      const ev = events.find((e) => e.name === name)!
+      expect(ev.context).toMatchObject({ campaign_id: 12, location_id: 'hero', sponsor_id: 4 })
+      expect(ev.commerce).toMatchObject({ value: 100 })
+    }
+  })
+
+  it('W5: cada evento partido lleva props.slice / props.slices para que el colector cuente el pedido una vez', async () => {
+    const { purchases, checkouts } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, quantity: 1 }] }),
+    ])
+    expect(purchases.map((p) => p.props)).toEqual([
+      { slice: 1, slices: 2, order_id_kind: 'checkout' },
+      { slice: 2, slices: 2, order_id_kind: 'checkout' },
+    ])
+    expect(checkouts.map((p) => p.props)).toEqual([{ slice: 1, slices: 2 }, { slice: 2, slices: 2 }])
+  })
+
+  it('W4: un slice sin slot/contenido únicos no hereda los del evento (el click que abrió el checkout)', async () => {
+    const { purchases } = await paid(
+      [
+        line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [
+          { campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 },
+          { campaignId: 10, slot: 'carousel-2', contentId: 'art-2', quantity: 1 },
+        ] }),
+        line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-1', quantity: 1 }] }),
+      ],
+      { slot: 'carousel-1', contentId: 'art-1' },
+    )
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!.context as Record<string, unknown>
+    expect(def.location_id).toBeUndefined()
+    // content_id falls back to the page's content (none in this fake facade), not to the click's.
+    expect(def.content_id).toBeUndefined()
+    const hero = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 12)!.context as Record<string, unknown>
+    expect(hero).toMatchObject({ location_id: 'hero', content_id: 'art-1' })
+  })
+
+  it("W-3: the click's content_title travels only with the click's content_id", async () => {
+    const { purchases } = await paid(
+      [
+        line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-9', quantity: 1 }] }),
+        line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, slot: 'carousel-1', contentId: 'art-1', quantity: 1 }] }),
+        line({ id: 'c', productId: 3, unitPrice: 10, quantity: 2, origins: [
+          { campaignId: 13, contentId: 'art-1', quantity: 1 },
+          { campaignId: 13, contentId: 'art-2', quantity: 1 },
+        ] }),
+      ],
+      { contentId: 'art-9', contentTitle: 'Nine' },
+    )
+    const ctxOf = (id: number) => purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!.context as Record<string, unknown>
+    expect(ctxOf(12)).toMatchObject({ content_id: 'art-9', content_title: 'Nine' })
+    expect(ctxOf(10).content_id).toBe('art-1')
+    expect(ctxOf(10).content_title).not.toBe('Nine')
+    expect(ctxOf(13).content_id).toBeUndefined()
+    expect(ctxOf(13).content_title).not.toBe('Nine')
+  })
+
+  it('W7: el campaignId explícito del detail de un elemento es la campaña del evento', async () => {
+    installFacade(TWO, fakeCart({ 4: [line({ id: 'a' })] }))
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:product-click', { detail: { productId: 1, sponsorId: 4, campaignId: 12, slot: 'carousel-9' } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:added-to-cart', { detail: { productId: 1, sponsorId: 4, campaignId: '12' } }) as unknown as Event)
+    win.dispatchEvent(new CustomEvent('vio:checkout-open', { detail: { sponsorId: 4, campaignId: 12 } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events)
+    for (const name of ['select_item', 'add_to_cart', 'begin_checkout']) {
+      expect((events.find((e) => e.name === name)!.context as Record<string, unknown>).campaign_id).toBe(12)
+    }
+  })
+
+  it('las unidades sin origen caen en la campaña que resuelve la regla actual para el sponsor', async () => {
+    const { purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1 }), // carrito viejo, sin origins
+    ])
+    expect(purchases).toHaveLength(2)
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!
+    expect(def.commerce).toMatchObject({ value: 150 })
+    expect((def.commerce as { items: Array<Record<string, unknown>> }).items.map((i) => [i.product_id, i.quantity])).toEqual([
+      ['1', 1],
+      ['2', 1],
+    ])
+  })
+
+  it('un origen con slot pero sin campaignId se resuelve por el slot; slots distintos en un slice no ponen location_id', async () => {
+    const { purchases } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 2, origins: [
+        { campaignId: 10, slot: 'carousel-1', quantity: 1 },
+        { campaignId: 10, slot: 'carousel-2', quantity: 1 },
+      ] }),
+    ])
+    expect(purchases).toHaveLength(2)
+    const hero = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 12)!
+    expect(hero.context).toMatchObject({ location_id: 'hero' })
+    const def = purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === 10)!
+    expect((def.context as Record<string, unknown>).location_id).toBeUndefined()
+    expect(def.commerce).toMatchObject({ value: 100 })
+  })
+
+  it('purchase también se parte desde el snapshot cuando el carrito ya se vació', async () => {
+    const cart = fakeCart({ 4: [
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 1, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] }),
+      line({ id: 'b', productId: 2, unitPrice: 50, quantity: 1, origins: [{ campaignId: 10, quantity: 1 }] }),
+    ] })
+    const listeners: Array<(ev: Event) => void> = []
+    cart.addEventListener = ((_: string, h: (ev: Event) => void) => void listeners.push(h)) as never
+    installFacade(TWO, cart)
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    // El change con items llena el snapshot; luego el carrito se vacía (Apple Pay / vio-cart).
+    listeners.forEach((h) => h(new CustomEvent('change', { detail: { cartsBySponsor: cart.getAllCarts() } }) as unknown as Event))
+    cart.getAllCarts().clear()
+    const win = (globalThis as Record<string, unknown> as { window: Window }).window
+    win.dispatchEvent(new CustomEvent('vio:payment-success', { detail: { sponsorId: 4, orderId: 'chk-1' } }) as unknown as Event)
+    await m.flush()
+    m.stop()
+    const purchases = flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase')
+    expect(purchases).toHaveLength(2)
+    expect(purchases.map((p) => (p.commerce as { value: number }).value).sort()).toEqual([100, 50])
+  })
+})
+
+describe('campaign_id y la campaña de la PÁGINA (ADR-0034, enmienda 3)', () => {
+  afterEach(removeFacade)
+
+  it('resolveCampaignId: asignación > campaña de la página (si el sponsor participa) > regla del sponsor > default; una inactiva se ignora', () => {
+    // Sin sponsor: la página dice 12 → 12.
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ campaignId: 1 }, BOOT, { pageCampaignId: 12 })).toBe(1)
+    // sponsor 5 participa en 12 (secundario) y en la default: la página gana → 12.
+    expect(resolveCampaignId({ sponsorId: 5 }, BOOT, { pageCampaignId: 12 })).toBe(12)
+    // W1: sponsor 4 NO participa en 12 → regla del sponsor (primario de la default) → 10.
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 12 })).toBe(10)
+    expect(resolveCampaignId({ sponsorId: 4 }, BOOT, { pageCampaignId: 13 })).toBe(10) // pausada
+    expect(resolveCampaignId({ sponsorId: 8 }, BOOT, { pageCampaignId: 99 })).toBe(12) // desconocida → regla del sponsor
+    // W7: una lista de candidatos cae al siguiente nivel; 0 = sin campaña.
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: [13, 12] })).toBe(12)
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: [0, 99, 12] })).toBe(12)
+    expect(resolveCampaignId({}, BOOT, { pageCampaignId: 0 })).toBe(10)
+    const withSlot: BootstrapResponse = {
+      ...BOOT,
+      campaigns: [
+        ...BOOT.campaigns!.slice(0, 1),
+        { ...BOOT.campaigns![1]!, slots: [{ name: 'hero' }] }, // hero asignado a la default 10
+        ...BOOT.campaigns!.slice(2),
+      ],
+    }
+    expect(resolveCampaignId({ slot: 'hero' }, withSlot, { pageCampaignId: 12 })).toBe(10)
+  })
+
+  it('en los eventos sale la campaña de Vio.init({ campaignId }) cuando no hay asignación ni campaignId explícito', async () => {
+    installFacade(BOOT)
+    Configuration.init({ apiKey: 'k', eventsBase: 'https://events.test', campaignId: 12 })
+    const m = new AnalyticsManager()
+    m.track('view_item', { context: { sponsorId: 5, slot: 'carousel-1' } }) // 5 participa en 12
+    m.track('view_item', { context: { sponsorId: 4, slot: 'carousel-1' } }) // 4 no → su campaña (10)
+    m.track('view_item', { context: { sponsorId: 5, slot: 'carousel-1', campaignId: 10 } })
+    m.track('view_item', { context: { slot: 'carousel-1' } })
+    await m.flush()
+    const ctxs = flushedBatches.at(-1)!.events.filter((e) => e.name === 'view_item').map((e) => e.context as Record<string, unknown>)
+    expect(ctxs.map((c) => c.campaign_id)).toEqual([12, 10, 10, 12])
+  })
+
+  it('W1: página 12, card con sponsor 9 que solo está en la campaña 14 → 14', () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Página', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)], slots: [] },
+        { id: 14, name: 'Otra', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(14)
+    expect(resolveCampaignId({ sponsorId: 8, slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'card-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+  })
+
+  it("W2c: una asignación hecha por la página (source: 'page') cede ante otra campaña activa que la página declare ahora; la del dashboard no", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'A', status: 'active', primarySponsor: sponsor(7), slots: [{ name: 'carousel-1', source: 'page' }, { name: 'hero', source: 'dashboard' }] },
+        { id: 14, name: 'B', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 14 })).toBe(14)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, {})).toBe(12)
+    expect(resolveCampaignId({ slot: 'hero' }, boot, { pageCampaignId: 14 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'carousel-1' }, boot, { pageCampaignId: 99 })).toBe(12) // la nueva no está activa: la asignación sigue
+  })
+
+  it("una asignación 'page' cuenta como la campaña de la página con sponsor conocido: solo si el sponsor participa", () => {
+    const boot: BootstrapResponse = {
+      campaign: { id: 10, name: 'Default' },
+      primarySponsor: sponsor(4),
+      campaigns: [
+        { id: 10, name: 'Default', status: 'active', isDefault: true, primarySponsor: sponsor(4), slots: [] },
+        { id: 12, name: 'Página', status: 'active', primarySponsor: sponsor(7), secondarySponsors: [sponsor(8)], slots: [{ name: 'by-page', source: 'page' }, { name: 'by-dash', source: 'dashboard' }] },
+        { id: 14, name: 'Otra', status: 'active', primarySponsor: sponsor(9), slots: [] },
+      ],
+    }
+    // sponsor 9 solo está en la 14: slot asignado por la página a 12 → 14, igual que sin asignación.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(14)
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'free' }, boot, { pageCampaignId: 12 })).toBe(14)
+    // Asignado por el dashboard a 12 → 12, sin condiciones.
+    expect(resolveCampaignId({ sponsorId: 9, slot: 'by-dash' }, boot, { pageCampaignId: 12 })).toBe(12)
+    // Un sponsor que sí participa (8) y sin sponsor: la asignación de la página aplica.
+    expect(resolveCampaignId({ sponsorId: 8, slot: 'by-page' }, boot, { pageCampaignId: 12 })).toBe(12)
+    expect(resolveCampaignId({ slot: 'by-page' }, boot, {})).toBe(12)
+  })
+})
+
+// ── 0.25.0: bloque `client`, buyer_id y component_template_id ───────────────
+
+function sessionStore() {
+  const store = new Map<string, string>()
+  return {
+    store,
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  }
+}
+
+describe('bloque `client` (el contexto estándar de la visita, contrato 2026-10-19)', () => {
+  afterEach(removeFacade)
+
+  it('va en todos los eventos, se calcula una vez por carga y es el mismo objeto', async () => {
+    initVio()
+    vi.stubGlobal('navigator', { language: 'nb-NO' })
+    vi.stubGlobal('screen', { width: 1440, height: 900 })
+    ;(globalThis as Record<string, any>).document.referrer = 'https://mail.example/'
+    ;(globalThis as Record<string, any>).location.search = '?utm_source=nyhetsbrev&utm_medium=email'
+    const m = new AnalyticsManager()
+    m.track('view_item')
+    vi.stubGlobal('navigator', { language: 'sv-SE' }) // cambia después: no se relee
+    m.track('select_item')
+    await m.flush()
+
+    const events = flushedBatches[0]!.events
+    expect(events.map((e) => e.name)).toEqual(['session_start', 'view_item', 'select_item'])
+    for (const ev of events) {
+      expect(ev.client).toMatchObject({
+        language: 'nb-NO',
+        referrer: 'https://mail.example/',
+        utm_source: 'nyhetsbrev',
+        utm_medium: 'email',
+        screen_w: 1440,
+        screen_h: 900,
+      })
+      expect(typeof (ev.client as Record<string, unknown>).tz).toBe('string')
+    }
+    // Lo que el colector deriva del User-Agent no se manda desde la web.
+    const client = events[1]!.client as Record<string, unknown>
+    for (const key of ['device_type', 'os', 'os_version', 'browser', 'browser_version']) expect(client).not.toHaveProperty(key)
+  })
+
+  it('recuerda la página de entrada (referrer + utm) en sessionStorage: la segunda página la hereda y NO manda su referrer interno', async () => {
+    initVio()
+    const session = sessionStore()
+    vi.stubGlobal('sessionStorage', session)
+    ;(globalThis as Record<string, any>).document.referrer = 'https://mail.example/'
+    ;(globalThis as Record<string, any>).location.search = '?utm_campaign=okt'
+    const first = new AnalyticsManager()
+    first.track('view_item')
+    await first.flush()
+    expect(session.store.has('vio.landing.v1')).toBe(true)
+
+    // Segunda página de la misma sesión: otro manager, referrer interno, sin utm.
+    ;(globalThis as Record<string, any>).document.referrer = 'https://host.example/article'
+    ;(globalThis as Record<string, any>).location.search = ''
+    const second = new AnalyticsManager()
+    second.track('view_item')
+    await second.flush()
+    const ev = flushedBatches.at(-1)!.events.find((e) => e.name === 'view_item')!
+    expect(ev.client).toMatchObject({ referrer: 'https://mail.example/', utm_campaign: 'okt' })
+  })
+
+  it('con requireConsent no escribe la entrada en el dispositivo hasta setConsent(true), pero igual la manda', async () => {
+    initVio()
+    const session = sessionStore()
+    vi.stubGlobal('sessionStorage', session)
+    ;(globalThis as Record<string, any>).location.search = '?utm_source=a'
+    const m = new AnalyticsManager()
+    m.start({ requireConsent: true })
+    m.track('view_item')
+    await m.flush()
+    expect(session.store.size).toBe(0)
+    expect((flushedBatches[0]!.events.at(-1)!.client as Record<string, unknown>).utm_source).toBe('a')
+    m.setConsent(true)
+    // The landing page itself is remembered too (origin + path), for the order's entry context.
+    expect(JSON.parse(session.store.get('vio.landing.v1')!)).toEqual({
+      utm: { utm_source: 'a' },
+      url: 'https://host.example/article',
+    })
+    // W5: withdrawing it forgets the landing too.
+    m.setConsent(false)
+    expect(session.store.has('vio.landing.v1')).toBe(false)
+    m.stop()
+  })
+
+  it('W5: sin consentimiento (ids efímeros) tampoco sale buyer_id — un identificador estable de persona —; con setConsent(true) sí', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.start({ requireConsent: true })
+    m.track('purchase', { commerce: { orderId: 'o1', buyerId: 'brf_1' } })
+    m.setConsent(true)
+    m.track('purchase', { commerce: { orderId: 'o2', buyerId: 'brf_1' } })
+    await m.flush()
+    const [before, after] = flushedBatches[0]!.events.filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+    expect(before!.commerce).not.toHaveProperty('buyer_id')
+    expect(after!.commerce.buyer_id).toBe('brf_1')
+    m.stop()
+  })
+})
+
+describe('buyer_id: la referencia del comprador (buyer_ref de shopcart), nunca un email', () => {
+  afterEach(removeFacade)
+
+  const fire = (type: string, detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(new CustomEvent(type, { detail }) as unknown as Event)
+
+  const fakeLine = (over: Partial<FakeLine> = {}): FakeLine => ({
+    productId: 408948,
+    name: 'Bonding Oil',
+    unitPrice: 300,
+    quantity: 1,
+    currency: 'NOK',
+    sponsorId: 4,
+    ...over,
+  })
+
+  const eventsAfter = async (type: string, detail: unknown, cart = fakeCart({ 4: [fakeLine()] })) => {
+    initVio()
+    installFacade(BOOT, cart)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire(type, detail)
+    await m.flush()
+    m.stop()
+    return flushedBatches.flatMap((b) => b.events) as Array<Record<string, any>>
+  }
+  const purchaseAfter = async (detail: unknown, cart?: ReturnType<typeof fakeCart>) => {
+    const ev = (await eventsAfter('vio:payment-success', detail, cart)).find((e) => e.name === 'purchase')
+    expect(ev).toBeDefined()
+    return ev!
+  }
+
+  it('buyerRef en el detail → commerce.buyer_id en purchase (retorno de redirect y drawer)', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1', buyerRef: 'brf_7f3a9c' })
+    expect(ev.commerce.buyer_id).toBe('brf_7f3a9c')
+    expect(ev.commerce.order_id).toBe('CHK-1')
+  })
+
+  it('también lo lee donde lo deje otro emisor: buyer_ref plano, result.buyer_ref, result.confirmation.buyerRef (Apple Pay) y result.checkout.buyer_ref', async () => {
+    expect((await purchaseAfter({ method: 'stripe', sponsorId: 4, checkoutId: 'C', buyer_ref: 'h-plain' })).commerce.buyer_id).toBe('h-plain')
+    flushedBatches.length = 0
+    expect((await purchaseAfter({ method: 'klarna', sponsorId: 4, checkoutId: 'C', result: { buyer_ref: 'h-result' } })).commerce.buyer_id).toBe('h-result')
+    flushedBatches.length = 0
+    expect(
+      (await purchaseAfter({ method: 'apple-pay', result: { confirmation: { orderId: 'ORD-1', buyerRef: 'h-apple' } } })).commerce.buyer_id,
+    ).toBe('h-apple')
+    flushedBatches.length = 0
+    expect((await purchaseAfter({ method: 'qliro', sponsorId: 4, checkoutId: 'C', result: { checkout: { buyer_ref: 'h-chk' } } })).commerce.buyer_id).toBe('h-chk')
+  })
+
+  it('sin referencia no hay buyer_id (ni clave vacía)', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-2' })
+    expect(ev.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('nunca un email, nunca más de 128 caracteres ni fuera de [A-Za-z0-9._~-]: se omite, no se hashea ni se corta', async () => {
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-3', buyerRef: 'ola@nordmann.no' })
+    expect(ev.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const long = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4', buyerRef: 'x'.repeat(129) })
+    expect(long.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const odd = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4b', buyerRef: 'Ola Nordmann' })
+    expect(odd.commerce).not.toHaveProperty('buyer_id')
+    flushedBatches.length = 0
+    const fits = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-4c', buyerRef: 'a'.repeat(128) })
+    expect(fits.commerce.buyer_id).toHaveLength(128)
+    flushedBatches.length = 0
+    const hostCommerce = await eventsAfter('vio:payment-success', { method: 'vipps', sponsorId: 4, orderId: 'CHK-5', result: { buyerRef: 'kari@example.com' } })
+    expect(hostCommerce.find((e) => e.name === 'purchase')!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('una compra partida por campaña lleva el mismo buyer_id en cada slice', async () => {
+    const events = await eventsAfter(
+      'vio:payment-success',
+      { method: 'apple-pay', buyerRef: 'h-split', result: { confirmation: { orderId: 'ORD-9' } } },
+      fakeCart({ 4: [fakeLine()], 7: [fakeLine({ sponsorId: 7, productId: 1 })] }),
+    )
+    const purchases = events.filter((e) => e.name === 'purchase')
+    expect(purchases.length).toBe(2)
+    for (const p of purchases) {
+      expect(p.commerce.buyer_id).toBe('h-split')
+      expect(p.commerce.order_id).toBe('ORD-9')
+    }
+  })
+
+  it('begin_checkout lo lleva solo si el detail de vio:checkout-open ya lo trae (un checkout del host); el de la SDK no', async () => {
+    const withRef = await eventsAfter('vio:checkout-open', { sponsorId: 4, buyerRef: 'h-early' })
+    expect(withRef.find((e) => e.name === 'begin_checkout')!.commerce.buyer_id).toBe('h-early')
+    flushedBatches.length = 0
+    const without = await eventsAfter('vio:checkout-open', { sponsorId: 4 })
+    expect(without.find((e) => e.name === 'begin_checkout')!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('un host que llama track() con commerce.buyerId pasa por el mismo filtro', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('purchase', { commerce: { orderId: 'o1', buyerId: ' h-host ' } })
+    m.track('purchase', { commerce: { orderId: 'o2', buyerId: 'someone@example.org' } })
+    await m.flush()
+    const [a, b] = flushedBatches[0]!.events.filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+    expect(a!.commerce.buyer_id).toBe('h-host')
+    expect(b!.commerce).not.toHaveProperty('buyer_id')
+  })
+
+  it('purchaseFromPaymentSuccess / buyerRefOf son puros: precedencia y filtro', () => {
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'h' })).toEqual({ orderId: 'A', checkoutId: 'A', buyerId: 'h' })
+    expect(purchaseFromPaymentSuccess({ buyerRef: 'h' })).toEqual({ buyerId: 'h' })
+    expect(purchaseFromPaymentSuccess({ orderId: 'A', buyerRef: 'a@b.c' })).toEqual({ orderId: 'A', checkoutId: 'A' })
+    expect(buyerRefOf({ buyerRef: 'top', result: { buyer_ref: 'res' } })).toBe('top')
+    expect(buyerRefOf({ buyerRef: 'x@y.z', result: { buyer_ref: 'res' } })).toBe('res')
+    expect(buyerRefOf({ result: { confirmation: { buyer_ref: 'conf' }, checkout: { buyerRef: 'chk' } } })).toBe('conf')
+    expect(buyerRefOf({ result: { checkout: { buyerRef: 'chk' } } })).toBe('chk')
+    expect(buyerRefOf({ result: null })).toBeUndefined()
+    expect(buyerRefOf(undefined)).toBeUndefined()
+  })
+})
+
+describe('component_template_id: el tipo de elemento viaja con los eventos vio:* (product-card, product-carousel, product-detail)', () => {
+  afterEach(removeFacade)
+
+  const fire = (type: string, detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(new CustomEvent(type, { detail }) as unknown as Event)
+
+  it('select_item, add_to_cart y begin_checkout lo copian del detail; sin él no se inventa', async () => {
+    initVio()
+    installFacade(BOOT)
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4, componentTemplateId: 'product-card' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4, componentTemplateId: 'product-carousel' })
+    fire('vio:added-to-cart', { productId: 9, sponsorId: 4, componentTemplateId: 'product-detail' })
+    fire('vio:checkout-open', { sponsorId: 4, componentTemplateId: 'product-detail' })
+    fire('vio:product-click', { productId: 9, sponsorId: 4 })
+    await m.flush()
+    m.stop()
+    const events = flushedBatches.flatMap((b) => b.events) as Array<Record<string, any>>
+    const templates = events.filter((e) => e.name !== 'session_start').map((e) => [e.name, e.context?.component_template_id])
+    expect(templates).toEqual([
+      ['select_item', 'product-card'],
+      ['select_item', 'product-carousel'],
+      ['add_to_cart', 'product-detail'],
+      ['begin_checkout', 'product-detail'],
+      ['select_item', undefined],
+    ])
   })
 })
 

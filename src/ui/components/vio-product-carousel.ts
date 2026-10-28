@@ -20,11 +20,14 @@
 import { LitElement, css, html } from 'lit'
 import { property, query, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
+import type { AnalyticsCommerce } from '../../core/analytics/analytics-manager.js'
 import {
   displayPrice,
   primaryImageUrl,
   type Product,
 } from '../../core/types.js'
+import { SlotRegistration } from '../slot-registration.js'
+import { resolveSponsorIdentity } from '../sponsor-identity.js'
 
 export class VioProductCarousel extends LitElement {
   /** Small uppercase label in accent color (e.g. "REDAKSJONENS FAVORITTER"). */
@@ -56,6 +59,75 @@ export class VioProductCarousel extends LitElement {
   @property({ type: String, attribute: 'product-refs' }) productRefs = ''
   /** Currency for product prices. */
   @property({ type: String }) currency = 'NOK'
+  /**
+   * Slot this carousel sits in (ADR-0027). Optional: without it the carousel
+   * registers itself as `carousel-N` (its position among the carousels on the
+   * page). Set it to name the place yourself or to share one slot between
+   * elements. Passed to every card it renders, carried by its analytics, and
+   * — without a `sponsor-id` — the source of the sponsor (the primary of the
+   * campaign assigned to the slot). The attribute is `vio-slot`, not `slot`
+   * (that one is HTML's own, shadow DOM slotting).
+   */
+  @property({ type: String, attribute: 'vio-slot' }) vioSlot = ''
+  /** Human name of the slot for the dashboard (`vio-slot-name`). Optional. */
+  @property({ type: String, attribute: 'vio-slot-name' }) vioSlotName = ''
+  /**
+   * Scope of the auto id (`article-123-carousel-1`). Inherited: this attribute,
+   * else the nearest ancestor's `data-vio-scope` (a page sets it ONCE on
+   * `<body>` and every block gets a per-page slot). Optional.
+   */
+  @property({ type: String, attribute: 'vio-scope' }) vioScope = ''
+  /** Human label of the scope (` · Title` in the slot name); inherited from `data-vio-scope-name`. */
+  @property({ type: String, attribute: 'vio-scope-name' }) vioScopeName = ''
+  /**
+   * The campaign this element's PAGE belongs to (ADR-0034, amendment 3).
+   * Inherited: this attribute, else the nearest ancestor's `data-vio-campaign`,
+   * else `Vio.init({ campaignId })`. A dashboard assignment of the slot wins
+   * over it. Optional.
+   */
+  @property({ type: String, attribute: 'vio-campaign' }) vioCampaign = ''
+  /** Per-element override of the content (article) id the events carry; see `Vio.content()`. */
+  @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
+  /** Per-element override of the content title. */
+  @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
+  private readonly slotRegistration = new SlotRegistration(this, 'carousel')
+
+  /** The slot id in effect: `vio-slot`, else the auto id (`carousel-N`). Read-only. */
+  get effectiveSlot(): string {
+    return this.slotRegistration.effective
+  }
+
+  /** The element's own page campaign (`vio-campaign` / ancestor), if any; `Vio.init`'s applies otherwise. */
+  get effectiveCampaignId(): number | undefined {
+    return this.slotRegistration.campaignId
+  }
+
+  private slotAttributes() {
+    return {
+      vioSlot: this.vioSlot,
+      vioSlotName: this.vioSlotName,
+      vioScope: this.vioScope,
+      vioScopeName: this.vioScopeName,
+      vioCampaign: this.vioCampaign,
+    }
+  }
+
+  /** Attribution every analytics event of this carousel carries (`Vio.attribution` + the content overrides). */
+  private attribution() {
+    const base =
+      typeof Vio.attribution === 'function'
+        ? Vio.attribution(this.effectiveSlot, {
+            sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+            campaignId: this.slotRegistration.campaignHint,
+          })
+        : { slot: this.effectiveSlot || undefined }
+    return {
+      ...base,
+      componentTemplateId: 'product-carousel',
+      ...(this.vioContentId ? { contentId: this.vioContentId } : {}),
+      ...(this.vioContentTitle ? { contentTitle: this.vioContentTitle } : {}),
+    }
+  }
 
   @query('.scroller') private scroller!: HTMLElement
   @state() private fetched: Array<{ product: Product; sponsorId: number }> | null = null
@@ -208,27 +280,50 @@ export class VioProductCarousel extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
-    this.observeForAnalytics()
+    this.slotRegistration.connect(this.slotAttributes())
     if (this.productRefs.trim() || this.productIds.trim()) {
       void this.autoFetch()
     }
+    // After the fetch has started: while products load, the impression waits for them.
+    this.observeForAnalytics()
   }
 
   override disconnectedCallback(): void {
     this.unobserveImpression?.()
     this.unobserveImpression = null
+    this.slotRegistration.clear()
     super.disconnectedCallback()
   }
 
   override updated(changed: Map<string, unknown>): void {
+    // The React wrappers set properties after mount; the Vev editor changes them live.
+    if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
+      this.slotRegistration.sync(this.slotAttributes())
+    }
     const propChanged =
       changed.has('productRefs') ||
       changed.has('productIds') ||
       changed.has('commerceKey') ||
-      changed.has('sponsorId')
+      changed.has('sponsorId') ||
+      changed.has('vioSlot') ||
+      changed.has('vioCampaign') // another campaign → another sponsor → refetch
     if (propChanged && (this.productRefs.trim() || this.productIds.trim())) {
       void this.autoFetch()
     }
+  }
+
+  /**
+   * The sponsor of this carousel: the host's `sponsor-id`, else the primary
+   * sponsor of the campaign the slot shows (ADR-0034 — "the campaign of the
+   * block is its sponsor"), else 0 (unknown).
+   */
+  private effectiveSponsorId(): number {
+    if (this.sponsorId > 0) return this.sponsorId
+    const fromSlot =
+      typeof Vio.campaignForSlot === 'function'
+        ? Number(Vio.campaignForSlot(this.effectiveSlot || null, { campaignId: this.slotRegistration.campaignHint })?.primarySponsor?.id)
+        : NaN
+    return Number.isFinite(fromSlot) && fromSlot > 0 ? fromSlot : 0
   }
 
   private async autoFetch(): Promise<void> {
@@ -238,14 +333,30 @@ export class VioProductCarousel extends LitElement {
     }
     this.isLoading = true
     this.fetchError = ''
+    // The impression carries the products shown: one not counted yet starts
+    // again once they are here (the dwell counts on what the reader sees).
+    if (!this.impressed) {
+      this.unobserveImpression?.()
+      this.unobserveImpression = null
+    }
     try {
+      // Without a sponsor-id the slot's campaign supplies the sponsor — that
+      // needs the bootstrap, which the host may still be fetching.
+      if (this.productRefs.trim() === '' && !this.commerceKey && this.sponsorId <= 0 && !Vio.bootstrapCache) {
+        try {
+          await Vio.bootstrap()
+        } catch {
+          /* commerceFor() below reports the missing sponsor as before */
+        }
+      }
+      const sponsorId = this.effectiveSponsorId()
       const refs = this.productRefs.trim()
         ? this.parseRefs(this.productRefs)
         : this.productIds
             .split(',')
             .map((s) => parseInt(s.trim(), 10))
             .filter((n) => !Number.isNaN(n))
-            .map((id) => ({ sponsorId: this.sponsorId, productId: id }))
+            .map((id) => ({ sponsorId, productId: id }))
 
       if (refs.length === 0) {
         this.fetched = []
@@ -292,33 +403,40 @@ export class VioProductCarousel extends LitElement {
       // Keep `fetched` null so slotted fallback can still render.
     } finally {
       this.isLoading = false
+      this.observeForAnalytics()
     }
   }
 
   // ── Analytics (auto) ──────────────────────────────────────────────
   // component_impression on the contract rule (≥50% visible ≥1s, once per
-  // session) + view_item_list with the rendered products. No-ops unless
+  // session) with the products shown in `commerce.items` (ADR-0041: the
+  // collector counts per-product impressions from them) + view_item_list with
+  // the rendered products. While products load the impression is not
+  // observed: it starts once they are here (or the fetch failed — slotted
+  // fallback is still an impression, without items). No-ops unless
   // Vio.analytics.start() ran.
   private unobserveImpression: (() => void) | null = null
   private impressed = false
   private listTracked = false
 
   private observeForAnalytics(): void {
-    if (this.unobserveImpression) return
+    if (this.unobserveImpression || this.isLoading || !this.isConnected) return
     try {
       this.unobserveImpression = Vio.analytics.observeImpression(
         this,
         {
           sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
-          componentTemplateId: 'product-carousel',
-          locationId: this.label || undefined,
+          // The slot is the real location id; the label only stands in for it.
+          locationId: this.effectiveSlot || this.label || undefined,
+          ...this.attribution(),
         },
         {
-          key: `carousel:${this.label || this.productIds || this.productRefs || 'default'}`,
+          key: `carousel:${this.effectiveSlot || this.label || this.productIds || this.productRefs || 'default'}`,
           onImpression: () => {
             this.impressed = true
             this.maybeTrackList()
           },
+          commerce: () => this.listCommerce(),
         },
       )
     } catch {
@@ -334,24 +452,32 @@ export class VioProductCarousel extends LitElement {
     if (entries.length === 0) return
     this.listTracked = true
     try {
+      const sponsorId = this.effectiveSponsorId()
       Vio.analytics.track('view_item_list', {
         context: {
-          sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
-          componentTemplateId: 'product-carousel',
-          locationId: this.label || undefined,
+          sponsorId: sponsorId > 0 ? sponsorId : undefined,
+          locationId: this.effectiveSlot || this.label || undefined,
+          ...this.attribution(),
         },
-        commerce: {
-          items: entries.map(({ product, sponsorId }) => ({
-            productId: product.id,
-            name: product.title,
-            price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
-          })),
-          currency: entries[0]?.product.price?.currency_code,
-        },
+        commerce: this.listCommerce() ?? undefined,
         props: this.label ? { list_name: this.label } : undefined,
       })
     } catch {
       /* never break rendering */
+    }
+  }
+
+  /** The products on show as analytics lines (impression and view_item_list); null before they load. */
+  private listCommerce(): AnalyticsCommerce | null {
+    const entries = this.fetched ?? []
+    if (entries.length === 0) return null
+    return {
+      items: entries.map(({ product }) => ({
+        productId: product.id,
+        name: product.title,
+        price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
+      })),
+      currency: entries[0]?.product.price?.currency_code,
     }
   }
 
@@ -393,7 +519,7 @@ export class VioProductCarousel extends LitElement {
     if (this.fetched && this.fetched.length > 0) {
       return html`${this.fetched.map(({ product: p, sponsorId }) => {
         const img = primaryImageUrl(p) ?? ''
-        const retailer = sponsorNameFromBootstrap(sponsorId) ?? p.brand ?? ''
+        const retailer = resolveSponsorIdentity(sponsorId)?.name || p.brand || ''
         return html`
           <vio-product
             product-id=${String(p.id)}
@@ -404,6 +530,11 @@ export class VioProductCarousel extends LitElement {
             retailer=${retailer}
             image-url=${img}
             ?has-variants=${(p.variants?.length ?? 0) > 1}
+            .vioSlot=${this.effectiveSlot}
+            .componentTemplateId=${'product-carousel'}
+            .vioCampaign=${this.effectiveCampaignId !== undefined ? String(this.effectiveCampaignId) : ''}
+            .vioContentId=${this.vioContentId}
+            .vioContentTitle=${this.vioContentTitle}
           ></vio-product>
         `
       })}`
@@ -454,12 +585,4 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-product-carousel': VioProductCarousel
   }
-}
-
-/** Resolve a sponsor's display name from `Vio.bootstrap()` cache. */
-function sponsorNameFromBootstrap(sponsorId: number): string | undefined {
-  const boot = Vio.bootstrapCache
-  if (!boot) return undefined
-  if (boot.primarySponsor?.id === sponsorId) return boot.primarySponsor.name
-  return boot.secondarySponsors?.find((s) => s.id === sponsorId)?.name
 }

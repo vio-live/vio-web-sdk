@@ -30,7 +30,7 @@ const CHECKOUT_ID = 'chk_99'
 
 const FULL_FORM = {
   firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no',
-  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo',
+  address: 'Storgata 12B', postalCode: '0194', city: 'Oslo', phone: '912 34 567',
 }
 
 /** The real waits total ~20s; the behaviour under test is the same at 0. */
@@ -43,6 +43,8 @@ let holdReady = false
 let pendingReady: (() => void) | null = null
 
 beforeEach(() => {
+  vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 1, buyerRef: null }) // settled, no reference
+  vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null) // the receipt's number: each test says
   holdReady = false
   pendingReady = null
   ;(VioCheckout as any).RETURN_VERIFY_DELAYS_MS = [0, 0, 0]

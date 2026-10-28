@@ -13,7 +13,13 @@
  * and the response shape is platform-agnostic enough.
  */
 
-import type { BootstrapResponse, PlacementComponent } from '../types.js'
+import type {
+  BootstrapResponse,
+  ManifestRequest,
+  ManifestResult,
+  PlacementComponent,
+  SurfaceResponse,
+} from '../types.js'
 
 export interface VioApiOptions {
   /** REST API base URL, e.g. `https://api-staging.vio.live`. */
@@ -36,9 +42,31 @@ export class VioApi {
   /**
    * Bootstrap — fetches client app config (sponsors with commerce keys,
    * default market, campaign id). Called once at SDK init.
+   *
+   * With `platform`, `campaigns[].slots[]` only lists the assignments of that
+   * platform (plus the ones with no platform) — see ADR-0027.
    */
-  async bootstrap(): Promise<BootstrapResponse> {
-    return this.get<BootstrapResponse>('/v2/mobile/config')
+  async bootstrap(platform?: string): Promise<BootstrapResponse> {
+    const query = platform ? `?platform=${encodeURIComponent(platform)}` : ''
+    return this.get<BootstrapResponse>(`/v2/mobile/config${query}`)
+  }
+
+  /**
+   * Declare the slots of this page to the campaigns service
+   * (`POST /v2/mobile/components/manifest`, ADR-0034). The web SDK always
+   * sends `mode: 'merge'`; see `Vio.declareSlots()` for the dedupe on top.
+   */
+  async declareManifest(body: ManifestRequest): Promise<ManifestResult> {
+    return this.post<ManifestResult>('/v2/mobile/components/manifest', body)
+  }
+
+  /**
+   * The surface of the key (`GET /v2/mobile/surface`): its id, name, status
+   * and `privacyMode` — what decides whether the order attribution may carry
+   * the entry context (ADR-0035). A 404 means a service that predates it.
+   */
+  async surface(): Promise<SurfaceResponse> {
+    return this.get<SurfaceResponse>('/v2/mobile/surface')
   }
 
   /**
@@ -64,6 +92,23 @@ export class VioApi {
     })
     if (!res.ok) {
       throw new VioApiError(res.status, await safeText(res), `GET ${path}`)
+    }
+    return (await res.json()) as T
+  }
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.apiBase}${path}`
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'X-API-Key': this.apiKey,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      throw new VioApiError(res.status, await safeText(res), `POST ${path}`)
     }
     return (await res.json()) as T
   }

@@ -6,11 +6,13 @@
  * CustomEvent that UI components subscribe to (Web Components react via
  * `requestUpdate()`).
  *
- * Server-side cart sync (Vio Commerce GraphQL CreateCart / AddToCart
- * mutations) is deferred to checkout time via the CheckoutManager —
- * this manager is purely client-side state for now.
+ * The backend cart (Vio Commerce GraphQL CreateCart / AddItem / UpdateItem /
+ * DeleteItem) is kept in sync optimistically from here; since 0.26 every add
+ * and every increase tells it where the units come from (`origin`, ADR-0035
+ * phase B) so the order is born attributed — see `origin-wire.ts`.
  */
 
+import { storageGet, storageSet } from '../safe-storage.js'
 import {
   formatPrice,
   getGlobalCountryCode,
@@ -18,7 +20,10 @@ import {
   primaryImageUrl,
   type Product,
 } from '../types.js'
-import type { CartLineItem, SponsorCartState } from './types.js'
+import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
+import { currentOriginPage, currentPrivacyMode, lineOriginWire } from './origin-wire.js'
+import { componentKindOf } from '../slots.js'
+import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
 import {
   addItem as gqlAddItem,
   createCart as gqlCreateCart,
@@ -38,12 +43,31 @@ export interface CartChangeDetail {
   itemCount: number
 }
 
+/**
+ * Detail of `vio:cart-updated` (on `document`): a sponsor's cart as it stands
+ * after this tab learned of it from somewhere other than its own taps —
+ * `source: 'server'`: GetCart, applied right before a checkout is built on it
+ * (`refreshFromServer`); `source: 'storage'`: another tab of the same site
+ * wrote it (an add there, a payment that cleared it). The lines are copies.
+ */
+export interface CartUpdatedDetail {
+  sponsorId: number
+  cartId?: string
+  items: CartLineItem[]
+  itemCount: number
+  subtotal: number
+  currency: string
+  source: 'server' | 'storage'
+}
+
 export interface AddProductOptions {
   product: Product
   sponsorId: number
   sponsorName?: string
   quantity?: number
   variantId?: number
+  /** Where these units come from (`Vio.attribution(slot)`); see `CartOrigin`. */
+  origin?: CartOrigin
 }
 
 /** Minimal product shape — for callers who only have e.g. mock data, not a full Product. */
@@ -58,6 +82,69 @@ export interface AddManualOptions {
   imageUrl: string
   quantity?: number
   variantId?: number
+  /** Where these units come from (`Vio.attribution(slot)`); see `CartOrigin`. */
+  origin?: CartOrigin
+}
+
+/**
+ * One change queued behind the request in flight: `delta` units more —
+ * credited to `origin`, the place they were added from — or fewer (no
+ * origin; the server takes them off the most recent, as the line does).
+ */
+interface QtyStep {
+  delta: number
+  origin?: CartOrigin
+}
+
+/** One backend quantity sync for one line. See `CartManager.qtySyncs`. */
+interface QtySync {
+  /** Target quantity of the request currently in flight. */
+  sent: number
+  /**
+   * What arrived while in flight, in order, reduced as the line's own
+   * origins are (a decrease comes off the most recent queued increase
+   * first): one request per step once the current one settles, so every
+   * increase reaches the server with ITS origin — a burst of +1 from the
+   * hero and +1 from the carousel is two updates, not one credited to the
+   * last. The line is heading to `sent + Σ delta`.
+   */
+  steps: QtyStep[]
+}
+
+/** The quantity a sync is heading to once every queued step has gone out. */
+function finalTarget(sync: QtySync): number {
+  return sync.steps.reduce((quantity, step) => quantity + step.delta, sync.sent)
+}
+
+/**
+ * Queue a target behind the request in flight: more units go on the last
+ * step when it is an increase from the same origin, else on a new one; fewer
+ * come off the most recent queued increases first and, past them, become a
+ * decrease below what is in flight. A target already reached queues nothing.
+ */
+function queueStep(sync: QtySync, target: number, origin: CartOrigin | undefined): void {
+  const delta = target - finalTarget(sync)
+  if (delta === 0) return
+  if (delta > 0) {
+    const last = sync.steps[sync.steps.length - 1]
+    if (last && last.delta > 0 && sameOrigin(last.origin ?? {}, origin ?? {})) last.delta += delta
+    else sync.steps.push({ delta, origin })
+    return
+  }
+  let left = -delta
+  while (left > 0 && sync.steps.length > 0) {
+    const last = sync.steps[sync.steps.length - 1]!
+    if (last.delta <= 0) break
+    const take = Math.min(last.delta, left)
+    last.delta -= take
+    left -= take
+    if (last.delta === 0) sync.steps.pop()
+  }
+  if (left > 0) {
+    const last = sync.steps[sync.steps.length - 1]
+    if (last && last.delta < 0) last.delta -= left
+    else sync.steps.push({ delta: -left })
+  }
 }
 
 function lineId(): string {
@@ -87,11 +174,28 @@ export class CartManager extends EventTarget {
    * — otherwise they can race the mutation and see the cart from before it
    * landed (Alan, 2026-08-18: shippings queried before AddItem settled,
    * came back empty). */
-  private inFlightMutations = new Map<number, Promise<unknown>>()
+  private inFlightMutations = new Map<number, Set<Promise<unknown>>>()
+  /** Per-line quantity sync with the backend: at most ONE UpdateItem /
+   * DeleteItem in flight per line. Targets that arrive while one is in flight
+   * are coalesced into `pending` (only the latest survives) and sent when the
+   * current request settles. Keyed by `${sponsorId}:${cartItemId}`.
+   * (Alan, 2026-10-15: a burst of +/− clicks fired one UpdateItem per click
+   * in parallel; each response re-applied the whole backend cart, so an
+   * older one landing after a newer optimistic change rolled the line back.) */
+  private qtySyncs = new Map<string, QtySync>()
 
   constructor() {
     super()
     this.cartsBySponsor = this.loadFromStorage()
+    // The carts are shared by every tab of the site through localStorage, but
+    // each tab used to read them once, here, and never again: a payment in one
+    // tab left the others showing — and adding to — a cart that was already
+    // paid, and a line added in one tab was missing from the next until a
+    // reload. Other tabs' writes arrive as `storage` events (never this tab's
+    // own); see `onStorage`.
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('storage', this.onStorage)
+    }
   }
 
   private nextSeq(sponsorId: number): number {
@@ -100,24 +204,113 @@ export class CartManager extends EventTarget {
     return n
   }
 
-  /** Resolves once any in-flight AddItem/UpdateItem/DeleteItem for this
-   * sponsor has settled (success or failure). No-op if nothing is pending. */
+  /** Resolves once every in-flight AddItem/UpdateItem/DeleteItem for this
+   * sponsor has settled (success or failure), including ones started while
+   * waiting (a quantity intent replayed by an AddItem reconcile). No-op if
+   * nothing is pending. */
   async waitForCartMutations(sponsorId: number): Promise<void> {
-    const p = this.inFlightMutations.get(sponsorId)
-    if (!p) return
-    try {
-      await p
-    } catch {
-      /* the mutation's own catch already handled/reported the failure */
+    for (;;) {
+      const set = this.inFlightMutations.get(sponsorId)
+      if (!set || set.size === 0) return
+      // The mutations catch their own failures; allSettled is belt and braces.
+      await Promise.allSettled([...set])
     }
   }
 
-  /** Apply a backend response only if no newer response was applied already. */
-  private applyBackendCart(sponsorId: number, backendCart: unknown, seq: number): void {
-    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return
+  /**
+   * True while an AddItem/UpdateItem/DeleteItem of this sponsor OTHER than
+   * `except` has not settled. A mutation applying its own answer passes
+   * itself: its response is current for what IT sent — only the others make
+   * it stale.
+   */
+  private hasMutationsInFlight(sponsorId: number, except?: Promise<unknown>): boolean {
+    const set = this.inFlightMutations.get(sponsorId)
+    if (!set || set.size === 0) return false
+    for (const m of set) if (m !== except) return true
+    return false
+  }
+
+  /** Register a backend mutation so `waitForCartMutations` can await it. */
+  private trackMutation(sponsorId: number, mutation: Promise<unknown>): void {
+    let set = this.inFlightMutations.get(sponsorId)
+    if (!set) {
+      set = new Set()
+      this.inFlightMutations.set(sponsorId, set)
+    }
+    const tracked = set
+    tracked.add(mutation)
+    const untrack = () => {
+      tracked.delete(mutation)
+      if (tracked.size === 0 && this.inFlightMutations.get(sponsorId) === tracked) {
+        this.inFlightMutations.delete(sponsorId)
+      }
+    }
+    mutation.then(untrack, untrack)
+  }
+
+  private qtySyncKey(sponsorId: number, cartItemId: string): string {
+    return `${sponsorId}:${cartItemId}`
+  }
+
+  /** The quantity a line is heading to (pending beats in flight), or
+   * undefined when no quantity sync is active for it. */
+  private intendedQuantity(sponsorId: number, cartItemId: string): number | undefined {
+    const sync = this.qtySyncs.get(this.qtySyncKey(sponsorId, cartItemId))
+    return sync ? finalTarget(sync) : undefined
+  }
+
+  /** Apply a backend response only if no newer response was applied already.
+   * Returns false when it was discarded as stale. */
+  private applyBackendCart(
+    sponsorId: number,
+    backendCart: unknown,
+    seq: number,
+    settling?: Promise<unknown>,
+  ): boolean {
+    if (seq < (this.appliedSeq.get(sponsorId) ?? 0)) return false
     this.appliedSeq.set(sponsorId, seq)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    this.updateFromBackendCart(sponsorId, backendCart as any)
+    this.updateFromBackendCart(sponsorId, backendCart as any, { settling })
+    return true
+  }
+
+  /** The final answer of a line's sync lost the per-sponsor seq race (another
+   * line answered later): the cart as a whole is stale, but for THIS line it
+   * is the latest word. Copy its quantity (and price) so a server-side clamp
+   * — stock — doesn't leave the optimistic value behind for good, with the
+   * checkout / Apple Pay total built on it. */
+  private reconcileLineFromResponse(
+    sponsorId: number,
+    cartItemId: string,
+    resCart: {
+      line_items?: Array<{
+        id: string
+        quantity: number
+        price?: { amount?: number; amount_incl_taxes?: number | null } | null
+      }>
+    },
+    settling?: Promise<unknown>,
+  ): void {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const line = cart?.items.find((i) => i.cartItemId === cartItemId || i.id === cartItemId)
+    const server = resCart.line_items?.find((li) => li.id === cartItemId)
+    if (!cart || !line || !server) return
+    const price = server.price?.amount_incl_taxes ?? server.price?.amount
+    let changed = false
+    if (server.quantity !== line.quantity) {
+      line.quantity = server.quantity
+      if (!this.hasMutationsInFlight(sponsorId, settling)) {
+        line.origins = reconciledOrigins(line.origins, server.quantity)
+      }
+      changed = true
+    }
+    if (price != null && price !== line.unitPrice) {
+      line.unitPrice = price
+      changed = true
+    }
+    if (!changed) return
+    this.persist()
+    this.emit()
   }
 
   /** Surface a cart sync problem to hosts/UI (and the console). */
@@ -200,7 +393,14 @@ export class CartManager extends EventTarget {
     return creation
   }
 
-  /** Overwrite local cart state with the backend cart response (source of truth). */
+  /**
+   * Overwrite local cart state with the backend cart response (source of
+   * truth). `opts.settling` is the mutation whose answer this is: it does not
+   * count as "in flight" for the origins (see `hasMutationsInFlight`).
+   * `opts.authoritative` is a GetCart taken with nothing of this tab's in
+   * flight (`refreshFromServer`): an empty answer then means the cart IS
+   * empty, and the local lines go — not an add still on its way.
+   */
   updateFromBackendCart(
     sponsorId: number,
     backendCart: {
@@ -230,6 +430,7 @@ export class CartManager extends EventTarget {
         available_shippings?: unknown[]
       }>
     },
+    opts: { settling?: Promise<unknown>; authoritative?: boolean } = {},
   ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
@@ -242,16 +443,35 @@ export class CartManager extends EventTarget {
       cart.availableShippingCountries = backendCart.available_shipping_countries
     }
 
+    // Lines the shopper removed while their AddItem was still in flight: they
+    // get their DeleteItem now that they have a backend id (see below).
+    const removedBeforeSync: string[] = []
     if (Array.isArray(backendCart.line_items)) {
       const existingItems = cart.items || []
-      if (backendCart.line_items.length === 0 && existingItems.length > 0) {
+      if (backendCart.line_items.length === 0 && existingItems.length > 0 && !opts.authoritative) {
         // Backend says empty while we have optimistic local lines (add still
         // in flight) — keep the local view; a later sync will reconcile.
         this.persist()
         this.emit()
         return
       }
-      cart.items = backendCart.line_items.map((li): CartLineItem => {
+      cart.items = backendCart.line_items.flatMap((li): CartLineItem[] => {
+        // A line whose quantity sync is still active keeps its optimistic
+        // quantity: this response predates that intent. Heading to 0 means
+        // the shopper already removed it — don't resurrect it for a frame.
+        const intended = this.intendedQuantity(sponsorId, li.id)
+        if (intended !== undefined && intended <= 0) return []
+        // Removed locally before it had a backend id: the shopper saw it go
+        // and vio:removed-from-cart already went out. Don't bring it back —
+        // and don't replay the removal through updateQuantity (that emitted
+        // the event a second time); just send the DeleteItem.
+        const earlyKey = this.intentKey(li.product_id, li.variant_id)
+        const earlyIntent = this.pendingQtyIntents.get(earlyKey)
+        if (earlyIntent !== undefined && earlyIntent <= 0) {
+          this.pendingQtyIntents.delete(earlyKey)
+          removedBeforeSync.push(li.id)
+          return []
+        }
         const urlFromBackend =
           (typeof li.image === 'string' ? li.image : li.image?.url) ||
           li.imageUrl ||
@@ -274,7 +494,7 @@ export class CartManager extends EventTarget {
         })
         const imageUrl = urlFromBackend || matchedLocal?.imageUrl || ''
 
-        return {
+        const line: CartLineItem = {
           id: li.id,
           cartItemId: li.id,
           productId: li.product_id,
@@ -289,14 +509,31 @@ export class CartManager extends EventTarget {
           unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? matchedLocal?.unitPrice ?? 0,
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
-          quantity: li.quantity,
+          quantity: intended ?? li.quantity,
+          // The server keeps its own copy of the origins (per request); the
+          // cart read model does not answer them, so keep the local ones. They
+          // are squared with its quantity (a stock clamp) only when no OTHER
+          // mutation is in flight for this sponsor — an AddItem answering
+          // while another is pending reports a quantity that is already old
+          // (see `lineOrigins`).
+          origins: matchedLocal
+            ? this.hasMutationsInFlight(sponsorId, opts.settling)
+              ? matchedLocal.origins
+              : reconciledOrigins(matchedLocal.origins, intended ?? li.quantity)
+            : undefined,
           shipping: li.shipping,
           availableShippings: li.available_shippings,
         }
+        return [line]
       })
     }
     this.persist()
     this.emit()
+
+    const syncedCartId = cart.cartId
+    if (syncedCartId) {
+      for (const id of removedBeforeSync) this.syncQuantity(sponsorId, syncedCartId, id, 0)
+    }
 
     // Replay quantity intents recorded while the line had no backend id yet.
     if (this.pendingQtyIntents.size > 0) {
@@ -343,6 +580,7 @@ export class CartManager extends EventTarget {
       imageUrl,
       quantity: opts.quantity,
       variantId: opts.variantId,
+      origin: opts.origin,
     })
   }
 
@@ -379,6 +617,7 @@ export class CartManager extends EventTarget {
     })
     if (existing) {
       existing.quantity += qty
+      addOriginQuantity(existing, opts.origin, qty)
     } else {
       const item: CartLineItem = {
         id: lineId(),
@@ -391,6 +630,7 @@ export class CartManager extends EventTarget {
         currency: opts.currency,
         imageUrl: opts.imageUrl,
         quantity: qty,
+        origins: [{ ...normalizeOrigin(opts.origin), quantity: qty }],
       }
       cart.items.push(item)
     }
@@ -404,21 +644,34 @@ export class CartManager extends EventTarget {
     // reverts the local line (a ghost line means the UI total and the charged
     // total diverge silently).
     const seq = this.nextSeq(opts.sponsorId)
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
     const mutation = (async () => {
       try {
         const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
         if (cartId) {
           const gqlOpts = await getCartGraphQLOptions(opts.sponsorId)
+          // Where these units come from, for the order (ADR-0035 phase B):
+          // the add's own origin; nothing when the host gave none. On a
+          // `minimal` surface (or one whose mode is not known) the slot and
+          // the page stay out of it — see `lineOriginWire`.
+          const origin = opts.origin
+            ? lineOriginWire(normalizeOrigin(opts.origin), {
+                page: currentOriginPage(),
+                privacyMode: await currentPrivacyMode(),
+              })
+            : undefined
           const lineItemsInput = [
             {
               product_id: Number(opts.productId || 0),
               quantity: qty,
               variant_id: opts.variantId != null ? Number(opts.variantId) : null,
+              ...(origin ? { origin } : {}),
             },
           ]
           const resCart = await gqlAddItem(cartId, lineItemsInput, gqlOpts)
           if (resCart && Array.isArray(resCart.line_items)) {
-            this.applyBackendCart(opts.sponsorId, resCart, seq)
+            this.applyBackendCart(opts.sponsorId, resCart, seq, settling)
           }
         }
         // No cartId (no commerce key): the cart stays local-only; checkout is
@@ -429,6 +682,8 @@ export class CartManager extends EventTarget {
         const line = c?.items.find((i) => i.id === addedLineId)
         if (c && line) {
           line.quantity -= qty
+          // Off the origin whose add failed — not whatever was added last.
+          removeFromOrigin(line, opts.origin, qty)
           if (line.quantity <= 0) c.items = c.items.filter((i) => i !== line)
           if (c.items.length === 0) this.cartsBySponsor.delete(opts.sponsorId)
           this.persist()
@@ -437,12 +692,8 @@ export class CartManager extends EventTarget {
         this.emitError('AddItem rejected by the backend — item removed from the cart', err)
       }
     })()
-    this.inFlightMutations.set(opts.sponsorId, mutation)
-    void mutation.finally(() => {
-      if (this.inFlightMutations.get(opts.sponsorId) === mutation) {
-        this.inFlightMutations.delete(opts.sponsorId)
-      }
-    })
+    settling = mutation
+    this.trackMutation(opts.sponsorId, mutation)
 
     return addedItem
   }
@@ -455,13 +706,54 @@ export class CartManager extends EventTarget {
     return `${normId(productId)}::${normId(variantId)}`
   }
 
-  updateQuantity(lineItemId: string, sponsorId: number, quantity: number): void {
+  private findLine(sponsorId: number, lineItemId: string): CartLineItem | undefined {
+    return this.cartsBySponsor
+      .get(sponsorId)
+      ?.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
+  }
+
+  /** Change a line's quantity by `delta`, computed on the manager's CURRENT
+   * quantity — not on whatever a UI rendered a moment ago. A burst of +/−
+   * clicks before a re-render therefore asks for 2, 3, 4… and not for the
+   * same target several times. Reaching 0 removes the line. */
+  adjustQuantity(
+    lineItemId: string,
+    sponsorId: number,
+    delta: number,
+    opts: { origin?: CartOrigin } = {},
+  ): void {
+    const item = this.findLine(sponsorId, lineItemId)
+    if (!item) return
+    this.updateQuantity(lineItemId, sponsorId, item.quantity + delta, opts)
+  }
+
+  /** Set a line's quantity (0 or less removes it). Optimistic: the local
+   * state and `change` update at once; the backend is synced through
+   * `syncQuantity`, one request in flight per line, latest target wins. */
+  updateQuantity(
+    lineItemId: string,
+    sponsorId: number,
+    quantity: number,
+    opts: { origin?: CartOrigin } = {},
+  ): void {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return
     const item = cart.items.find((i) => i.id === lineItemId || i.cartItemId === lineItemId)
     if (!item) return
+    const target = quantity > 0 ? quantity : 0
+    // Already there (or already heading there): nothing new to say or send.
+    if (target === item.quantity) return
     const targetItemId = item.cartItemId
-    if (quantity <= 0) {
+    // The origins follow the quantity: more units go to the given origin (or
+    // the most recent one), fewer come off the most recent first.
+    const removedOrigin = latestOrigin(item)
+    const increase = target > item.quantity
+    if (increase) addOriginQuantity(item, opts.origin, target - item.quantity)
+    else removeOriginQuantity(item, item.quantity - target)
+    // The origin the new units were credited to (the given one, else the most
+    // recent) goes to the server with the increase; a decrease names none.
+    const addedOrigin = increase ? latestOrigin(item) : undefined
+    if (target <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
       // Choke point de la baja: sale acá y no en la UI para que también
       // cuente cuando el host llama removeItem() por API.
@@ -478,12 +770,16 @@ export class CartManager extends EventTarget {
               quantity: item.quantity,
               currency: item.currency,
               sponsorId,
+              // Attribution of the removed units: their most recent origin.
+              slot: removedOrigin?.slot,
+              campaignId: removedOrigin?.campaignId,
+              contentId: removedOrigin?.contentId,
             },
           }),
         )
       }
     } else {
-      item.quantity = quantity
+      item.quantity = target
     }
     if (cart.items.length === 0) this.cartsBySponsor.delete(sponsorId)
     this.persist()
@@ -495,33 +791,113 @@ export class CartManager extends EventTarget {
     // sending the local id would 404. Record the intent — it's replayed as
     // soon as the reconcile lands.
     if (!targetItemId) {
-      this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), quantity)
+      this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), target)
       return
     }
 
-    const backendCartId = cart.cartId
-    const seq = this.nextSeq(sponsorId)
-    const mutation = (async () => {
-      try {
-        const gqlOpts = await getCartGraphQLOptions(sponsorId)
-        const resCart =
-          quantity <= 0
-            ? await gqlDeleteItem(backendCartId, targetItemId, gqlOpts)
-            : await gqlUpdateItem(backendCartId, targetItemId, null, quantity, gqlOpts)
-        if (resCart && Array.isArray(resCart.line_items)) {
-          this.applyBackendCart(sponsorId, resCart, seq)
+    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target, addedOrigin)
+  }
+
+  /** Send a line's target quantity to the backend — ONE request in flight per
+   * line. Targets that arrive while one is in flight queue behind it as
+   * steps (`queueStep`): reduced like the line's origins, sent in order once
+   * the current request settles — one request per queued increase from a
+   * different origin, one for a net decrease — so the server ends on the
+   * last intent, credits every increase to its own origin, and never sees two
+   * updates racing each other. While the sync is active the line keeps its
+   * optimistic quantity through any backend response (see
+   * `updateFromBackendCart`); a rejection drops what was queued and
+   * reconciles the cart from the server. */
+  private syncQuantity(
+    sponsorId: number,
+    backendCartId: string,
+    cartItemId: string,
+    target: number,
+    origin?: CartOrigin,
+  ): void {
+    const key = this.qtySyncKey(sponsorId, cartItemId)
+    const active = this.qtySyncs.get(key)
+    if (active) {
+      queueStep(active, target, origin)
+      return
+    }
+    const sync: QtySync = { sent: target, steps: [] }
+    this.qtySyncs.set(key, sync)
+
+    // This mutation, for `applyBackendCart` to tell its own answer from the others'.
+    let settling: Promise<unknown> | undefined
+    const run = (async () => {
+      let next: number | undefined = target
+      let nextOrigin: CartOrigin | undefined = origin
+      let removalRetried = false
+      while (next !== undefined) {
+        const seq = this.nextSeq(sponsorId)
+        try {
+          const gqlOpts = await getCartGraphQLOptions(sponsorId)
+          // The origin of the units this update adds (ADR-0035 phase B) —
+          // when it was an increase and the SDK knows a place for them.
+          const originWire =
+            next > 0 && nextOrigin
+              ? lineOriginWire(nextOrigin, { page: currentOriginPage(), privacyMode: await currentPrivacyMode() })
+              : undefined
+          const resCart =
+            next <= 0
+              ? await gqlDeleteItem(backendCartId, cartItemId, gqlOpts)
+              : originWire
+                ? await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts, { origin: originWire })
+                : await gqlUpdateItem(backendCartId, cartItemId, null, next, gqlOpts)
+          // The next queued step, if any: an increase with its origin, or a
+          // decrease. It becomes `sent` at once — the line is heading there,
+          // and the response being applied below must not roll it back.
+          const step = sync.steps.shift()
+          if (step) {
+            next = sync.sent + step.delta
+            nextOrigin = step.delta > 0 ? step.origin : undefined
+            sync.sent = next
+          } else {
+            next = undefined
+            nextOrigin = undefined
+          }
+          // Nothing queued: the server's view of this line is the truth now.
+          // With a step queued the entry stays, so this (already stale)
+          // response cannot roll the line back.
+          if (next === undefined) this.qtySyncs.delete(key)
+          if (resCart && Array.isArray(resCart.line_items)) {
+            const applied = this.applyBackendCart(sponsorId, resCart, seq, settling)
+            if (!applied && next === undefined) {
+              this.reconcileLineFromResponse(sponsorId, cartItemId, resCart, settling)
+            }
+          }
+        } catch (err) {
+          // Rejected: whatever was queued is moot — the server decides — with
+          // one exception. A queued REMOVAL already happened for the shopper
+          // (the line is gone, vio:removed-from-cart went out), so it is sent
+          // once more, once, instead of letting the reconcile bring the line
+          // back without a DeleteItem ever going out.
+          const retryRemoval = !removalRetried && sync.steps.length > 0 && finalTarget(sync) <= 0
+          sync.steps = []
+          next = undefined
+          nextOrigin = undefined
+          if (retryRemoval) {
+            removalRetried = true
+            // Entry stays (heading to 0): the reconcile below leaves the line out.
+            sync.sent = 0
+            next = 0
+          } else {
+            this.qtySyncs.delete(key)
+          }
+          // The reconcile emits `change`.
+          this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
+          try {
+            await this.fetchCartFromBackend(sponsorId)
+          } catch (fetchErr) {
+            this.emitError('cart re-sync after a rejected Update/DeleteItem failed', fetchErr)
+          }
         }
-      } catch (err) {
-        this.emitError('Update/DeleteItem failed — cart re-synced from backend', err)
-        void this.fetchCartFromBackend(sponsorId)
       }
     })()
-    this.inFlightMutations.set(sponsorId, mutation)
-    void mutation.finally(() => {
-      if (this.inFlightMutations.get(sponsorId) === mutation) {
-        this.inFlightMutations.delete(sponsorId)
-      }
-    })
+    settling = run
+    this.trackMutation(sponsorId, run)
   }
 
   removeItem(lineItemId: string, sponsorId: number): void {
@@ -550,6 +926,91 @@ export class CartManager extends EventTarget {
     const resCart = await gqlGetCart(cart.cartId, gqlOpts)
     if (resCart) this.updateFromBackendCart(sponsorId, resCart)
     return resCart
+  }
+
+  /**
+   * The cart as the server has it, for the moment a checkout is about to be
+   * built on it: what the shopper is about to pay must be what the page shows.
+   * Waits for this tab's own mutations (their answers are the server's too),
+   * then applies GetCart as it is — a line another tab added, one it removed,
+   * an empty cart — and tells the page: `change` for the drawer, and
+   * `vio:cart-updated` on `document` (`source: 'server'`) for a host that
+   * draws its own. A mutation that starts while the server is answering makes
+   * that answer old: it is asked once more. Nothing to ask without a backend
+   * cart. A GetCart that fails leaves the local state as it was and does not
+   * throw — the checkout then goes on with the lines the last mutation
+   * answered, as it always did. Resolves with the sponsor's cart.
+   */
+  async refreshFromServer(sponsorId: number): Promise<SponsorCartState | undefined> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await this.waitForCartMutations(sponsorId)
+      const cart = this.cartsBySponsor.get(sponsorId)
+      if (!cart?.cartId) return cart
+      let resCart: unknown
+      try {
+        const gqlOpts = await getCartGraphQLOptions(sponsorId)
+        resCart = await gqlGetCart(cart.cartId, gqlOpts)
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn('[CartManager] GetCart before the checkout failed — the local cart stands', err)
+        }
+        return cart
+      }
+      // Newer than this answer: a tap landed while the server was answering.
+      if (this.hasMutationsInFlight(sponsorId)) continue
+      const backendCart = resCart as { line_items?: unknown } | null | undefined
+      if (backendCart && Array.isArray(backendCart.line_items)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.updateFromBackendCart(sponsorId, backendCart as any, { authoritative: true })
+        this.emitCartUpdated(sponsorId, 'server')
+      }
+      return this.cartsBySponsor.get(sponsorId)
+    }
+    return this.cartsBySponsor.get(sponsorId)
+  }
+
+  /** `vio:cart-updated` on `document` — see `CartUpdatedDetail`. */
+  private emitCartUpdated(sponsorId: number, source: CartUpdatedDetail['source']): void {
+    if (typeof document === 'undefined') return
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const items = (cart?.items ?? []).map((item) => ({ ...item }))
+    const detail: CartUpdatedDetail = {
+      sponsorId,
+      cartId: cart?.cartId,
+      items,
+      itemCount: items.reduce((count, item) => count + item.quantity, 0),
+      subtotal: items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+      currency: cart?.currency || getGlobalCurrency(),
+      source,
+    }
+    document.dispatchEvent(new CustomEvent<CartUpdatedDetail>('vio:cart-updated', { bubbles: true, detail }))
+  }
+
+  /**
+   * Another tab of the site wrote the carts: adopt what it wrote, sponsor by
+   * sponsor — its lines and its backend cart id, or nothing when it cleared
+   * the cart (a payment) — except for a sponsor this tab is mid-write for:
+   * its own answer lands in a moment and is persisted then, over whatever
+   * the other tab had. `key` is null when the other tab cleared the whole
+   * storage. Says `change` (the drawer) and `vio:cart-updated` per sponsor
+   * that changed (`source: 'storage'`); nothing when nothing did.
+   */
+  private onStorage = (e: StorageEvent): void => {
+    if (e.key !== null && e.key !== STORAGE_KEY) return
+    const stored = this.loadFromStorage()
+    const changed: number[] = []
+    for (const sponsorId of new Set([...this.cartsBySponsor.keys(), ...stored.keys()])) {
+      if (this.hasMutationsInFlight(sponsorId) || this.cartIdPromises.has(sponsorId)) continue
+      const mine = this.cartsBySponsor.get(sponsorId)
+      const theirs = stored.get(sponsorId)
+      if (JSON.stringify(mine ?? null) === JSON.stringify(theirs ?? null)) continue
+      if (theirs) this.cartsBySponsor.set(sponsorId, theirs)
+      else this.cartsBySponsor.delete(sponsorId)
+      changed.push(sponsorId)
+    }
+    if (changed.length === 0) return
+    this.emit()
+    for (const sponsorId of changed) this.emitCartUpdated(sponsorId, 'storage')
   }
 
   /** Line items grouped by supplier (shipping is per-supplier server-side). */
@@ -618,21 +1079,25 @@ export class CartManager extends EventTarget {
 
   // MARK: - Persistence
 
+  /**
+   * Keep the carts for the next page and the other tabs. Where storage
+   * refuses (in-app browsers, private modes) nothing throws (safe-storage.ts):
+   * the carts stay in this manager's own map, the add to cart and the
+   * checkout go on, and the cart just does not survive a reload there.
+   */
   private persist(): void {
-    if (typeof localStorage === 'undefined') return
     try {
       const obj: Record<string, SponsorCartState> = {}
       for (const [k, v] of this.cartsBySponsor) obj[String(k)] = v
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(obj))
+      storageSet('local', STORAGE_KEY, JSON.stringify(obj), { memory: false })
     } catch {
-      // Ignore quota / privacy errors.
+      // A cart that cannot be serialised is not worth an exception.
     }
   }
 
   private loadFromStorage(): Map<number, SponsorCartState> {
-    if (typeof localStorage === 'undefined') return new Map()
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
+      const raw = storageGet('local', STORAGE_KEY)
       if (!raw) return new Map()
       const obj = JSON.parse(raw) as Record<string, SponsorCartState>
       const map = new Map<number, SponsorCartState>()
@@ -653,4 +1118,146 @@ export class CartManager extends EventTarget {
     }
     this.dispatchEvent(new CustomEvent<CartChangeDetail>('change', { detail }))
   }
+}
+
+// ── Origins (where each unit of a line came from) ───────────────────────────
+
+/**
+ * Only the attribution fields, trimmed; `{}` when nothing is known. The kind
+ * of element is kept as Commerce and the collector name it (`card`,
+ * `carousel`, `detail` — `componentKindOf`), from `componentKind` or from
+ * the `componentTemplateId` an element's attribution carries (`product-card`);
+ * the page as origin + path (`contentUrl`) and its title, within Commerce's caps.
+ */
+export function normalizeOrigin(origin: CartOrigin | null | undefined): CartOrigin {
+  const out: CartOrigin = {}
+  if (!origin || typeof origin !== 'object') return out
+  const campaignId = Number(origin.campaignId)
+  if (origin.campaignId !== undefined && origin.campaignId !== null && Number.isFinite(campaignId)) {
+    out.campaignId = campaignId
+  }
+  if (typeof origin.slot === 'string' && origin.slot.trim()) out.slot = origin.slot.trim()
+  if (origin.contentId !== undefined && origin.contentId !== null && String(origin.contentId).trim()) {
+    out.contentId = String(origin.contentId).trim()
+  }
+  const kind = componentKindOf(origin.componentKind ?? (origin as { componentTemplateId?: unknown }).componentTemplateId)
+  if (kind) out.componentKind = kind
+  const contentUrl = originAndPath(origin.contentUrl)
+  if (contentUrl) out.contentUrl = contentUrl
+  if (typeof origin.contentTitle === 'string' && origin.contentTitle.trim()) {
+    out.contentTitle = origin.contentTitle.trim().slice(0, CONTENT_TITLE_MAX_LENGTH)
+  }
+  return out
+}
+
+/** Two origins are the same place when campaign, slot, content and kind of element all match (the page's URL and title are attributes of the place, not its identity). */
+export function sameOrigin(a: CartOrigin, b: CartOrigin): boolean {
+  return (
+    a.campaignId === b.campaignId &&
+    a.slot === b.slot &&
+    a.contentId === b.contentId &&
+    a.componentKind === b.componentKind
+  )
+}
+
+/** The most recent origin of a line, or undefined. */
+export function latestOrigin(line: Pick<CartLineItem, 'origins'>): CartLineOrigin | undefined {
+  const origins = Array.isArray(line.origins) ? line.origins : []
+  return origins[origins.length - 1]
+}
+
+/**
+ * `qty` more units from `origin`: added to the matching origin when there is
+ * one (moved to the end, as the most recent), else to a new one. Without an
+ * origin they go to the most recent origin — or to an empty `{}` one.
+ */
+export function addOriginQuantity(
+  line: Pick<CartLineItem, 'origins'>,
+  origin: CartOrigin | null | undefined,
+  qty: number,
+): void {
+  if (!(qty > 0)) return
+  const origins = Array.isArray(line.origins) ? line.origins : []
+  const target: CartOrigin | undefined = origin ? normalizeOrigin(origin) : latestOrigin({ origins })
+  const index = target ? origins.findIndex((o) => sameOrigin(o, target)) : -1
+  if (index >= 0) {
+    const [found] = origins.splice(index, 1)
+    found!.quantity += qty
+    origins.push(found!)
+  } else {
+    origins.push({ ...(target ?? {}), quantity: qty })
+  }
+  line.origins = origins
+}
+
+/**
+ * `qty` fewer units off a given origin first (a rejected add is reverted from
+ * the origin that failed), then off the most recent ones.
+ */
+export function removeFromOrigin(
+  line: Pick<CartLineItem, 'origins'>,
+  origin: CartOrigin | null | undefined,
+  qty: number,
+): void {
+  if (!(qty > 0) || !Array.isArray(line.origins)) return
+  let left = qty
+  if (origin) {
+    const target = normalizeOrigin(origin)
+    const index = line.origins.findIndex((o) => sameOrigin(o, target))
+    if (index >= 0) {
+      const found = line.origins[index]!
+      const take = Math.min(found.quantity, left)
+      found.quantity -= take
+      left -= take
+      if (found.quantity <= 0) line.origins.splice(index, 1)
+    }
+  }
+  if (left > 0) removeOriginQuantity(line, left)
+}
+
+/** `qty` fewer units: off the most recent origins first. */
+export function removeOriginQuantity(line: Pick<CartLineItem, 'origins'>, qty: number): void {
+  if (!(qty > 0) || !Array.isArray(line.origins)) return
+  let left = qty
+  const origins = line.origins
+  while (left > 0 && origins.length > 0) {
+    const last = origins[origins.length - 1]!
+    const take = Math.min(last.quantity, left)
+    last.quantity -= take
+    left -= take
+    if (last.quantity <= 0) origins.pop()
+  }
+}
+
+/** Origins squared with a quantity the server answered (stock clamps, re-syncs). */
+export function reconciledOrigins(
+  origins: CartLineOrigin[] | undefined,
+  quantity: number,
+): CartLineOrigin[] | undefined {
+  if (!Array.isArray(origins)) return undefined
+  const copy = origins.map((o) => ({ ...o }))
+  const total = copy.reduce((sum, o) => sum + (o.quantity > 0 ? o.quantity : 0), 0)
+  const line = { origins: copy }
+  if (quantity > total) addOriginQuantity(line, undefined, quantity - total)
+  else if (quantity < total) removeOriginQuantity(line, total - quantity)
+  return line.origins
+}
+
+/**
+ * The origins of a line for reporting: what it carries, plus an empty origin
+ * for any units it does not account for (a cart persisted before origins
+ * existed, a server-side bump). Their quantities add up to the line's.
+ */
+export function lineOrigins(line: Pick<CartLineItem, 'origins' | 'quantity'>): CartLineOrigin[] {
+  const known = (Array.isArray(line.origins) ? line.origins : []).filter((o) => o && o.quantity > 0)
+  const total = known.reduce((sum, o) => sum + o.quantity, 0)
+  const quantity = line.quantity > 0 ? line.quantity : 0
+  if (total === quantity) return known.map((o) => ({ ...o }))
+  if (total < quantity) return [...known.map((o) => ({ ...o })), { quantity: quantity - total }]
+  // More units remembered than the line has (a server clamp while an add was
+  // in flight): report the line's quantity, trimming the most recent first —
+  // on a copy, the line's own origins are not touched.
+  const copy = { origins: known.map((o) => ({ ...o })) }
+  removeOriginQuantity(copy, total - quantity)
+  return copy.origins
 }

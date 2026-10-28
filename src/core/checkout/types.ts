@@ -6,6 +6,8 @@
  * sequential checkouts.
  */
 
+import type { CheckoutSponsor } from '../sponsor-identity.js'
+
 export type PaymentMethod = 'apple-pay' | 'klarna' | 'vipps' | 'card' | 'stripe' | 'kustom' | 'qliro' | 'walley' | 'nexi' | 'adyen'
 
 export interface CheckoutAddress {
@@ -16,6 +18,8 @@ export interface CheckoutAddress {
   postalCode: string
   city: string
   country?: string
+  /** Mobile number (Norwegian, 8 digits, optional +47) — sent as `phone` + `phone_code`. */
+  phone?: string
 }
 
 export interface CheckoutState {
@@ -45,4 +49,24 @@ export interface CheckoutState {
    * session it was mounted in: a new session means a new order.
    */
   session?: number
+}
+
+/**
+ * Detail of `vio:checkout-open` as the SDK's elements emit it (the cart, the
+ * product detail): whose cart to check out, the method to preselect, the
+ * element's attribution — and `sponsor`, the checkout's sponsor as a shopper
+ * sees it (`{ id, name, logoUrl }`, the `Vio.sponsorIdentity` rule), when it
+ * can be named.
+ */
+export interface CheckoutOpenDetail {
+  sponsorId: number
+  paymentMethod?: PaymentMethod
+  express?: boolean
+  sponsor?: CheckoutSponsor
+  slot?: string
+  campaignId?: number
+  contentId?: string
+  contentTitle?: string
+  contentUrl?: string
+  componentTemplateId?: string
 }

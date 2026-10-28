@@ -25,6 +25,7 @@ import { CheckoutManager } from './checkout-manager.js'
 
 const fakeCart = {
   waitForCartMutations: async () => {},
+  refreshFromServer: async () => undefined,
   getCart: () => ({ cartId: 'cart-1' }),
   ensureCartId: async () => 'cart-1',
 } as never
@@ -42,6 +43,7 @@ describe('checkout sessions', () => {
   it('every open() is a new session, and later updates keep it', async () => {
     const cart = {
       waitForCartMutations: async () => {},
+      refreshFromServer: async () => undefined,
       getCart: () => ({ cartId: 'cart-1', items: [{ id: 'a', quantity: 1, unitPrice: 100 }] }),
       ensureCartId: async () => 'cart-1',
       subtotalForSponsor: () => 100,

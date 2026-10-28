@@ -9,13 +9,55 @@
  * them from env vars / their config and passes them to `Vio.init`.
  */
 
+import { toCampaignId } from './slots.js'
+
 export type Environment = 'development' | 'testing' | 'production'
+
+/**
+ * Platform type of the surface this page belongs to (ADR-0027). It travels
+ * with every slot declaration and as `?platform=` on the bootstrap, so the
+ * campaigns service only answers with the slot assignments of this platform.
+ */
+export type VioPlatform = 'web' | 'custom-web' | 'vev'
 
 export interface VioConfig {
   /** Vio API key for this client app (from the Vio dashboard). */
   apiKey: string
   /** Target environment. Defaults to 'development'. */
   environment?: Environment
+  /**
+   * Platform type of this surface: `web` (the no-code snippet), `custom-web`
+   * (the SDK integrated by code) or `vev`. Defaults to `web`.
+   */
+  platform?: VioPlatform
+  /**
+   * The host's own id for the content (article, page) this SDK instance is
+   * rendered in — the first choice of `Vio.content()`, ahead of the URL query,
+   * the `vio:content-id` meta, the canonical URL and the pathname. Goes on
+   * every analytics event as `content_id`.
+   */
+  contentId?: string | number
+  /** Human-readable title of that content (`content_title`); see `contentId`. */
+  contentTitle?: string
+  /**
+   * The campaign this PAGE belongs to (ADR-0034, amendment 3) — an editorial
+   * page (a Vev article, a Replit article) that is part of one campaign. Its
+   * slots are declared with it (the micro assigns them unless the dashboard
+   * already did) and, until that round-trips, the elements already resolve to
+   * it: assignment → page campaign → default. DOM alternative, inheritable:
+   * `data-vio-campaign` on any ancestor, or `vio-campaign` on the element.
+   */
+  campaignId?: number
+  /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
+  debug?: boolean
+  /**
+   * The surface's privacy mode, when the host knows it (ADR-0035): `minimal`
+   * keeps the entry context (referrer, utm, landing page) off the order
+   * attribution. Without it the SDK asks the surface itself
+   * (`GET /v2/mobile/surface`), once per page load; a host-set `minimal`
+   * always wins.
+   */
+  privacyMode?: 'standard' | 'minimal'
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -49,6 +91,12 @@ export interface VioConfig {
 export interface ResolvedConfig {
   apiKey: string
   environment: Environment
+  platform: VioPlatform
+  contentId?: string | number
+  contentTitle?: string
+  campaignId?: number
+  debug: boolean
+  privacyMode?: 'standard' | 'minimal'
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -94,6 +142,14 @@ class ConfigurationSingleton {
     this.resolved = {
       apiKey: input.apiKey,
       environment: env,
+      platform: input.platform ?? 'web',
+      contentId: input.contentId,
+      contentTitle: input.contentTitle,
+      campaignId: toCampaignId(input.campaignId),
+      debug: input.debug === true,
+      // Only the two words the backend knows; anything else is "not said".
+      privacyMode:
+        input.privacyMode === 'minimal' || input.privacyMode === 'standard' ? input.privacyMode : undefined,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,
@@ -109,6 +165,7 @@ class ConfigurationSingleton {
           : '****'
       console.info('[Vio] Initialized', {
         environment: env,
+        platform: this.resolved.platform,
         apiBase: this.resolved.apiBase,
         apiKey: masked,
         stripeConfigured: !!input.stripePublishableKey,

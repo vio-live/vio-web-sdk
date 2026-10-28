@@ -342,7 +342,7 @@ describe('<vio-product-carousel>', () => {
     for (let i = 0; i < 5; i++) await settle(el)
 
     expect(registerSlot).toHaveBeenCalledWith('hero', undefined, { kind: 'carousel' })
-    expect(commerceFor).toHaveBeenCalledWith(7)
+    expect(commerceFor).toHaveBeenCalledWith(7, expect.anything())
     const card = el.shadowRoot!.querySelector<VioProduct>('vio-product')
     expect(card).not.toBeNull()
     expect(card!.vioSlot).toBe('hero')
@@ -366,8 +366,8 @@ describe('<vio-product-carousel>', () => {
       'sponsor-id': '3',
     })
     for (let i = 0; i < 5; i++) await settle(el)
-    expect(commerceFor).toHaveBeenCalledWith(3)
-    expect(commerceFor).not.toHaveBeenCalledWith(7)
+    expect(commerceFor).toHaveBeenCalledWith(3, expect.anything())
+    expect(commerceFor).not.toHaveBeenCalledWith(7, expect.anything())
   })
 
   it('without `vio-slot` it is `carousel-1`, its cards inherit that id, and the sponsor is the default campaign one', async () => {
@@ -375,7 +375,7 @@ describe('<vio-product-carousel>', () => {
     for (let i = 0; i < 5; i++) await settle(el)
     expect(el.effectiveSlot).toBe('carousel-1')
     expect(registerSlot).toHaveBeenCalledWith('carousel-1', 'Carousel 1', { kind: 'carousel' })
-    expect(commerceFor).toHaveBeenCalledWith(4)
+    expect(commerceFor).toHaveBeenCalledWith(4, expect.anything())
     expect(el.shadowRoot!.querySelector<VioProduct>('vio-product')!.effectiveSlot).toBe('carousel-1')
   })
 })
@@ -417,7 +417,7 @@ describe('<vio-product-detail> and the card that opened it', () => {
     await click({ productId: '9', sponsorId: '', slot: 'hero', contentId: 'art-9', contentTitle: 'Nine' }, el)
     expect(el.open).toBe(true)
     expect(el.sponsorId).toBe(7)
-    expect(commerceFor).toHaveBeenCalledWith(7)
+    expect(commerceFor).toHaveBeenCalledWith(7, expect.anything())
     expect(track).toHaveBeenCalledWith(
       'view_item',
       expect.objectContaining({
@@ -450,7 +450,7 @@ describe('<vio-product-detail> and the card that opened it', () => {
     const el = await mount<VioProductDetail>('vio-product-detail')
     await click({ productId: '9', sponsorId: '3', slot: 'hero' }, el)
     expect(el.sponsorId).toBe(3)
-    expect(commerceFor).toHaveBeenCalledWith(3)
+    expect(commerceFor).toHaveBeenCalledWith(3, expect.anything())
     expect(track).toHaveBeenCalledWith(
       'view_item',
       expect.objectContaining({ context: expect.objectContaining({ slot: 'hero', sponsorId: 3 }) }),

@@ -78,6 +78,15 @@ export interface SponsorCartState {
   currency: string
   /** Backend (Vio Commerce) cart id, once created. */
   cartId?: string
+  /**
+   * The commerce channel the backend cart was created on (the sponsor's
+   * block for the campaign the first line came from). Every later cart and
+   * checkout call for this cart uses THAT channel's key; when the bootstrap
+   * no longer lists it, the cart is created again on the current channel with
+   * its lines. Absent on carts created before 0.33 (they keep the sponsor's
+   * first block, as then, and learn it on the next call).
+   */
+  channelId?: string
   shippingCountry?: string
   subtotal?: number
   shipping?: number

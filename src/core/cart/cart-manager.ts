@@ -34,6 +34,8 @@ import {
   getLineItemsBySupplier as gqlGetLineItemsBySupplier,
   updateItem as gqlUpdateItem,
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
+  type CartKeyContext,
+  type CartQueryOptions,
 } from '../api/cart-queries.js'
 
 /** Where the carts are kept: one entry per connection (see `cartStorageKey`). */
@@ -171,6 +173,26 @@ function queueStep(sync: QtySync, target: number, origin: CartOrigin | undefined
   }
 }
 
+/** A line of a cart whose channel went away, as it stood then: what the new backend cart is given. */
+interface CarriedLine {
+  productId: number
+  variantId?: number
+  origins: CartLineOrigin[]
+}
+
+/** The campaign of a cart's most recent origin that names one — the campaign its lines came from. */
+function cartCampaignOf(cart: SponsorCartState | undefined): number | undefined {
+  const items = cart?.items ?? []
+  for (let i = items.length - 1; i >= 0; i--) {
+    const origins = items[i]?.origins ?? []
+    for (let j = origins.length - 1; j >= 0; j--) {
+      const id = Number(origins[j]?.campaignId)
+      if (Number.isInteger(id) && id > 0) return id
+    }
+  }
+  return undefined
+}
+
 function lineId(): string {
   return 'li_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36)
 }
@@ -207,6 +229,15 @@ export class CartManager extends EventTarget {
    * in parallel; each response re-applied the whole backend cart, so an
    * older one landing after a newer optimistic change rolled the line back.) */
   private qtySyncs = new Map<string, QtySync>()
+  /**
+   * Bumped per sponsor each time its backend cart is dropped because its
+   * channel went away: the lines as they stood then (`carryOver`) go to the
+   * new backend cart, so an add whose local units were already counted in
+   * them must not send its own AddItem as well (see `addManual`).
+   */
+  private rebuildEpoch = new Map<number, number>()
+  /** The lines to give the next backend cart of a sponsor, after its channel went away. */
+  private carryOver = new Map<number, CarriedLine[]>()
 
   /** The storage key of this connection's carts. */
   private readonly storageKey: string
@@ -380,11 +411,130 @@ export class CartManager extends EventTarget {
 
   // MARK: - Backend cart sync (Vio Commerce GraphQL)
 
-  /** Ensure the sponsor cart exists server-side; returns its backend cart id. */
+  /**
+   * The options of a sponsor's backend cart: the key of the channel it was
+   * created on (`channelMissing` when the bootstrap no longer lists it). A
+   * cart from before channels were remembered keeps the sponsor's first
+   * block, as when it was created, and remembers that channel from now on.
+   */
+  private async cartOptions(sponsorId: number): Promise<CartQueryOptions> {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (cart?.cartId && cart.channelId) {
+      return getCartGraphQLOptions(sponsorId, { channelId: cart.channelId })
+    }
+    if (!cart?.cartId) return getCartGraphQLOptions(sponsorId)
+    const opts = await getCartGraphQLOptions(sponsorId, { campaignId: null })
+    const now = this.cartsBySponsor.get(sponsorId)
+    if (now?.cartId && !now.channelId && opts.sponsorResolved && opts.channelId) {
+      now.channelId = opts.channelId
+      this.persist()
+    }
+    return opts
+  }
+
+  /**
+   * The backend cart to call for a sponsor, with the key of its channel. When
+   * the bootstrap no longer lists that channel the stale cart is dropped and a
+   * new one is created on the sponsor's current channel with the same lines
+   * (`dropStaleBackendCart` + `ensureCartId`) — never a call with a key of
+   * another channel. `undefined` when there is no backend cart (or none could
+   * be made).
+   */
+  async liveCart(sponsorId: number): Promise<{ cartId: string; opts: CartQueryOptions } | undefined> {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const cartId = cart?.cartId
+    if (!cart || !cartId) return undefined
+    const opts = await this.cartOptions(sponsorId)
+    if (!opts.channelMissing) {
+      const current = this.cartsBySponsor.get(sponsorId)?.cartId
+      // Moved meanwhile (another call rebuilt it): ask again for the new one.
+      if (current && current !== cartId) return { cartId: current, opts: await this.cartOptions(sponsorId) }
+      // Same cart — or emptied locally meanwhile, and its last removals still go to it.
+      return { cartId, opts }
+    }
+    const now = this.cartsBySponsor.get(sponsorId)
+    if (now?.cartId === cartId) this.dropStaleBackendCart(sponsorId)
+    const rebuilt = await this.ensureCartId(sponsorId, now?.currency || undefined, now?.shippingCountry || undefined)
+    if (!rebuilt) return undefined
+    return { cartId: rebuilt, opts: await this.cartOptions(sponsorId) }
+  }
+
+  /**
+   * The channel of a sponsor's cart is gone from the bootstrap (the campaign
+   * moved, a refresh after hours): forget the backend cart and its line ids,
+   * keep the lines, and remember them as they stand now for the next backend
+   * cart (`carryOver`). Queued quantity syncs of the old cart are dropped —
+   * their quantities are in the lines carried.
+   */
+  private dropStaleBackendCart(sponsorId: number): void {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart?.cartId) return
+    const carried: CarriedLine[] = cart.items
+      .filter((item) => item.quantity > 0)
+      .map((item) => ({ productId: item.productId, variantId: item.variantId, origins: lineOrigins(item) }))
+    delete cart.cartId
+    delete cart.channelId
+    for (const item of cart.items) delete item.cartItemId
+    for (const key of [...this.qtySyncs.keys()]) {
+      if (key.startsWith(`${sponsorId}:`)) this.qtySyncs.delete(key)
+    }
+    this.carryOver.set(sponsorId, carried)
+    this.rebuildEpoch.set(sponsorId, (this.rebuildEpoch.get(sponsorId) ?? 0) + 1)
+    this.persist()
+  }
+
+  /** Give a new backend cart the lines of the one whose channel went away — each unit with its own origin. */
+  private async replayCarriedLines(
+    sponsorId: number,
+    cartId: string,
+    carried: CarriedLine[],
+    opts: CartQueryOptions,
+  ): Promise<void> {
+    let last: unknown
+    const seq = this.nextSeq(sponsorId)
+    try {
+      const privacyMode = await currentPrivacyMode()
+      for (const line of carried) {
+        for (const origin of line.origins) {
+          if (!(origin.quantity > 0)) continue
+          const { quantity, ...place } = origin
+          const wire = Object.keys(place).length
+            ? lineOriginWire(normalizeOrigin(place), { page: currentOriginPage(), privacyMode })
+            : undefined
+          last = await gqlAddItem(
+            cartId,
+            [
+              {
+                product_id: Number(line.productId || 0),
+                quantity,
+                variant_id: line.variantId != null ? Number(line.variantId) : null,
+                ...(wire ? { origin: wire } : {}),
+              },
+            ],
+            opts,
+          )
+        }
+      }
+    } catch (err) {
+      this.emitError('moving the cart to the current channel failed — some lines may not be in it', err)
+    }
+    const res = last as { line_items?: unknown } | undefined
+    if (res && Array.isArray(res.line_items)) this.applyBackendCart(sponsorId, res, seq)
+  }
+
+  /**
+   * Ensure the sponsor cart exists server-side; returns its backend cart id.
+   * A new backend cart is created on the channel of the campaign in context —
+   * `ctx.campaignId` (the add's origin), else the campaign the cart's lines
+   * came from, else `Vio.init`'s — and remembers it (`channelId`). An existing
+   * one whose channel the bootstrap no longer lists is created again on the
+   * current channel, with its lines (`liveCart`).
+   */
   async ensureCartId(
     sponsorId: number,
     currency?: string,
     shippingCountry?: string,
+    ctx: Pick<CartKeyContext, 'campaignId'> = {},
   ): Promise<string | undefined> {
     const activeCurrency = currency || getGlobalCurrency()
     const activeCountry = shippingCountry || getGlobalCountryCode()
@@ -395,14 +545,19 @@ export class CartManager extends EventTarget {
     } else {
       cart.shippingCountry = activeCountry
     }
-    if (cart.cartId) return cart.cartId
+    if (cart.cartId) {
+      if (!cart.channelId) return cart.cartId
+      return (await this.liveCart(sponsorId))?.cartId
+    }
 
     // Dedupe: concurrent callers share ONE CreateCart per sponsor.
     const inFlight = this.cartIdPromises.get(sponsorId)
     if (inFlight) return inFlight
 
     const creation = (async (): Promise<string | undefined> => {
-      const opts = await getCartGraphQLOptions(sponsorId)
+      // The channel of the campaign in context: the add's, else the lines'.
+      const campaignId = ctx.campaignId ?? cartCampaignOf(cart)
+      const opts = await getCartGraphQLOptions(sponsorId, campaignId !== undefined ? { campaignId } : undefined)
       // Never create a backend cart with the wrong key — a cart signed with
       // the host apiKey is orphaned once the sponsor key resolves later.
       if (!opts.sponsorResolved) {
@@ -419,6 +574,8 @@ export class CartManager extends EventTarget {
         )
         if (backendCart?.cart_id) {
           cart.cartId = backendCart.cart_id
+          if (opts.channelId) cart.channelId = opts.channelId
+          else delete cart.channelId
           if (Array.isArray(backendCart.line_items) && backendCart.line_items.length > 0) {
             this.updateFromBackendCart(sponsorId, backendCart)
           } else {
@@ -433,6 +590,12 @@ export class CartManager extends EventTarget {
             }
             this.persist()
             this.emit()
+          }
+          // The lines of the backend cart whose channel went away.
+          const carried = this.carryOver.get(sponsorId)
+          if (carried) {
+            this.carryOver.delete(sponsorId)
+            if (carried.length > 0) await this.replayCarriedLines(sponsorId, backendCart.cart_id, carried, opts)
           }
         }
       } catch (err) {
@@ -586,7 +749,7 @@ export class CartManager extends EventTarget {
 
     const syncedCartId = cart.cartId
     if (syncedCartId) {
-      for (const id of removedBeforeSync) this.syncQuantity(sponsorId, syncedCartId, id, 0)
+      for (const id of removedBeforeSync) this.syncQuantity(sponsorId, syncedCartId, id, 0, undefined, cart.channelId)
     }
 
     // Replay quantity intents recorded while the line had no backend id yet.
@@ -693,6 +856,8 @@ export class CartManager extends EventTarget {
 
     const addedItem = existing ?? cart.items[cart.items.length - 1]!
     const addedLineId = addedItem.id
+    // Whether these units are already in the lines a moved cart carries over (see `rebuildEpoch`).
+    const epochAtAdd = this.rebuildEpoch.get(opts.sponsorId) ?? 0
 
     // Async sync with the backend cart. Optimistic — but a REJECTED AddItem
     // reverts the local line (a ghost line means the UI total and the charged
@@ -702,9 +867,14 @@ export class CartManager extends EventTarget {
     let settling: Promise<unknown> | undefined
     const mutation = (async () => {
       try {
-        const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined)
+        const cartId = await this.ensureCartId(opts.sponsorId, opts.currency || undefined, undefined, {
+          campaignId: opts.origin?.campaignId,
+        })
+        // The cart moved to another channel after these units were counted:
+        // the new backend cart was given them with the other lines.
+        if ((this.rebuildEpoch.get(opts.sponsorId) ?? 0) !== epochAtAdd) return
         if (cartId) {
-          const gqlOpts = await getCartGraphQLOptions(opts.sponsorId)
+          const gqlOpts = await this.cartOptions(opts.sponsorId)
           // Where these units come from, for the order (ADR-0035 phase B):
           // the add's own origin; nothing when the host gave none. On a
           // `minimal` surface (or one whose mode is not known) the slot and
@@ -839,7 +1009,14 @@ export class CartManager extends EventTarget {
     this.persist()
     this.emit()
 
-    if (!cart.cartId) return
+    if (!cart.cartId) {
+      // The backend cart is being created (or moved to another channel): the
+      // change is replayed once its lines have their ids.
+      if (this.cartIdPromises.has(sponsorId)) {
+        this.pendingQtyIntents.set(this.intentKey(item.productId, item.variantId), target)
+      }
+      return
+    }
 
     // The line hasn't been assigned its backend id yet (AddItem in flight):
     // sending the local id would 404. Record the intent — it's replayed as
@@ -849,7 +1026,7 @@ export class CartManager extends EventTarget {
       return
     }
 
-    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target, addedOrigin)
+    this.syncQuantity(sponsorId, cart.cartId, targetItemId, target, addedOrigin, cart.channelId)
   }
 
   /** Send a line's target quantity to the backend — ONE request in flight per
@@ -868,6 +1045,7 @@ export class CartManager extends EventTarget {
     cartItemId: string,
     target: number,
     origin?: CartOrigin,
+    channelId?: string,
   ): void {
     const key = this.qtySyncKey(sponsorId, cartItemId)
     const active = this.qtySyncs.get(key)
@@ -885,9 +1063,22 @@ export class CartManager extends EventTarget {
       let nextOrigin: CartOrigin | undefined = origin
       let removalRetried = false
       while (next !== undefined) {
+        let gqlOpts: CartQueryOptions
+        if (this.cartsBySponsor.get(sponsorId)?.cartId) {
+          // The cart's channel went away and the cart moved: the new backend
+          // cart was given the line's quantity as it stood — nothing to send here.
+          const live = await this.liveCart(sponsorId)
+          if (!live || live.cartId !== backendCartId) {
+            if (this.qtySyncs.get(key) === sync) this.qtySyncs.delete(key)
+            break
+          }
+          gqlOpts = live.opts
+        } else {
+          // The shopper emptied the cart: its last lines go on its own channel.
+          gqlOpts = await getCartGraphQLOptions(sponsorId, channelId ? { channelId, retired: true } : undefined)
+        }
         const seq = this.nextSeq(sponsorId)
         try {
-          const gqlOpts = await getCartGraphQLOptions(sponsorId)
           // The origin of the units this update adds (ADR-0035 phase B) —
           // when it was an increase and the SDK knows a place for them.
           const originWire =
@@ -974,10 +1165,9 @@ export class CartManager extends EventTarget {
 
   /** Refresh the local cart from the backend (source of truth). */
   async fetchCartFromBackend(sponsorId: number): Promise<unknown> {
-    const cart = this.cartsBySponsor.get(sponsorId)
-    if (!cart?.cartId) return null
-    const gqlOpts = await getCartGraphQLOptions(sponsorId)
-    const resCart = await gqlGetCart(cart.cartId, gqlOpts)
+    const live = await this.liveCart(sponsorId)
+    if (!live) return null
+    const resCart = await gqlGetCart(live.cartId, live.opts)
     if (resCart) this.updateFromBackendCart(sponsorId, resCart)
     return resCart
   }
@@ -1002,8 +1192,9 @@ export class CartManager extends EventTarget {
       if (!cart?.cartId) return cart
       let resCart: unknown
       try {
-        const gqlOpts = await getCartGraphQLOptions(sponsorId)
-        resCart = await gqlGetCart(cart.cartId, gqlOpts)
+        const live = await this.liveCart(sponsorId)
+        if (!live) return this.cartsBySponsor.get(sponsorId)
+        resCart = await gqlGetCart(live.cartId, live.opts)
       } catch (err) {
         if (typeof console !== 'undefined') {
           console.warn('[CartManager] GetCart before the checkout failed — the local cart stands', err)
@@ -1069,10 +1260,9 @@ export class CartManager extends EventTarget {
 
   /** Line items grouped by supplier (shipping is per-supplier server-side). */
   async fetchLineItemsBySupplier(sponsorId: number): Promise<unknown> {
-    const cart = this.cartsBySponsor.get(sponsorId)
-    if (!cart?.cartId) return null
-    const gqlOpts = await getCartGraphQLOptions(sponsorId)
-    return gqlGetLineItemsBySupplier(cart.cartId, gqlOpts)
+    const live = await this.liveCart(sponsorId)
+    if (!live) return null
+    return gqlGetLineItemsBySupplier(live.cartId, live.opts)
   }
 
   /** Set the chosen shipping option per supplier on the backend cart. */
@@ -1080,10 +1270,9 @@ export class CartManager extends EventTarget {
     sponsorId: number,
     data: Array<{ shipping_id: string; supplier_id: number }>,
   ): Promise<unknown> {
-    const cart = this.cartsBySponsor.get(sponsorId)
-    if (!cart?.cartId) return null
-    const gqlOpts = await getCartGraphQLOptions(sponsorId)
-    const resCart = await gqlUpdateShippingsBySupplier(cart.cartId, data, gqlOpts)
+    const live = await this.liveCart(sponsorId)
+    if (!live) return null
+    const resCart = await gqlUpdateShippingsBySupplier(live.cartId, data, live.opts)
     if (resCart && Array.isArray(resCart.line_items)) {
       this.updateFromBackendCart(sponsorId, resCart)
     }

@@ -506,13 +506,13 @@ function resolveHttpsReturnUrl(
   return url
 }
 
-/** Execute a Payment.* mutation with the sponsor's commerce key. */
+/** Execute a Payment.* mutation with the commerce key of the checkout's channel (`CheckoutManager.gqlOptions`). */
 async function executeKlarnaGraphQL(
   query: string,
   variables: Record<string, unknown>,
-  sponsorId?: number,
+  options: CartQueryOptions,
 ): Promise<any> {
-  return executeCartGraphQL(query, variables, await getCartGraphQLOptions(sponsorId))
+  return executeCartGraphQL(query, variables, options)
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -613,8 +613,50 @@ export class CheckoutManager extends EventTarget {
     return this.currentStateValue
   }
   private set state(next: CheckoutState | null) {
+    // A backend checkout lives on its cart's channel: say which, once known.
+    if (next?.checkoutId && next.sponsorId && !next.channelId) {
+      const remembered = rememberedCheckoutSponsor(next.checkoutId)
+      const channelId =
+        (remembered?.sponsorId === next.sponsorId ? remembered.channelId : undefined) ??
+        this.cartManager.getCart(next.sponsorId)?.channelId
+      if (channelId) next = { ...next, channelId }
+    }
     this.currentStateValue = next
-    if (next?.checkoutId && next.sponsorId) this.rememberSponsorOfCheckout(next.checkoutId, next.sponsorId)
+    if (next?.checkoutId && next.sponsorId) {
+      this.rememberSponsorOfCheckout(next.checkoutId, next.sponsorId, next.channelId)
+    }
+  }
+
+  /**
+   * The options of a call for a sponsor's cart or checkout: the key of the
+   * channel the checkout lives on — what this tab remembered for the
+   * checkout (a return from a redirect, after the cart was cleared), the open
+   * checkout's, else the cart's — even if a bootstrap refresh no longer lists
+   * it (an open checkout keeps paying with its own key). Without any, the
+   * sponsor's block as `getCartGraphQLOptions` resolves it.
+   */
+  private async gqlOptions(sponsorId?: number, checkoutId?: string): Promise<CartQueryOptions> {
+    const channelId = this.channelOf(sponsorId, checkoutId)
+    return getCartGraphQLOptions(sponsorId, channelId ? { channelId, retired: true } : undefined)
+  }
+
+  /** See `gqlOptions`. */
+  private channelOf(sponsorId?: number, checkoutId?: string): string | undefined {
+    try {
+      if (!sponsorId) return undefined
+      const state = this.state?.sponsorId === sponsorId ? this.state : null
+      const id = checkoutId ?? state?.checkoutId
+      if (id) {
+        const remembered = rememberedCheckoutSponsor(id)
+        if (remembered?.channelId && remembered.sponsorId === sponsorId) return remembered.channelId
+        if (state?.checkoutId === id && state.channelId) return state.channelId
+        // A checkout this tab knows nothing of: its cart's channel is the best guess.
+      }
+      const cart = this.cartManager.getCart(sponsorId)
+      return cart?.cartId ? cart.channelId : undefined
+    } catch {
+      return undefined
+    }
   }
   /** The last checkout + identity written to the memory — the state is set on every keystroke of the form. */
   private lastRememberedSponsor = ''
@@ -784,7 +826,7 @@ export class CheckoutManager extends EventTarget {
         throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${sponsorId}`)
       }
     }
-    const opts = await getCartGraphQLOptions(sponsorId)
+    const opts = await this.gqlOptions(sponsorId)
     const attribution = await this.attributionFor(sponsorId)
     const checkout = attribution
       ? await gqlCreateCheckout(cartId, opts, { attribution })
@@ -878,7 +920,7 @@ export class CheckoutManager extends EventTarget {
   /** Update the backend checkout (terms are re-asserted unless overridden; the attribution rides along unless the caller gives its own). */
   async updateCheckout(variables: Record<string, unknown>, sponsorId?: number): Promise<any> {
     const spId = sponsorId ?? this.state?.sponsorId
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     const attribution = 'attribution' in variables ? undefined : await this.attributionFor(spId)
     const fullVars = {
       buyerAcceptsPurchaseConditions: true,
@@ -895,7 +937,7 @@ export class CheckoutManager extends EventTarget {
   }
 
   async getCheckout(checkoutId: string, sponsorId?: number): Promise<any> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetCheckout(checkoutId, opts)
   }
 
@@ -922,8 +964,9 @@ export class CheckoutManager extends EventTarget {
     if (!request) {
       const asked = (async (): Promise<CheckoutReference> => {
         try {
-          const opts = await getCartGraphQLOptions(
+          const opts = await this.gqlOptions(
             sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId,
+            checkoutId,
           )
           return await gqlGetCheckoutReference(checkoutId, opts)
         } catch {
@@ -981,7 +1024,7 @@ export class CheckoutManager extends EventTarget {
    * sponsor's name and logo as known now — so a confirmation after a redirect
    * or a reload can name the brand. Written again only when something changed.
    */
-  private rememberSponsorOfCheckout(checkoutId: string, sponsorId: number): void {
+  private rememberSponsorOfCheckout(checkoutId: string, sponsorId: number, channelId?: string): void {
     try {
       let identity: SponsorIdentity | null = null
       try {
@@ -991,10 +1034,10 @@ export class CheckoutManager extends EventTarget {
       }
       const name = identity?.name || this.cartManager.getCart(sponsorId)?.sponsorName || ''
       const logoUrl = identity?.logoUrl ?? null
-      const key = JSON.stringify([checkoutId, sponsorId, name, logoUrl])
+      const key = JSON.stringify([checkoutId, sponsorId, name, logoUrl, channelId ?? null])
       if (key === this.lastRememberedSponsor) return
       this.lastRememberedSponsor = key
-      rememberCheckoutSponsor(checkoutId, { sponsorId, name, logoUrl })
+      rememberCheckoutSponsor(checkoutId, { sponsorId, name, logoUrl, channelId })
     } catch {
       /* the memory never costs a checkout */
     }
@@ -1019,7 +1062,7 @@ export class CheckoutManager extends EventTarget {
 
     const promise = (async () => {
       try {
-        const opts = await getCartGraphQLOptions(spId)
+        const opts = await this.gqlOptions(spId)
         const res = await gqlGetAvailablePaymentMethods(opts)
         // Never cache empty/failed responses — a transient blip would freeze
         // the payment grid for the whole page session.
@@ -1064,7 +1107,7 @@ export class CheckoutManager extends EventTarget {
         cartId = await this.cartManager.ensureCartId(spId)
       }
       if (!cartId) return []
-      const opts = await getCartGraphQLOptions(spId)
+      const opts = await this.gqlOptions(spId)
       const supplierGroups = await gqlGetLineItemsBySupplier(cartId, opts)
       this.shippingsResolved = Array.isArray(supplierGroups)
       const firstGroup = Array.isArray(supplierGroups) ? supplierGroups[0] : null
@@ -1133,7 +1176,7 @@ export class CheckoutManager extends EventTarget {
     if (!spId) return null
     const cart = this.cartManager.getCart(spId)
     if (!cart?.cartId) return null
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     const updated = await gqlUpdateShippingsBySupplier(cart.cartId, data, opts)
     if (updated) {
       this.cartManager.updateFromBackendCart(spId, updated)
@@ -1191,7 +1234,7 @@ export class CheckoutManager extends EventTarget {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
 
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     // The order's attribution (ADR-0035 phase B): on the checkout when it is
     // created here, and again on the update right before paying.
     const attribution = await this.attributionFor(spId)
@@ -1379,7 +1422,7 @@ export class CheckoutManager extends EventTarget {
   /** Vipps' own payment state for the checkout — see getVippsStatus in
    * cart-queries.ts for why this exists instead of trusting GetCheckout. */
   async getVippsStatus(checkoutId: string, sponsorId?: number): Promise<{ state?: string; duplicate_of?: string | null } | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetVippsStatus({ checkoutId }, opts)
   }
 
@@ -1401,7 +1444,7 @@ export class CheckoutManager extends EventTarget {
     if (!cartId) {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
       // createCheckout(), NOT the raw mutation: shopcart refuses to start a
@@ -1461,7 +1504,7 @@ export class CheckoutManager extends EventTarget {
     const spId = sponsorId ?? this.state?.sponsorId
     const checkoutId = this.state?.checkoutId
     if (!spId || !checkoutId) return null
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     suspendKustom()
     try {
       return await gqlSyncPaymentKustom(checkoutId, opts)
@@ -1472,7 +1515,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Re-read a Kustom order — used on the confirmation return trip. */
   async getKustomOrder(orderId: string, sponsorId?: number): Promise<KustomOrder | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.state?.sponsorId)
     return gqlGetKustomOrder(orderId, opts)
   }
 
@@ -1497,7 +1540,7 @@ export class CheckoutManager extends EventTarget {
     if (!cartId) {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
       // createCheckout(), NOT the raw mutation: shopcart refuses to start a
@@ -1584,7 +1627,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Re-read the Qliro order owned by a checkout — the confirmation trip. */
   async getQliroOrder(checkoutId: string, sponsorId?: number): Promise<QliroOrder | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetQliroOrder(checkoutId, opts)
   }
 
@@ -1607,7 +1650,7 @@ export class CheckoutManager extends EventTarget {
     if (!cartId) {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     let checkoutId = this.state?.checkoutId
     if (!checkoutId) {
       // createCheckout(), NOT the raw mutation: shopcart refuses to start a
@@ -1653,7 +1696,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Re-read the Walley session owned by a checkout — the confirmation trip. */
   async getWalleyOrder(checkoutId: string, sponsorId?: number): Promise<WalleyOrder | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetWalleyOrder(checkoutId, opts)
   }
 
@@ -1692,7 +1735,7 @@ export class CheckoutManager extends EventTarget {
     if (!cartId) {
       throw new Error(`[CheckoutManager] Failed to obtain cart_id for sponsor ${spId}`)
     }
-    const opts = await getCartGraphQLOptions(spId)
+    const opts = await this.gqlOptions(spId)
     // The remembered session is resumed only on the redirect return it exists
     // for. Read on every opening, it put the NEXT purchase in the same tab on
     // the previous cart's payment — its lines and its total (2026-09-16: an
@@ -1974,7 +2017,7 @@ export class CheckoutManager extends EventTarget {
 
   /** Re-read the Nexi payment owned by a checkout. */
   async getNexiOrder(checkoutId: string, sponsorId?: number): Promise<NexiOrder | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetNexiOrder(checkoutId, opts)
   }
 
@@ -2073,7 +2116,7 @@ export class CheckoutManager extends EventTarget {
     proof: { sessionResult?: string; redirectResult?: string } = {},
     sponsorId?: number,
   ): Promise<AdyenPayment | null> {
-    const opts = await getCartGraphQLOptions(sponsorId ?? this.state?.sponsorId)
+    const opts = await this.gqlOptions(sponsorId ?? this.sponsorIdOfCheckout(checkoutId) ?? this.state?.sponsorId, checkoutId)
     return gqlGetAdyenPayment({ checkoutId, ...proof }, opts)
   }
 
@@ -2401,7 +2444,7 @@ export class CheckoutManager extends EventTarget {
           console.warn('[VioCheckout] updateCheckout before Apple Pay confirm failed:', err)
         }
       }
-      const gqlOpts = await getCartGraphQLOptions(spId)
+      const gqlOpts = await this.gqlOptions(spId)
       const createRes = await gqlCreatePaymentApplePay({ checkoutId }, gqlOpts)
       const gatewayId = String(createRes?.gateway_merchant_id ?? '')
       if (gatewayId.startsWith('pk_')) this.applePayPublishableKey = gatewayId
@@ -2692,7 +2735,7 @@ export class CheckoutManager extends EventTarget {
     const json = await executeKlarnaGraphQL(
       CREATE_PAYMENT_KLARNA_NATIVE_MUTATION,
       variables,
-      sponsorId,
+      await this.gqlOptions(sponsorId, checkoutId),
     )
     const nativeRes = json?.data?.Payment?.CreatePaymentKlarnaNative
     if (!nativeRes || !nativeRes.client_token) {
@@ -2866,7 +2909,7 @@ export class CheckoutManager extends EventTarget {
       const json = await executeKlarnaGraphQL(
         CREATE_PAYMENT_KLARNA_NATIVE_MUTATION,
         variables,
-        sponsorId,
+        await this.gqlOptions(sponsorId, checkoutId),
       )
       const nativeRes = json?.data?.Payment?.CreatePaymentKlarnaNative
       if (!nativeRes || !nativeRes.client_token) {
@@ -3036,12 +3079,10 @@ export class CheckoutManager extends EventTarget {
 
       // Sent again without `buyer_ref` only when the gateway refused the
       // selection (nothing ran) — a confirmation that ran is never repeated.
+      const klarnaSponsorId = ctx?.sponsorId ?? this.state?.sponsorId
+      const klarnaOptions = await this.gqlOptions(klarnaSponsorId, ctx?.checkoutId ?? this.state?.checkoutId)
       const json = await withBuyerRef((withRef) =>
-        executeKlarnaGraphQL(
-          confirmPaymentKlarnaNativeMutation(withRef),
-          variables,
-          ctx?.sponsorId ?? this.state?.sponsorId,
-        ),
+        executeKlarnaGraphQL(confirmPaymentKlarnaNativeMutation(withRef), variables, klarnaOptions),
       )
       const confirmRes = json?.data?.Payment?.ConfirmPaymentKlarnaNative
       if (!confirmRes) {

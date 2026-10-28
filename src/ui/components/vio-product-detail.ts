@@ -15,6 +15,7 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
+import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
   getGlobalCurrency,
@@ -199,6 +200,22 @@ export class VioProductDetail extends LitElement {
   private get activeCampaignHint(): number[] {
     const own = this.slotRegistration.campaignHint
     return this.fromCard && this.eventCampaignId !== undefined ? [this.eventCampaignId, ...own] : own
+  }
+
+  /**
+   * The campaign whose channel sells the open product (one article = one
+   * campaign = one channel): the campaign its events credit, then the opening
+   * click's and this element's own — so the product, its rates and its
+   * seller are read with that channel's key, the one the cart is created on.
+   */
+  private commerceCampaigns(): number[] {
+    const hint = this.activeCampaignHint
+    try {
+      const resolved = this.attribution().campaignId
+      return typeof resolved === 'number' ? [resolved, ...hint] : hint
+    } catch {
+      return hint
+    }
   }
 
   private slotAttributes() {
@@ -1507,7 +1524,7 @@ export class VioProductDetail extends LitElement {
         // switched it since this element was mounted.
         const activeCurrency = getGlobalCurrency() || this.currency
         this.currency = activeCurrency
-        const commerce = Vio.commerceFor(this.sponsorId)
+        const commerce = Vio.commerceFor(this.sponsorId, { campaignId: this.commerceCampaigns() })
         products = await commerce.channel.product.getByIds({
           product_ids: [productIdNum],
           currency: activeCurrency,
@@ -2352,7 +2369,7 @@ export class VioProductDetail extends LitElement {
   private async loadShippingFrom(productId: number, seq: number): Promise<void> {
     let rates: Array<{ name?: string; price: number; currency: string; description?: string; logoUrl?: string }> | null = null
     try {
-      const product = Vio.commerceFor(this.sponsorId).channel.product as {
+      const product = Vio.commerceFor(this.sponsorId, { campaignId: this.commerceCampaigns() }).channel.product as {
         getShippingRates?: (
           id: number,
           o?: { currency?: string },
@@ -2493,7 +2510,14 @@ export class VioProductDetail extends LitElement {
    */
   private renderShippingReturns() {
     const identity = resolveSponsorIdentity(this.sponsorId)
-    const rates = this.shippingRates
+    // A description that only repeats the product, the brand or the seller
+    // (products writes those as defaults on imports) is no delivery time.
+    const rates = shippingRatesShown(this.shippingRates, [
+      this.product?.title,
+      this.product?.brand,
+      this.sellerName,
+      identity?.name,
+    ])
     // The delivery time is what the brand wrote on each rate («Leveringstid
     // 1-5 dager»): once under the list when every rate says the same, on each
     // row when they differ; the host's delivery-time when no rate says any.
@@ -2561,7 +2585,7 @@ export class VioProductDetail extends LitElement {
   private async loadSeller(productId: number, seq: number): Promise<void> {
     let name: string | null = null
     try {
-      name = await Vio.commerceFor(this.sponsorId).channel.product.getSellerCompany(productId)
+      name = await Vio.commerceFor(this.sponsorId, { campaignId: this.commerceCampaigns() }).channel.product.getSellerCompany(productId)
     } catch {
       name = null
     }
@@ -2969,6 +2993,19 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-product-detail': VioProductDetail
   }
+}
+
+/**
+ * The rates «Frakt & retur» shows: each description through
+ * `shippingDescriptionOf` — filler, a repeat of the rate's own name, or of
+ * any of `repeats` (the product's title, its brand, the seller's and the
+ * sponsor's display names) is no description (''). Pure; copies.
+ */
+export function shippingRatesShown<T extends { name: string; description: string }>(
+  rates: ReadonlyArray<T>,
+  repeats: ReadonlyArray<unknown> = [],
+): T[] {
+  return rates.map((r) => ({ ...r, description: shippingDescriptionOf(r.description, [r.name, ...repeats]) }))
 }
 
 /**

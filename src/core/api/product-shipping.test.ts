@@ -54,6 +54,30 @@ describe('the delivery time and the carrier logo of a rate', () => {
     ])
   })
 
+  it('a description that only repeats the rate’s name (dashboard-created rates) is no description', () => {
+    const raw = [
+      { id: 'd', name: 'Helthjem - Hjemlevering', description: ' helthjem - hjemlevering ', default: true, shipping_country: NO(99) },
+      { id: 'e', name: 'Bring', description: 'Bring - 2-4 dager', default: false, shipping_country: NO(129) },
+    ]
+    expect(shippingRatesFor(raw, 'NO').map((r) => [r.id, r.description])).toEqual([
+      ['d', ''],
+      ['e', 'Bring - 2-4 dager'],
+    ])
+  })
+
+  it('the descriptions products writes by itself (By Outshifter, Default Shipping Method) are no description', () => {
+    const raw = [
+      { id: 'o', name: 'Helthjem', description: ' by outshifter ', default: true, shipping_country: NO(49) },
+      { id: 'q', name: 'Bring', description: 'Default Shipping Method', default: false, shipping_country: NO(59) },
+      { id: 'k', name: 'Posten', description: 'By Outshifter express', default: false, shipping_country: NO(69) },
+    ]
+    expect(shippingRatesFor(raw, 'NO').map((r) => [r.id, r.description])).toEqual([
+      ['o', ''],
+      ['q', ''],
+      ['k', 'By Outshifter express'],
+    ])
+  })
+
   it('the query with logo_url is the plain one plus that field (refused by a gateway without it, as today’s)', () => {
     const schema = buildSchema(
       readFileSync(fileURLToPath(new URL('./__fixtures__/gateway-schema.gql', import.meta.url)), 'utf8'),

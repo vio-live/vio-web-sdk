@@ -45,6 +45,8 @@ export class VioCart extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** Asking for the brand's methods: a neutral placeholder instead of every method's button (see methodEnabled). */
+  @state() private methodsLoading = false
   @state() private vippsOfficial = false
   /** Whether the method lookup has been attempted — see boundOnCartChange. */
   private paymentMethodsAttempted = false
@@ -289,6 +291,13 @@ export class VioCart extends LitElement {
     }
     .checkout-btn:hover { opacity: 0.9; }
     .checkout-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Where the express buttons go while the brand's methods load. */
+    .methods-pending {
+      height: 48px;
+      margin-bottom: 10px;
+      border-radius: var(--vio-radius-lg, 8px);
+      background: var(--vio-color-surface-muted, #f1f1f1);
+    }
     .footer {
       padding: var(--vio-space-lg, 24px);
       border-top: 1px solid var(--vio-color-border, #e5e5e5);
@@ -509,6 +518,7 @@ export class VioCart extends LitElement {
       this.loadingPaymentMethods = false
       return
     }
+    this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(firstSponsorId)) as
         | Array<{ name: string }>
@@ -526,11 +536,22 @@ export class VioCart extends LitElement {
       this.availableMethods = null
     } finally {
       this.loadingPaymentMethods = false
+      this.methodsLoading = false
     }
   }
 
-  /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
+  /** The methods are on their way and none is known yet. */
+  private get methodsPending(): boolean {
+    return this.methodsLoading && this.availableMethods === null
+  }
+
+  /**
+   * Backend names arrive as e.g. "Apple Pay" — compare letters only. While
+   * the list loads, no method's button is drawn: «unknown = all» painted
+   * Stripe and Klarna for a Vipps-only brand until it came.
+   */
   private methodEnabled(...names: string[]): boolean {
+    if (this.methodsPending) return false
     return isMethodEnabled(this.availableMethods, ...names)
   }
 
@@ -863,6 +884,9 @@ export class VioCart extends LitElement {
                 >
                   Til kassen
                 </button>
+                ${this.methodsPending
+                  ? html`<div class="methods-pending" role="status" aria-label="Laster betalingsmåter"></div>`
+                  : ''}
                 ${this.methodEnabled('apple-pay') && this.applePayAvailable
                   ? html`
                       <button

@@ -31,12 +31,22 @@ and *when*, and links there.
   refuse to create a checkout or a payment when it is empty or 0 kr. The buttons check the same
   thing first: the cart's «Til kassen» is disabled, the checkout's pay buttons are disabled and
   say «Handlekurven er tom.», and the detail shows no Vipps or Apple Pay button for a product at 0 kr.
+- **Desktop: the product detail's pinned buy bar no longer covers the size picker.** The option
+  pickers now sit at the top of the buy zone (`part="buy-options"`), so they move with the
+  buttons whether the zone is static or sticky.
+- **No buttons for payment methods the brand does not have while its methods load.** The
+  product detail and the cart drawer show a neutral placeholder (`part="buy-pending"` /
+  `.methods-pending`) until `getAvailablePaymentMethods` answers. They used to show every method,
+  so a Vipps-only brand flashed Stripe and Klarna. «Legg i handlekurv» and «Til kassen» are there
+  from the start. A failed lookup still shows every button, as before.
 ### ⚠️ Upgrade notes
 - The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt
   instead of buying. A host that clicks `.add-to-cart` from a script needs a value in every option
   first.
 - A host's `vio:checkout-open` handler that calls `Vio.checkout.open()` must still catch the throw
   (it already threw for an empty cart). It now also throws for a cart of 0 kr.
+- Host CSS that placed `::part(option-group)` relative to `::part(buy)` should be checked: the
+  option groups are now inside `buy`.
 
 ## 0.30.0 — 2026-10-27
 

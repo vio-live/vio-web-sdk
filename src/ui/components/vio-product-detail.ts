@@ -169,6 +169,15 @@ export class VioProductDetail extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buy buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /**
+   * The brand's methods are being asked for. Meanwhile the buy zone shows a
+   * neutral placeholder, never the buttons of every method: «null = render
+   * all» painted Stripe and Klarna for a Vipps-only brand until the answer
+   * came (Mote & Livsstil, 2026-10-28).
+   */
+  @state() private methodsLoading = false
+  /** Whose methods `availableMethods` are — another brand's are not shown while its own load. */
+  private methodsSponsorId = 0
   @state() private vippsOfficial = false
   /** Race guard: only the latest fetch may write state (two quick taps on
    * different cards would otherwise let the slow response win). */
@@ -614,6 +623,37 @@ export class VioProductDetail extends LitElement {
       box-shadow: var(--vio-detail-buy-shadow, none);
     }
     .buy > * { margin-top: 0 !important; }
+    /* The buy zone and the description, apart from the name, price and stock:
+       a pinned buy zone can slide up over what is in this box (the
+       description) but never above it — never over the name, the price or
+       the stock line (Mote & Livsstil, 2026-10-28). */
+    .purchase { display: flex; flex-direction: column; gap: var(--vio-detail-info-gap, 20px); }
+    /* The pickers live in the buy zone: when it is pinned to the bottom of the
+       panel (desktop, or a host's sticky), it can never cover them — they
+       travel with the buttons they gate (Mote & Livsstil, 2026-10-28). */
+    .buy-options {
+      display: flex;
+      flex-direction: column;
+      gap: var(--vio-detail-info-gap, 20px);
+      padding-bottom: 4px;
+    }
+    /* Where the express buttons go while the brand's methods load: neutral,
+       the height of one button, no method named. */
+    .buy-pending {
+      height: var(--vio-detail-button-height, 52px);
+      border-radius: var(--vio-detail-button-radius, 0);
+      background: linear-gradient(
+        100deg,
+        var(--vio-color-surface-muted, #f1f1f1) 30%,
+        rgba(255, 255, 255, 0.65) 50%,
+        var(--vio-color-surface-muted, #f1f1f1) 70%
+      );
+      background-size: 200% 100%;
+      animation: vio-skeleton-shimmer 1.4s ease-in-out infinite;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .buy-pending { animation: none; background: var(--vio-color-surface-muted, #f1f1f1); }
+    }
     /* Under the buttons: who the shopper is buying from. */
     .seller-note {
       margin: 2px 0 0;
@@ -1071,6 +1111,9 @@ export class VioProductDetail extends LitElement {
         : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
+    if (spId !== this.methodsSponsorId) this.availableMethods = null
+    this.methodsSponsorId = spId
+    this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(spId)) as
         | Array<{ name: string }>
@@ -1086,11 +1129,19 @@ export class VioProductDetail extends LitElement {
       }
       // Unknown (not "none") — render everything rather than nothing.
       this.availableMethods = null
+    } finally {
+      this.methodsLoading = false
     }
+  }
+
+  /** The methods are still on their way: a placeholder stands where the buttons go. */
+  private get methodsPending(): boolean {
+    return this.methodsLoading && this.availableMethods === null
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
+    if (this.methodsPending) return false
     return isMethodEnabled(this.availableMethods, ...names)
   }
 
@@ -1909,9 +1960,14 @@ export class VioProductDetail extends LitElement {
 
           <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
 
-          ${this.renderOptionPickers(p.options)}
-
+          <div class="purchase">
           <div class="buy" part="buy">
+          ${p.options.length > 0
+            ? html`<div class="buy-options" part="buy-options">${this.renderOptionPickers(p.options)}</div>`
+            : ''}
+          ${this.methodsPending && this.availableQuantity > 0
+            ? html`<div class="buy-pending" part="buy-pending" role="status" aria-label="Laster betalingsmåter"></div>`
+            : ''}
           ${this.availableQuantity > 0 && this.unitPrice > 0 && this.methodEnabled('vipps')
             ? this.vippsOfficial
               ? html`
@@ -2054,6 +2110,7 @@ export class VioProductDetail extends LitElement {
                 </details>
               `
             : ''}
+          </div>
         </div>
       </div>
     `

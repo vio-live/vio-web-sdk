@@ -14,7 +14,8 @@
 
 import type { AnalyticsItemInput } from '../analytics/analytics-manager.js'
 import { lineOrigins } from './cart-manager.js'
-import type { CartLineItem } from './types.js'
+import { normalizeLayoutOrigin } from '../detail-layout.js'
+import type { CartLineItem, CartOrigin } from './types.js'
 
 /** An item of a slice — the analytics item shape (ids as given, normalized on the wire). */
 export type VioItem = AnalyticsItemInput
@@ -84,7 +85,10 @@ export function cartSlicesFrom(
       if (Number.isFinite(sponsorId)) slice.sponsors.add(sponsorId)
       if (origin.slot) slice.slots.add(origin.slot)
       if (origin.contentId) slice.contents.add(origin.contentId)
-      const itemKey = `${line.productId}::${line.variantId ?? ''}`
+      // One item per product + variant AND detail layout (0.34): units added
+      // under two layouts are two items, each credited to its own layout.
+      const layout = itemLayoutOf(origin)
+      const itemKey = `${line.productId}::${line.variantId ?? ''}::${layoutKeyOf(layout)}`
       const item = slice.items.get(itemKey)
       if (item) item.quantity = (item.quantity ?? 0) + origin.quantity
       else {
@@ -95,6 +99,7 @@ export function cartSlicesFrom(
           variantId: line.variantId,
           price: unitPrice,
           quantity: origin.quantity,
+          ...layout,
         })
       }
       slice.value += unitPrice * origin.quantity
@@ -117,4 +122,65 @@ export function cartSlicesFrom(
 /** True when at least one unit of these lines names its campaign itself (an origin with `campaignId`). */
 export function hasExplicitCampaign(lines: ReadonlyArray<CartLineItem>): boolean {
   return lines.some((line) => lineOrigins(line).some((o) => o.campaignId !== undefined))
+}
+
+/** The layout fields of an item (camelCase, `AnalyticsItemInput`): only when the origin names a detail layout. */
+export type ItemLayout = Pick<VioItem, 'layoutId' | 'layoutRevision' | 'experimentId' | 'experimentVariantId'>
+
+/**
+ * The detail layout an origin's units were added from, as item fields
+ * (`experimentVariantId` = the origin's experiment `variantId`); `{}` when
+ * the units came from no layout (the default one, a card, the cart).
+ */
+export function itemLayoutOf(origin: CartOrigin | null | undefined): ItemLayout {
+  const l = normalizeLayoutOrigin(origin)
+  if (!l.layoutId) return {}
+  return {
+    layoutId: l.layoutId,
+    layoutRevision: l.layoutRevision ?? '',
+    experimentId: l.experimentId ?? '',
+    experimentVariantId: l.variantId ?? '',
+  }
+}
+
+function layoutKeyOf(layout: ItemLayout): string {
+  return layout.layoutId
+    ? [layout.layoutId, layout.layoutRevision, layout.experimentId, layout.experimentVariantId].join('|')
+    : ''
+}
+
+/**
+ * The lines as items, one per line AND detail layout (0.34): a line whose
+ * units came from two layouts is two items with their own quantities — the
+ * split `cartSlicesFrom` makes, for an event that is not split per campaign.
+ * A line without layouts is exactly one item, as before.
+ */
+export function lineItemsByLayout(lines: ReadonlyArray<CartLineItem>): VioItem[] {
+  const out: VioItem[] = []
+  for (const line of lines) {
+    if (!line || typeof line !== 'object') continue
+    const base: VioItem = {
+      productId: line.productId,
+      name: line.name,
+      brand: line.brand,
+      variantId: line.variantId,
+      price: line.unitPrice,
+      quantity: line.quantity,
+    }
+    const origins = lineOrigins(line)
+    if (!origins.some((o) => normalizeLayoutOrigin(o).layoutId)) {
+      out.push(base)
+      continue
+    }
+    const parts = new Map<string, VioItem>()
+    for (const origin of origins) {
+      const layout = itemLayoutOf(origin)
+      const key = layoutKeyOf(layout)
+      const part = parts.get(key)
+      if (part) part.quantity = (part.quantity ?? 0) + origin.quantity
+      else parts.set(key, { ...base, quantity: origin.quantity, ...layout })
+    }
+    out.push(...parts.values())
+  }
+  return out
 }

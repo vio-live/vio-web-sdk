@@ -140,6 +140,20 @@ export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from 
 export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
 // The cart split per campaign — the rule behind begin_checkout / purchase and `Vio.cartSlices()`.
 export { cartSlicesFrom, type CartSlice, type VioItem } from './cart/slices.js'
+// The order of the product detail's sections and the layout it applied (0.34).
+export {
+  DETAIL_SECTION_IDS,
+  ESSENTIAL_DETAIL_SECTIONS,
+  resolveDetailLayout,
+  effectiveDetailSections,
+  normalizeDetailLayout,
+  defaultDetailLayout,
+  type DetailSectionId,
+  type DetailLayout,
+  type DetailLayoutAdjustment,
+  type AppliedDetailLayout,
+  type DetailLayoutOrigin,
+} from './detail-layout.js'
 
 // Analytics
 export {

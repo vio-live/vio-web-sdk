@@ -23,6 +23,13 @@ import { CartManager, cartScopeOf } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import { resolveContent, type ContentRef } from './content.js'
+import {
+  copyAppliedLayout,
+  resolveDetailLayout,
+  setGlobalDetailLayout,
+  type AppliedDetailLayout,
+  type DetailLayout,
+} from './detail-layout.js'
 import { storedLanding, type Landing } from './analytics/client-context.js'
 import { checkoutAttributionOf, dominantCampaignOf, type CheckoutAttributionWire } from './checkout/attribution.js'
 import {
@@ -240,6 +247,27 @@ class VioFacade {
       init = { contentId: cfg.contentId, contentTitle: cfg.contentTitle }
     }
     return resolveContent(init)
+  }
+
+  /**
+   * Page-wide options of every `<vio-product-detail>` (0.34). `layout` orders
+   * the sections below the gallery — `{ id, revision, sections, experimentId?,
+   * variantId? }`; `null` goes back to the default; a detail's own `layout`
+   * wins. Open details re-render at once, later ones open with it. A key left
+   * out of the call is left as it is. See README «Section order and layout
+   * tracking».
+   */
+  configureDetail(options: { layout?: DetailLayout | null } = {}): void {
+    if (options && typeof options === 'object' && 'layout' in options) setGlobalDetailLayout(options.layout ?? null)
+  }
+
+  /**
+   * The layout a `<vio-product-detail>` without its own `layout` applies now:
+   * the page's (`source: 'global'`) or the default. A detail's own is
+   * `el.appliedLayout`. A copy; never throws.
+   */
+  detailLayout(): AppliedDetailLayout {
+    return copyAppliedLayout(resolveDetailLayout(null))
   }
 
   get isInitialized(): boolean { return Configuration.isInitialized }

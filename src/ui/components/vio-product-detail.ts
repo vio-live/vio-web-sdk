@@ -30,6 +30,32 @@ import { BottomSheet } from '../bottom-sheet.js'
 import { SlotRegistration } from '../slot-registration.js'
 import { toCampaignId } from '../../core/slots.js'
 import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
+import {
+  copyAppliedLayout,
+  layoutOriginOf,
+  layoutSignature,
+  onGlobalDetailLayoutChange,
+  resolveDetailLayout,
+  type AppliedDetailLayout,
+  type DetailLayout,
+  type DetailSectionId,
+} from '../../core/detail-layout.js'
+
+/** The `layout` attribute: JSON; anything unreadable is no layout (warned once by the resolver). */
+const layoutAttribute = {
+  fromAttribute(value: string | null): unknown {
+    if (value === null || value.trim() === '') return null
+    try {
+      return JSON.parse(value)
+    } catch {
+      // Not JSON: handed on as is, so the resolver says why it is ignored.
+      return value
+    }
+  },
+  toAttribute(value: unknown): string | null {
+    return value === null || value === undefined ? null : JSON.stringify(value)
+  },
+}
 
 /** How long «Lagt i handlekurven» stays without a tap. */
 const ADDED_TOAST_MS = 8000
@@ -168,6 +194,30 @@ export class VioProductDetail extends LitElement {
    * Commerce (which wins). A carrier with neither gets the line icon.
    */
   @property({ type: Object, attribute: 'carrier-logos' }) carrierLogos: Record<string, string> = {}
+  /**
+   * The order of the sections below the gallery (0.34): `{ id, revision,
+   * sections, experimentId?, variantId? }` (attribute: the same as JSON). Wins
+   * over `Vio.configureDetail({ layout })`; unset = the page's, else the
+   * default. Section ids: `brand`, `title`, `stock`, `price`, `options`,
+   * `purchase`, `highlights`, `description`, `shippingReturns`. See README
+   * «Section order and layout tracking».
+   */
+  @property({ attribute: 'layout', converter: layoutAttribute }) layout: DetailLayout | null = null
+  /** The layout the detail renders with now (resolved before each render). */
+  private layoutNow: AppliedDetailLayout = resolveDetailLayout(null)
+  /** The product and layout `vio:detail-layout-applied` was last said for. */
+  private appliedFor: { product: Product; signature: string } | null = null
+  private unsubscribeLayout: (() => void) | null = null
+
+  /**
+   * The layout this detail applies (0.34): `{ id, revision, experimentId?,
+   * variantId?, sections, adjusted, source }` — `source` is `element` (its own
+   * `layout`), `global` (`Vio.configureDetail`) or `default`. A copy.
+   */
+  get appliedLayout(): AppliedDetailLayout {
+    // What the next render uses — after a render, what it used.
+    return copyAppliedLayout(resolveDetailLayout(this.layout))
+  }
   private readonly slotRegistration = new SlotRegistration(this, 'detail')
   /** What the click that opened the detail carried ('' when nothing), and for which product. */
   private eventSlot = ''
@@ -840,6 +890,10 @@ export class VioProductDetail extends LitElement {
     }
     /* The sizes follow the price closely: they are the next thing to do. */
     .headline + .purchase { margin-top: calc(var(--vio-detail-sizes-gap, 2px) - var(--vio-detail-info-gap, 20px)); }
+    /* A layout with the sizes apart from the buy zone (0.34): they follow the
+       price closely instead, and the buy zone keeps the normal gap. */
+    .headline + .buy-options.options-apart { margin-top: calc(var(--vio-detail-sizes-gap, 2px) - var(--vio-detail-info-gap, 20px)); }
+    .headline + .purchase.options-apart { margin-top: 0; }
     .price {
       font-size: var(--vio-detail-price-size, 24px);
       font-weight: var(--vio-detail-price-weight, 700);
@@ -1331,6 +1385,9 @@ export class VioProductDetail extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback()
+    // The page's layout changed: open (and later) details render with it.
+    this.unsubscribeLayout?.()
+    this.unsubscribeLayout = onGlobalDetailLayoutChange(() => this.requestUpdate())
     this.slotRegistration.connect(this.slotAttributes())
     void this.loadVippsButton()
     document.addEventListener('vio:product-click', this.boundProductClick)
@@ -1342,6 +1399,8 @@ export class VioProductDetail extends LitElement {
     document.removeEventListener('vio:product-click', this.boundProductClick)
     this.slotRegistration.clear()
     this.bottomSheet.disconnect()
+    this.unsubscribeLayout?.()
+    this.unsubscribeLayout = null
     super.disconnectedCallback()
   }
 
@@ -1369,6 +1428,7 @@ export class VioProductDetail extends LitElement {
       else this.revealActiveSlide()
     }
     this.measureLogo()
+    this.announceLayout()
     // The React wrappers set properties after mount.
     if (changed.has('vioSlot') || changed.has('vioSlotName') || changed.has('vioScope') || changed.has('vioScopeName') || changed.has('vioCampaign')) {
       this.slotRegistration.sync(this.slotAttributes())
@@ -1376,11 +1436,33 @@ export class VioProductDetail extends LitElement {
   }
 
   override willUpdate(changed: Map<string, unknown>): void {
+    // Every update: the element's own layout or the page's may have changed.
+    this.layoutNow = resolveDetailLayout(this.layout)
     if (changed.has('gallery') || (changed.has('open') && this.open)) this.galleryMode = this.resolveGalleryMode()
     if (changed.has('descriptionMode') || (changed.has('open') && this.open)) {
       const value = this.themeChoice(this.descriptionMode, '--vio-detail-description-mode')
       this.resolvedDescriptionMode = value === 'folded' || value === 'open' ? value : 'preview'
     }
+  }
+
+  /**
+   * `vio:detail-layout-applied` (bubbles, composed), with the applied layout,
+   * each time a product renders with a layout it has not been shown with yet:
+   * every open of a product, and every change of layout while it is open.
+   */
+  private announceLayout(): void {
+    const product = this.product
+    if (!product || this.fetchError) return
+    const signature = layoutSignature(this.layoutNow)
+    if (this.appliedFor && this.appliedFor.product === product && this.appliedFor.signature === signature) return
+    this.appliedFor = { product, signature }
+    this.dispatchEvent(
+      new CustomEvent('vio:detail-layout-applied', {
+        bubbles: true,
+        composed: true,
+        detail: { ...copyAppliedLayout(this.layoutNow), productId: product.id, sponsorId: this.sponsorId },
+      }),
+    )
   }
 
   /** An option as the element says it, else as the theme's custom property says it (lower case, unquoted). */
@@ -1557,10 +1639,20 @@ export class VioProductDetail extends LitElement {
         const price = Number(
           this.product.price?.amount_incl_taxes ?? this.product.price?.amount,
         )
+        // The layout it is shown with (0.34) — only a non-default one says so.
+        const shown = layoutOriginOf(resolveDetailLayout(this.layout))
         Vio.analytics.track('view_item', {
           context: {
             sponsorId: this.sponsorId > 0 ? Number(this.sponsorId) : undefined,
             ...this.attribution(),
+            ...(shown.layoutId
+              ? {
+                  layoutId: shown.layoutId,
+                  layoutRevision: shown.layoutRevision ?? '',
+                  experimentId: shown.experimentId,
+                  variantId: shown.variantId,
+                }
+              : {}),
           },
           commerce: {
             items: [
@@ -1983,7 +2075,10 @@ export class VioProductDetail extends LitElement {
     this.selectionPrompt = missing.name
     void this.updateComplete.then(() => {
       const group = this.renderRoot.querySelector<HTMLElement>('.option-group.needs-choice')
-      group?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
+      // In the buy zone the picker is right above the buttons; apart from it
+      // (a layout, 0.34) it may be far away — brought to the middle then.
+      const apart = !!group?.closest('.options-apart')
+      group?.scrollIntoView?.({ behavior: 'smooth', block: apart ? 'center' : 'nearest' })
     })
     return false
   }
@@ -2066,13 +2161,16 @@ export class VioProductDetail extends LitElement {
     // this element and the article — the purchase is split per campaign from
     // it, and Commerce writes it on the order (ADR-0035).
     const { campaignId, slot, contentId, componentTemplateId, contentUrl, contentTitle } = this.attribution()
+    // …and the layout the shopper saw (0.34), as shown now: a later change of
+    // the page's layout never rewrites these units.
+    const layout = layoutOriginOf(this.layoutNow)
     Vio.cart.addProduct({
       product: this.product,
       sponsorId: this.sponsorId,
       sponsorName,
       quantity: this.quantity,
       variantId: variant?.id,
-      origin: { campaignId, slot, contentId, componentKind: componentTemplateId, contentUrl, contentTitle },
+      origin: { campaignId, slot, contentId, componentKind: componentTemplateId, contentUrl, contentTitle, ...layout },
     })
     return variant?.id
   }
@@ -2093,6 +2191,8 @@ export class VioProductDetail extends LitElement {
             quantity: this.quantity,
             variantId,
             ...this.attribution(),
+            // The detail layout of the add (0.34) — `variantId` above is the product's.
+            ...(this.layoutNow.source !== 'default' ? { layout: layoutOriginOf(this.layoutNow) } : {}),
           },
         }),
       )
@@ -2691,9 +2791,6 @@ export class VioProductDetail extends LitElement {
     if (!this.product) return html``
 
     const p = this.product
-    const stock = this.stockLabel()
-    const compare = this.compareAt
-    const showCompare = compare !== null && compare > this.unitPrice
     const images = this.allImages()
     const activeImage = this.activeImage
 
@@ -2743,13 +2840,71 @@ export class VioProductDetail extends LitElement {
         </div>`}
 
         <div class="info" part="info">
-          ${p.brand ? html`<div class="brand" part="brand">${p.brand}</div>` : ''}
-          <div class="headline">
-            <div class="title-row">
-              <h2 class="name" part="title">${p.title}</h2>
-              <div class="stock ${stock.cls}" part="stock">${stock.text}</div>
-            </div>
-            <div class="price-row">
+          ${this.renderSections(this.layoutNow.sections)}
+        </div>
+      </div>
+    `
+  }
+
+  /**
+   * The info column in the applied layout's order (0.34) — the real DOM in
+   * that order, never CSS `order`, the same on every screen. The default
+   * order renders exactly the column before 0.34: brand, `.headline` (the
+   * title row with the stock, the price row), then `.purchase` — `.buy` with
+   * the options first — and highlights, description, «Frakt & retur» in it.
+   *
+   * A run of `title` / `stock` / `price` is one `.headline`; `title`
+   * right before `stock` share the title row. `options` right before
+   * `purchase` live in `.buy` (a pinned buy zone keeps them); elsewhere they
+   * are a block of their own. Everything after `purchase` goes in
+   * `.purchase`, as the description does by default: a pinned buy zone may
+   * slide over it, never over what comes before.
+   */
+  private renderSections(sections: ReadonlyArray<DetailSectionId>): unknown[] {
+    const out: unknown[] = []
+    for (let i = 0; i < sections.length; i++) {
+      const s = sections[i]!
+      if (s === 'title' || s === 'stock' || s === 'price') {
+        let j = i
+        while (j < sections.length && ['title', 'stock', 'price'].includes(sections[j]!)) j++
+        out.push(this.renderHeadline(sections.slice(i, j)))
+        i = j - 1
+        continue
+      }
+      if (s === 'options' && sections[i + 1] === 'purchase') continue
+      if (s === 'purchase') {
+        const optionsInBuy = sections[i - 1] === 'options'
+        out.push(this.renderPurchase(optionsInBuy, sections.slice(i + 1)))
+        break
+      }
+      out.push(this.renderSection(s))
+    }
+    return out
+  }
+
+  /** A run of title / stock / price: one `.headline`. */
+  private renderHeadline(run: ReadonlyArray<DetailSectionId>) {
+    const p = this.product!
+    const stock = this.stockLabel()
+    const compare = this.compareAt
+    const showCompare = compare !== null && compare > this.unitPrice
+    const name = html`<h2 class="name" part="title">${p.title}</h2>`
+    const stockLine = html`<div class="stock ${stock.cls}" part="stock">${stock.text}</div>`
+    const parts: unknown[] = []
+    for (let i = 0; i < run.length; i++) {
+      const s = run[i]
+      if (s === 'title' && run[i + 1] === 'stock') {
+        parts.push(html`<div class="title-row">
+              ${name}
+              ${stockLine}
+            </div>`)
+        i++
+      } else if (s === 'title') {
+        parts.push(html`<div class="title-row">${name}</div>`)
+      } else if (s === 'stock') {
+        parts.push(stockLine)
+      } else {
+        parts.push(html`<div class="price-row">
               <span class="price" part="price">${formatPrice(this.unitPrice, p.price.currency_code)}</span>
               ${showCompare
                 ? html`<span class="compare-at">${formatPrice(
@@ -2757,12 +2912,47 @@ export class VioProductDetail extends LitElement {
                     p.price.currency_code,
                   )}</span>`
                 : ''}
-            </div>
-          </div>
+            </div>`)
+      }
+    }
+    return html`<div class="headline">
+            ${parts}
+          </div>`
+  }
 
-          <div class="purchase">
+  /** One section that is not the headline nor the purchase group. */
+  private renderSection(section: DetailSectionId) {
+    const p = this.product!
+    switch (section) {
+      case 'brand':
+        return p.brand ? html`<div class="brand" part="brand">${p.brand}</div>` : ''
+      case 'options':
+        // Apart from the buttons: they still ask for the choice (requireSelection).
+        return p.options.length > 0
+          ? html`<div class="buy-options options-apart" part="buy-options">${this.renderOptionPickers(p.options)}</div>`
+          : ''
+      case 'highlights':
+        return this.renderHighlights()
+      case 'description':
+        return p.description ? this.renderDescription(this.stripHtml(p.description)) : ''
+      case 'shippingReturns':
+        return this.renderShippingReturns()
+      default:
+        return ''
+    }
+  }
+
+  /**
+   * The SDK-managed buy group, never split: «Frakt fra…», Vipps / Apple Pay /
+   * the other ways to pay, quantity + «Legg i handlekurv», «Du handler direkte
+   * hos …». The options when they come right before it; then what follows it.
+   */
+  private renderPurchase(optionsInBuy: boolean, rest: ReadonlyArray<DetailSectionId>) {
+    const p = this.product!
+    const optionsApart = !optionsInBuy && p.options.length > 0
+    return html`<div class=${optionsApart ? 'purchase options-apart' : 'purchase'}>
           <div class="buy" part="buy">
-          ${p.options.length > 0
+          ${optionsInBuy && p.options.length > 0
             ? html`<div class="buy-options" part="buy-options">${this.renderOptionPickers(p.options)}</div>`
             : ''}
           ${this.renderDeliveryNote()}
@@ -2906,14 +3096,8 @@ export class VioProductDetail extends LitElement {
           ${this.renderSellerNote()}
           </div>
 
-          ${this.renderHighlights()}
-
-          ${p.description ? this.renderDescription(this.stripHtml(p.description)) : ''}
-          ${this.renderShippingReturns()}
-          </div>
-        </div>
-      </div>
-    `
+          ${this.renderSections(rest)}
+          </div>`
   }
 
   private renderOptionPickers(options: ProductOption[]) {

@@ -14,6 +14,33 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **Section order of `<vio-product-detail>` and layout tracking** (asked by Replit for Mote &
+  Livsstil). `Vio.configureDetail({ layout: { id, revision, sections, experimentId?, variantId? } })`
+  orders the sections below the gallery for the page (`{ layout: null }` resets; open details
+  re-render); the element's `layout` property / attribute (JSON) wins. Section ids: `brand`,
+  `title`, `stock`, `price`, `options`, `purchase`, `highlights`, `description`,
+  `shippingReturns`; unknown ids are ignored, duplicates keep the first, the essentials (`title`,
+  `price`, `options`, `purchase`) are appended when missing. The real DOM is reordered, the same
+  on every screen. `el.appliedLayout`, `Vio.detailLayout()` and the event
+  `vio:detail-layout-applied` say what was applied. See
+  [README → Section order and layout tracking](README.md#section-order-and-layout-tracking-034).
+- **The layout on the funnel events.** `view_item` of a non-default layout carries `layout_id`,
+  `layout_revision`, `experiment_id`, `variant_id` in its `context`. The detail stores the layout
+  on the cart line origin (`CartOrigin.layoutId`, `layoutRevision`, `experimentId`, `variantId`),
+  and every item of `add_to_cart`, `remove_from_cart`, `view_cart`, `begin_checkout`,
+  `add_payment_info` and `purchase` carries `layout_id`, `layout_revision`, `experiment_id`,
+  `experiment_variant_id` (`""` when none; `items[].variant_id` stays the product variant). A line
+  with units from two layouts is two items. Nothing goes to Commerce.
+
+### ⚠️ Upgrade notes
+- **No change without configuration:** the detail renders exactly as in 0.33 and `view_item`
+  sends nothing new. The only difference on the wire: the items of the cart events now always
+  carry the four layout keys, empty (`""`) when the units came from no layout — the collector
+  ignores keys it does not know yet.
+
 ## 0.33.0 — 2026-10-28
 
 ### Fixed

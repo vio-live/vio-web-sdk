@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.33.0 — 2026-10-28
 
 ### Fixed
 - **One cart per connection.** Every connection of a site (environment + key) shared one stored

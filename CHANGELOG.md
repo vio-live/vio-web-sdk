@@ -14,6 +14,51 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **`vippsCartPayment: 'express' | 'checkout'`** (theme key, `--vio-vipps-cart-payment`) and the
+  attribute **`vipps-cart-payment`** on `<vio-cart>` and `<vio-product-detail>`. `express` is the
+  default; `checkout` restores the 0.31–0.34 behaviour exactly. See
+  [README → The hand-over to Vipps](README.md#the-hand-over-to-vipps-028).
+
+### Changed
+- **The Vipps buttons pay the sponsor's whole cart with Vipps Express** (Angelo, 2026-10-29: «el
+  botón negro va con el nuestro y el botón de Vipps paga el carrito entero»). The black «Til
+  kassen» is the way into our checkout; Vipps goes to Vipps.
+  - **`<vio-cart>`**: the Vipps button starts Express for the sponsor's whole cart — every line of
+    that sponsor's backend cart, never another sponsor's — the same Express as the detail: the
+    «Åpner Vipps …» overlay, `vio:payment-redirect-*` with `source: 'cart'`, `add_payment_info`
+    once, the return from Vipps and its confirmation. It no longer dispatches
+    `vio:checkout-open`. One payment at a time (the overlay takes every tap; a second tap while
+    one is starting does nothing).
+  - **`<vio-product-detail>`**: «Kjøp nå med Vipps» with lines already in the brand's cart adds the
+    product (size and quantity) and pays the **whole cart** with Express, instead of opening our
+    checkout. The line under the button says what will be paid before the tap: «Betaler hele
+    handlekurven · {n} varer · {total}» (n = every unit with this product at the chosen quantity,
+    total = the cart's subtotal with it; shipping is chosen in Vipps). It follows the cart and the
+    quantity. With an empty cart nothing changes.
+  - Express off for the brand, or a cart that cannot have it (several suppliers, no rate): the
+    checkout opens with Vipps preselected, as before.
+- **A redirect payment (Vipps, Stripe link) reuses only its own sponsor's open checkout.** A
+  payment for one sponsor's cart started while another sponsor's checkout was open would have
+  gone out on that checkout; it now creates its own.
+
+### ⚠️ Upgrade notes
+- **Hosts listening to `vio:checkout-open` from the cart's Vipps button no longer get it** by
+  default: the cart goes to Vipps directly. «Til kassen» still sends `vio:checkout-open`, and the
+  Vipps button sends it only when Express cannot start (then with `paymentMethod: 'vipps'`). To
+  keep the old flow, set `vipps-cart-payment="checkout"` or `applyVioTheme({ vippsCartPayment:
+  'checkout' })`.
+- **`vio:payment-redirect-start` / `-cancel` / `-error` with `source: 'cart'` are back** (gone
+  since 0.31). A host that draws its own loader (`preventDefault()` on the start) gets them from
+  the cart too.
+- The same for the detail with lines in the cart: no `vio:checkout-open` any more, the hand-over
+  events (`source: 'detail'`) instead.
+- **Backend:** nothing new. shopcart already builds Express on the checkout's cart, every line;
+  it refuses Express (`express: false`, no payment) for a cart of several suppliers, and the
+  checkout opens instead.
+
 ## 0.34.0 — 2026-10-29
 
 ### Added

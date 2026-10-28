@@ -84,6 +84,17 @@ describe('the standard Vipps payment (express: false)', () => {
     expect(pay.mock.calls[0]![0]).toMatchObject({ express: true })
   })
 
+  it('Express for one sponsor never goes out on another sponsor’s open checkout', async () => {
+    const { update, pay } = spies()
+    const create = vi.spyOn(cartQueries, 'createCheckout').mockResolvedValue({ id: 'CHK-8' } as any)
+    update.mockResolvedValue({ id: 'CHK-8' } as any)
+    const m = manager() // the open checkout is sponsor 5's (CHK-1)
+    await m.startVippsExpress(8)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect((update.mock.calls[0]![0] as any).checkoutId).toBe('CHK-8')
+    expect(pay.mock.calls[0]![0]).toMatchObject({ checkoutId: 'CHK-8', express: true })
+  })
+
   it('other methods carry the mobile too (Stripe link)', async () => {
     vi.spyOn(cartQueries, 'getCartGraphQLOptions').mockResolvedValue({} as any)
     const update = vi.spyOn(cartQueries, 'updateCheckout').mockResolvedValue({ id: 'CHK-1' } as any)

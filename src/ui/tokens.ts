@@ -304,6 +304,13 @@ export interface VioThemeOverrides {
   redirectBg?: string
   /** Spinner colour of that overlay (default Vipps orange). */
   redirectSpinner?: string
+  /**
+   * What the Vipps button pays when the cart has lines: `express` (default —
+   * Vipps Express for the sponsor's whole cart, from `<vio-cart>` and from
+   * `<vio-product-detail>`) or `checkout` (opens our checkout with Vipps
+   * preselected, as in 0.31–0.34). An element's `vipps-cart-payment` wins.
+   */
+  vippsCartPayment?: 'express' | 'checkout' | string
 }
 
 const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
@@ -377,6 +384,7 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   confirmCheckBg: '--vio-confirm-check-bg',
   redirectBg: '--vio-redirect-bg',
   redirectSpinner: '--vio-redirect-spinner',
+  vippsCartPayment: '--vio-vipps-cart-payment',
 }
 
 /**

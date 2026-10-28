@@ -14,6 +14,7 @@ import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
+import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
@@ -160,6 +161,15 @@ export class VioProductDetail extends LitElement {
    * say). Off by default: the toast shows.
    */
   @property({ type: Boolean, attribute: 'no-added-toast' }) noAddedToast = false
+  /**
+   * «Kjøp nå med Vipps» when the brand's cart already has lines: `express`
+   * (default) adds the product and pays the WHOLE cart with Vipps Express —
+   * the line under the button says how many items and what total — or
+   * `checkout`: adds it and opens our checkout with Vipps preselected (as in
+   * 0.31–0.34). An empty cart is Express either way. Unset = the theme's
+   * `vippsCartPayment` (`--vio-vipps-cart-payment`).
+   */
+  @property({ type: String, attribute: 'vipps-cart-payment' }) vippsCartPayment = ''
   /**
    * How the images show: `thumbs` (one image, thumbnails under it — the
    * default) or `carousel` (every image in one swipeable row, no thumbnails:
@@ -1383,8 +1393,14 @@ export class VioProductDetail extends LitElement {
     }
   `
 
+  /** The cart changed (another tab, the drawer): the line under Vipps counts it again. */
+  private boundCartChange = (): void => {
+    if (this.open) this.requestUpdate()
+  }
+
   override connectedCallback(): void {
     super.connectedCallback()
+    Vio.cart.addEventListener('change', this.boundCartChange)
     // The page's layout changed: open (and later) details render with it.
     this.unsubscribeLayout?.()
     this.unsubscribeLayout = onGlobalDetailLayoutChange(() => this.requestUpdate())
@@ -1397,6 +1413,7 @@ export class VioProductDetail extends LitElement {
     if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
     this.addedToastTimer = null
     document.removeEventListener('vio:product-click', this.boundProductClick)
+    Vio.cart.removeEventListener('change', this.boundCartChange)
     this.slotRegistration.clear()
     this.bottomSheet.disconnect()
     this.unsubscribeLayout?.()
@@ -2315,14 +2332,16 @@ export class VioProductDetail extends LitElement {
     if (!this.requireSelection()) return
     // Nothing to pay for: no Vipps payment of 0 kr (CheckoutManager refuses it too).
     if (!(this.unitPrice > 0)) return
-    // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
-    // not on this product (see buyNow). Straight to Vipps only when the cart
-    // is empty, so what the Vipps page lists is what was tapped; with lines
-    // already in it, the product is added and the checkout opens first, with
-    // every line and the total, Vipps preselected (Mote & Livsstil,
-    // 2026-10-23: a jumper left in the cart 13 minutes earlier was paid along
-    // with the product bought «nå», and only Vipps' page had said so).
-    if ((Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0) {
+    // Vipps pays the sponsor's WHOLE cart — the payment is built on the cart,
+    // not on this product (see buyNow). With lines already in it, the line
+    // under the button says so before the tap: «Betaler hele handlekurven ·
+    // n varer · total» (2026-10-29), and the product is added and the whole
+    // cart goes to Vipps Express. `vipps-cart-payment="checkout"` opens our
+    // checkout first instead, every line and the total on screen, Vipps
+    // preselected (0.31–0.34; Mote & Livsstil, 2026-10-23: a jumper left in
+    // the cart was paid along with the product bought «nå», and only Vipps'
+    // page had said so).
+    if (this.cartHasLines() && this.vippsCartMode() === 'checkout') {
       this.addCurrentToCart()
       this.close()
       this.openCheckoutWithVipps()
@@ -2336,12 +2355,52 @@ export class VioProductDetail extends LitElement {
   }
 
   /**
-   * The Vipps button will open the app with Express (see buyWithVipps): the
-   * brand has Express on, and this brand's cart is empty — with lines in it
-   * the checkout opens first.
+   * The Vipps button will open the app with Express for this product alone
+   * (see buyWithVipps): the brand has Express on, and this brand's cart is
+   * empty.
    */
   private vippsGoesStraightToApp(): boolean {
-    return this.vippsExpress && (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) === 0
+    return this.vippsExpress && !this.cartHasLines()
+  }
+
+  /** This brand's cart already has lines. */
+  private cartHasLines(): boolean {
+    return (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
+  }
+
+  /** `vipps-cart-payment`, else the theme's, else `express`. */
+  private vippsCartMode(): 'express' | 'checkout' {
+    return resolveVippsCartPayment(this, this.vippsCartPayment)
+  }
+
+  /**
+   * What the Vipps button will pay when the brand's cart already has lines
+   * (`express` mode): every unit in the cart plus this product at the chosen
+   * quantity, and their total, as the cart sums it (shipping is chosen in
+   * Vipps). null with an empty cart, or in `checkout` mode.
+   */
+  private wholeCartToPay(): { units: number; total: number; currency: string } | null {
+    if (this.vippsCartMode() !== 'express') return null
+    const cart = Vio.cart.getCart(this.sponsorId)
+    const items = cart?.items ?? []
+    if (items.length === 0) return null
+    const units = items.reduce((n, i) => n + (Number(i.quantity) || 0), 0) + this.quantity
+    const total =
+      items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0) +
+      this.unitPrice * this.quantity
+    return { units, total, currency: cart?.currency || this.currency }
+  }
+
+  /** The line under the Vipps button: what is paid (a cart with lines) or what happens in the app (Express, empty cart). */
+  private renderVippsNote() {
+    const whole = this.wholeCartToPay()
+    if (whole) {
+      return html`<p class="vipps-note vipps-note-cart" part="vipps-note">Betaler hele handlekurven · ${whole.units} varer · ${formatPrice(whole.total, whole.currency)}</p>`
+    }
+    if (this.vippsGoesStraightToApp()) {
+      return html`<p class="vipps-note" part="vipps-note">Vipps fyller inn navn og adresse – du godkjenner og betaler i appen</p>`
+    }
+    return ''
   }
 
   private async startVippsExpressOrCheckout(redirect: PaymentRedirectHandle): Promise<void> {
@@ -2428,8 +2487,8 @@ export class VioProductDetail extends LitElement {
    * after an await, so it cannot wait for the server's cart), while the
    * charge is the sponsor's WHOLE cart. So the sheet opens only when it shows
    * what will be charged: an empty cart, and a sheet prepared for this
-   * product × quantity. Otherwise — lines already in the cart (as with Vipps,
-   * see buyWithVipps), or a quantity whose sheet is still being prepared —
+   * product × quantity. Otherwise — lines already in the cart, or a quantity
+   * whose sheet is still being prepared —
    * the product is added and the checkout opens with Apple Pay preselected:
    * every line and the total on screen, and its own Apple Pay button pays
    * that total.
@@ -2989,8 +3048,8 @@ export class VioProductDetail extends LitElement {
                   </button>
                 `
             : ''}
-          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps') && this.vippsGoesStraightToApp()
-            ? html`<p class="vipps-note" part="vipps-note">Vipps fyller inn navn og adresse – du godkjenner og betaler i appen</p>`
+          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps')
+            ? this.renderVippsNote()
             : ''}
 
           <div class="qty-cta-row" part="quantity-row">

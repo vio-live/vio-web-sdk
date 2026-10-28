@@ -200,10 +200,12 @@ export class VioProductDetail extends LitElement {
    */
   @state() private methodsLoading = false
   /**
-   * The brand's Vipps runs Express (`config.express`, unknown = yes): the
-   * Vipps button then goes straight to the app, and says so under it.
+   * The brand's Vipps is KNOWN to run Express: its method list came back,
+   * with Vipps and no `config.express: false`. Only then does the line under
+   * the button say the app fills in name and address — never on a guess
+   * after a failed lookup.
    */
-  @state() private vippsExpress = true
+  @state() private vippsExpress = false
   /** Whose methods `availableMethods` are — another brand's are not shown while its own load. */
   private methodsSponsorId = 0
   @state() private vippsOfficial = false
@@ -1203,7 +1205,10 @@ export class VioProductDetail extends LitElement {
         : 0) ||
       (globalThis as { __VIO_SPONSOR_ID__?: number }).__VIO_SPONSOR_ID__
     if (!spId) return
-    if (spId !== this.methodsSponsorId) this.availableMethods = null
+    if (spId !== this.methodsSponsorId) {
+      this.availableMethods = null
+      this.vippsExpress = false
+    }
     this.methodsSponsorId = spId
     this.methodsLoading = true
     try {
@@ -1212,12 +1217,15 @@ export class VioProductDetail extends LitElement {
         | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
-        // Memoised with the list: costs nothing more.
-        if (isMethodEnabled(this.availableMethods, 'vipps')) {
-          this.vippsExpress = await Vio.checkout.getVippsExpressEnabled(spId)
-        }
+        // Read from the list itself (getVippsExpressEnabled answers «yes»
+        // when it cannot tell; the line must not).
+        const vipps = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }>).find(
+          (m) => String(m?.name ?? '').toLowerCase() === 'vipps',
+        )
+        this.vippsExpress = !!vipps && vipps.config?.find((c) => c?.name === 'express')?.value !== 'false'
       } else {
         this.availableMethods = null
+        this.vippsExpress = false
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
@@ -1225,6 +1233,7 @@ export class VioProductDetail extends LitElement {
       }
       // Unknown (not "none") — render everything rather than nothing.
       this.availableMethods = null
+      this.vippsExpress = false
     } finally {
       this.methodsLoading = false
     }
@@ -1479,6 +1488,22 @@ export class VioProductDetail extends LitElement {
     // Tax-inclusive is the consumer-facing price (NO convention); `amount` is the
     // fallback when the feed doesn't ship it.
     return price?.amount_incl_taxes ?? price?.amount ?? 0
+  }
+
+  /**
+   * There is something to pay for — whether the express buttons show. With
+   * every option chosen, the chosen variant's price; before that, the
+   * product's or any variant's: the first variant (what `unitPrice` falls
+   * back to) at 0 must not hide Vipps for a size that costs 699.
+   */
+  private get hasPrice(): boolean {
+    if (!this.missingOption()) return this.unitPrice > 0
+    const priceOf = (p: { amount_incl_taxes?: number | null; amount?: number } | null | undefined) =>
+      Number(p?.amount_incl_taxes ?? p?.amount ?? 0)
+    return (
+      priceOf(this.product?.price) > 0 ||
+      (this.product?.variants ?? []).some((v) => priceOf(v.price) > 0)
+    )
   }
 
   private get compareAt(): number | null {
@@ -1778,9 +1803,9 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     // Nothing to pay for: no Vipps payment of 0 kr (CheckoutManager refuses it too).
     if (!(this.unitPrice > 0)) return
-    if (!this.requireSelection()) return
     // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
     // not on this product (see buyNow). Straight to Vipps only when the cart
     // is empty, so what the Vipps page lists is what was tapped; with lines
@@ -1902,8 +1927,8 @@ export class VioProductDetail extends LitElement {
    */
   private buyWithApplePay(): void {
     if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
-    if (!(this.unitPrice > 0)) return
     if (!this.requireSelection()) return
+    if (!(this.unitPrice > 0)) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
     if (cartHasLines || this.applePayAmount !== this.unitPrice * this.quantity) {
       this.addCurrentToCart()
@@ -2155,7 +2180,7 @@ export class VioProductDetail extends LitElement {
           ${this.methodsPending && this.availableQuantity > 0
             ? html`<div class="buy-pending" part="buy-pending" role="status" aria-label="Laster betalingsmåter"></div>`
             : ''}
-          ${this.availableQuantity > 0 && this.unitPrice > 0 && this.methodEnabled('vipps')
+          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps')
             ? this.vippsOfficial
               ? html`
                   <vipps-mobilepay-button
@@ -2185,7 +2210,7 @@ export class VioProductDetail extends LitElement {
                   </button>
                 `
             : ''}
-          ${this.availableQuantity > 0 && this.unitPrice > 0 && this.methodEnabled('vipps') && this.vippsGoesStraightToApp()
+          ${this.availableQuantity > 0 && this.hasPrice && this.methodEnabled('vipps') && this.vippsGoesStraightToApp()
             ? html`<p class="vipps-note" part="vipps-note">Vipps fyller inn navn og adresse – du godkjenner og betaler i appen</p>`
             : ''}
 
@@ -2238,7 +2263,7 @@ export class VioProductDetail extends LitElement {
             : ''}
 
           ${this.availableQuantity > 0 &&
-          this.unitPrice > 0 &&
+          this.hasPrice &&
           this.applePayOk &&
           this.methodEnabled('apple-pay', 'applepay')
             ? html`

@@ -143,6 +143,24 @@ describe('the buy buttons ask for the size', () => {
   })
 })
 
+describe('the express buttons before a size is chosen', () => {
+  it('a first variant at 0 does not hide Vipps when the product and its other sizes have a price', async () => {
+    product = {
+      ...sized,
+      variants: [{ ...variant(101, 'S', 2), price: { amount: 0, currency_code: 'NOK' } }, variant(102, 'M', 12), variant(103, 'L', 0)],
+    }
+    const el = await open()
+    expect(root(el).querySelector('.buy-vipps')).not.toBeNull()
+  })
+
+  it('a product that costs nothing anywhere shows no Vipps', async () => {
+    const free = { amount: 0, currency_code: 'NOK' }
+    product = { ...sized, price: free, variants: sized.variants.map((v) => ({ ...v, price: free })) }
+    const el = await open()
+    expect(root(el).querySelector('.buy-vipps')).toBeNull()
+  })
+})
+
 describe('«Få igjen» is about the chosen variant', () => {
   it('before a size: «På lager», not the first variant’s low count', async () => {
     const el = await open()

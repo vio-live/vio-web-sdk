@@ -57,9 +57,8 @@ describe('the buy zone', () => {
     const buy = root(el).querySelector('.buy')!
     const order = [...buy.children].map((c) => c.className)
     expect(order[0]).toContain('buy-vipps')
-    // Its one line about the app (Express), then quantity + add to cart.
-    expect(order[1]).toContain('vipps-note')
-    expect(order[2]).toContain('qty-cta-row')
+    // (Express not known here — no line about the app — so quantity + add to cart next.)
+    expect(order[1]).toContain('qty-cta-row')
     expect(buy.getAttribute('part')).toBe('buy')
   })
 

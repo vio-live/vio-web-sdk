@@ -375,6 +375,25 @@ export class VioProductCarousel extends LitElement {
    * sponsor of the campaign the slot shows (ADR-0034 — "the campaign of the
    * block is its sponsor"), else 0 (unknown).
    */
+  /**
+   * The campaign whose channel sells a sponsor's products here (one article =
+   * one campaign = one channel): the campaign this slot credits for that
+   * sponsor (`Vio.attribution`), then the element's own (`vio-campaign`, an
+   * ancestor's `data-vio-campaign`).
+   */
+  private commerceCampaigns(sponsorId: number): number[] {
+    const own = this.slotRegistration.campaignHint
+    try {
+      const resolved =
+        typeof Vio.attribution === 'function'
+          ? Vio.attribution(this.effectiveSlot || null, { sponsorId, campaignId: own }).campaignId
+          : undefined
+      return resolved !== undefined ? [resolved, ...own] : own
+    } catch {
+      return own
+    }
+  }
+
   private effectiveSponsorId(): number {
     if (this.sponsorId > 0) return this.sponsorId
     const fromSlot =
@@ -434,7 +453,7 @@ export class VioProductCarousel extends LitElement {
           const commerce =
             this.commerceKey && this.productRefs.trim() === ''
               ? Vio.commerceWithKey(this.commerceKey)
-              : Vio.commerceFor(sponsorId)
+              : Vio.commerceFor(sponsorId, { campaignId: this.commerceCampaigns(sponsorId) })
           const products = await commerce.channel.product.getByIds({
             product_ids: ids,
             currency: this.currency,

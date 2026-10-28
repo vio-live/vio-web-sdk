@@ -37,6 +37,8 @@ export interface CheckoutState {
   currency: string
   /** Backend checkout id (Vio Commerce CreateCheckout). */
   checkoutId?: string
+  /** The commerce channel the checkout lives on (its cart's): every call for it uses that channel's key. */
+  channelId?: string
   /** Full backend checkout payload (untyped upstream). */
   checkout?: unknown
   /** Klarna Payments session id (native GraphQL flow). */

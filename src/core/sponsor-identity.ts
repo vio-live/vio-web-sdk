@@ -15,7 +15,8 @@
  * Pure helpers and a tiny per-checkout memory in `sessionStorage`; no DOM.
  */
 
-import type { BootstrapResponse, Sponsor, SponsorHighlight } from './types.js'
+import type { BootstrapResponse, Sponsor, SponsorCommerceBlock, SponsorHighlight } from './types.js'
+import { campaignCandidates, toCampaignId, type CampaignHint } from './slots.js'
 
 /** What a sponsor looks like to a shopper. `name` is the brand's display name. */
 export interface SponsorIdentity {
@@ -96,6 +97,107 @@ export function findSponsorIn(
   return undefined
 }
 
+// MARK: - The sponsor's commerce block (which channel sells)
+
+/**
+ * Where a sponsor sells right now: the campaign in context (`campaignId` —
+ * the element's `vio-campaign`, an ancestor's `data-vio-campaign`, the
+ * click's `campaignId`, `Vio.init`'s, in that order of precedence) or the
+ * channel a cart was created on (`channelId`).
+ */
+export interface SponsorCommerceContext {
+  campaignId?: CampaignHint
+  channelId?: string | number | null
+}
+
+/** A sponsor block that can sell: it carries a commerce block with an API key. */
+export type SellingSponsor = Sponsor & { commerce: SponsorCommerceBlock }
+
+/** A channel id as a string, or `undefined` for nothing. */
+export function channelIdOf(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined
+  const s = String(value).trim()
+  return s ? s : undefined
+}
+
+function sells(s: unknown): s is SellingSponsor {
+  const commerce = (s as { commerce?: unknown } | null | undefined)?.commerce
+  if (!commerce || typeof commerce !== 'object') return false
+  const key = (commerce as { apiKey?: unknown }).apiKey
+  return typeof key === 'string' && key.trim() !== ''
+}
+
+/**
+ * Every block of `sponsorId` in a bootstrap, with the campaign it belongs to,
+ * in `findSponsorIn`'s order: the config's primary and secondaries (the
+ * default campaign), then every `campaigns[]` entry's primary and secondaries.
+ * Only blocks that can sell (`commerce.apiKey`); a block with
+ * `commerce: null` is skipped, never dereferenced.
+ */
+export function sellingBlocksIn(
+  boot: BootstrapResponse | null | undefined,
+  sponsorId: number | string | null | undefined,
+): Array<{ campaignId?: number; sponsor: SellingSponsor }> {
+  const id = toSponsorId(sponsorId)
+  const out: Array<{ campaignId?: number; sponsor: SellingSponsor }> = []
+  if (id === undefined || !boot || typeof boot !== 'object') return out
+  const take = (s: unknown, campaignId: unknown) => {
+    if (!s || typeof s !== 'object' || Number((s as { id?: unknown }).id) !== id || !sells(s)) return
+    out.push({ campaignId: toCampaignId(campaignId), sponsor: s })
+  }
+  try {
+    const defaultId = (boot.campaign as { id?: unknown } | null | undefined)?.id
+    take(boot.primarySponsor, defaultId)
+    if (Array.isArray(boot.secondarySponsors)) for (const s of boot.secondarySponsors) take(s, defaultId)
+    const campaigns = Array.isArray(boot.campaigns) ? boot.campaigns : []
+    for (const c of campaigns) {
+      if (!c || typeof c !== 'object') continue
+      take(c.primarySponsor, c.id)
+      if (Array.isArray(c.secondarySponsors)) for (const s of c.secondarySponsors) take(s, c.id)
+    }
+  } catch {
+    /* a malformed bootstrap sells nothing more */
+  }
+  return out
+}
+
+/**
+ * The block a sponsor sells with (its `commerce.apiKey` / `channelId`), by
+ * the rule one article = one campaign = one channel = one sponsor:
+ *
+ * - `ctx.channelId` given: the block of THAT channel, or `undefined` when the
+ *   bootstrap no longer lists it — a cart created on a channel is only ever
+ *   called with that channel's key.
+ * - else the first candidate of `ctx.campaignId` whose campaign has the
+ *   sponsor as primary or secondary (with a commerce block);
+ * - else (no campaign known, or none of the sponsor's) the first block that
+ *   can sell, in `findSponsorIn`'s order — the behaviour before campaigns
+ *   chose the channel.
+ *
+ * Pure, never throws.
+ */
+export function sponsorCommerceIn(
+  boot: BootstrapResponse | null | undefined,
+  sponsorId: number | string | null | undefined,
+  ctx: SponsorCommerceContext = {},
+): SellingSponsor | undefined {
+  try {
+    const blocks = sellingBlocksIn(boot, sponsorId)
+    if (blocks.length === 0) return undefined
+    const channel = channelIdOf(ctx?.channelId)
+    if (channel !== undefined) {
+      return blocks.find((b) => channelIdOf(b.sponsor.commerce.channelId) === channel)?.sponsor
+    }
+    for (const campaignId of campaignCandidates(ctx?.campaignId)) {
+      const found = blocks.find((b) => b.campaignId === campaignId)
+      if (found) return found.sponsor
+    }
+    return blocks[0]!.sponsor
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * The identity of a sponsor from a bootstrap (`findSponsorIn`): its trimmed
  * name and its logo / avatar URLs as given (an empty string is `null`).
@@ -146,6 +248,8 @@ export interface RememberedCheckoutSponsor {
   sponsorId: number
   name: string
   logoUrl: string | null
+  /** The commerce channel the checkout was created on (its cart's), when known: a return from a redirect calls with that channel's key. */
+  channelId?: string
 }
 
 /**
@@ -171,7 +275,8 @@ function normalizeEntry(raw: unknown): RememberedCheckoutSponsor | null {
   const checkoutId = typeof r.checkoutId === 'string' ? r.checkoutId.trim() : ''
   const sponsorId = toSponsorId(r.sponsorId)
   if (!checkoutId || sponsorId === undefined) return null
-  return { checkoutId, sponsorId, name: nameOf(r.name), logoUrl: urlOrNull(r.logoUrl) }
+  const channelId = channelIdOf(r.channelId)
+  return { checkoutId, sponsorId, name: nameOf(r.name), logoUrl: urlOrNull(r.logoUrl), ...(channelId ? { channelId } : {}) }
 }
 
 function readEntries(): RememberedCheckoutSponsor[] {
@@ -212,7 +317,12 @@ function writeEntries(entries: RememberedCheckoutSponsor[]): void {
  */
 export function rememberCheckoutSponsor(
   checkoutId: string | null | undefined,
-  sponsor: { sponsorId: number | string | null | undefined; name?: string | null; logoUrl?: string | null },
+  sponsor: {
+    sponsorId: number | string | null | undefined
+    name?: string | null
+    logoUrl?: string | null
+    channelId?: string | number | null
+  },
 ): void {
   try {
     const id = typeof checkoutId === 'string' ? checkoutId.trim() : ''
@@ -226,8 +336,11 @@ export function rememberCheckoutSponsor(
       name = previous.name
       logoUrl = previous.logoUrl
     }
+    // A checkout lives on one channel: a later write that does not name it keeps the one remembered.
+    const channelId =
+      channelIdOf(sponsor.channelId) ?? (previous && previous.sponsorId === sponsorId ? previous.channelId : undefined)
     const next = entries.filter((e) => e.checkoutId !== id)
-    next.push({ checkoutId: id, sponsorId, name, logoUrl })
+    next.push({ checkoutId: id, sponsorId, name, logoUrl, ...(channelId ? { channelId } : {}) })
     writeEntries(next.slice(-CHECKOUT_SPONSOR_MEMORY_MAX))
   } catch {
     /* memory is a convenience — never a failure */

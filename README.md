@@ -226,7 +226,7 @@ a campaign to a slot. But an editorial page — a Vev article, a Replit article 
 often *is* part of one campaign, and the page can say so:
 
 ```ts
-Vio.init({ apiKey: '…', campaignId: 12 })          // the whole page
+Vio.init({ apiKey: '…', campaignId: 12 })          // the whole page — only on a page of ONE campaign
 ```
 
 ```html
@@ -243,6 +243,19 @@ ancestors. On web/Replit a **per-article** campaign needs a per-article scope to
 same `carousel-1`, and the articles' campaigns would overwrite one another's
 assignment; Vev ids are per block, so it does not apply there. What it does:
 
+- **Which channel sells.** One article = one campaign = one channel = one
+  sponsor, and one sponsor may run several campaigns on a surface, each on its own
+  commerce channel. The SDK reads products, creates the cart and pays with the key
+  of the channel of the **campaign in context** — the click's `campaignId`, the
+  element's `vio-campaign`, an ancestor's `data-vio-campaign`, then `Vio.init`'s —
+  among the blocks of that sponsor (`Vio.sponsorCommerce(sponsorId, { campaignId })`,
+  `Vio.commerceFor(sponsorId, { campaignId })`); without one, the sponsor's first
+  block, as before. A cart remembers the channel it was created on (`channelId`)
+  and every later cart and checkout call uses that channel's key; if the bootstrap
+  no longer lists that channel, the cart is created again on the current one with
+  its lines. So on a site with several articles (Replit, Vev), **set
+  `data-vio-campaign` per article and pass `sponsorId` and `campaignId` on
+  `vio:product-click`; do not set a site-wide `Vio.init({ campaignId })`.**
 - **Declaration.** The manifest carries the page's campaign (top-level) and an
   element's own campaign per location when it differs. The campaigns service
   (campaigns micro PR #16) turns that into assignments of the page's slots
@@ -372,9 +385,11 @@ Since 0.26 the origins do not stay in the browser: **Commerce receives them**
 - **Per checkout.** `CreateCheckout` and the `UpdateCheckout` right before paying
   carry `attribution`: `surface_key` (the SDK key — the gateway sets it from
   `X-API-Key` anyway, and shopcart checks it against the cart's channel, so a page
-  cannot credit a sale to another surface), `campaign_id` (the page's campaign,
-  `Vio.pageCampaign()` — else the campaign that explains most units of the cart under
-  the same rule `purchase` is split by), `content_url` / `content_title` (the page at
+  cannot credit a sale to another surface), `campaign_id` (always a campaign the
+  cart's sponsor takes part in: the campaign the cart's lines were added from, else
+  the page's — `data-vio-campaign` / `vio-campaign` on the page, then `Vio.init`'s —
+  else the campaign that explains most units of the cart under the same rule
+  `purchase` is split by), `content_url` / `content_title` (the page at
   pay time) and `entry` (`{ referrer, utm_source, utm_medium, utm_campaign,
   landing_url }`: the landing the session **remembers** — the same memory the
   `client` block reads, which now keeps the landing page too — never the page the

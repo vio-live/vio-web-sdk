@@ -967,6 +967,24 @@ export interface CartQueryOptions {
    * False = we fell back to the host apiKey — writes like CreateCart should
    * NOT proceed with the wrong key (the cart would be orphaned). */
   sponsorResolved?: boolean
+  /** The commerce channel of the key (`commerce.channelId` of the block it came from), when known. */
+  channelId?: string
+  /**
+   * True when a channel was asked for (`ctx.channelId`) and the bootstrap no
+   * longer lists it for the sponsor: the call must not go out with another
+   * channel's key — a cart on that channel is rebuilt on the current one.
+   */
+  channelMissing?: boolean
+}
+
+/** Which channel's key a cart / checkout call takes (see `getCartGraphQLOptions`). */
+export interface CartKeyContext {
+  /** The channel the cart (or checkout) lives on: only that channel's key. */
+  channelId?: string | number | null
+  /** The campaign in context (candidates in precedence order); `null` = none at all, not even `Vio.init`'s. */
+  campaignId?: number | string | null | ReadonlyArray<number | string | null | undefined>
+  /** A channel the bootstrap no longer lists still answers with the key this page saw for it (an open checkout). */
+  retired?: boolean
 }
 
 /**
@@ -975,11 +993,12 @@ export interface CartQueryOptions {
  * uses the sponsor's commerce apiKey (via the Vio facade on globalThis,
  * avoiding an import cycle); falls back to the host apiKey.
  */
-export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQueryOptions> {
+export async function getCartGraphQLOptions(sponsorId?: number, ctx?: CartKeyContext): Promise<CartQueryOptions> {
   const facade = (
     globalThis as {
       __VIO_FACADE__?: {
         findSponsor?: (id: number) => unknown
+        sponsorCommerce?: (id: number, ctx?: CartKeyContext) => unknown
         bootstrap?: () => Promise<unknown>
         bootstrapCache?: unknown
       }
@@ -1020,16 +1039,36 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
   const anyCfg = cfg as { apiKey?: string; graphQLBase?: string }
   let commerceKey = anyCfg.apiKey
   let sponsorResolved = false
-  if (sponsorId && typeof facade?.findSponsor === 'function') {
-    const sponsor = facade.findSponsor(sponsorId) as
-      | { commerce?: { apiKey?: string } }
-      | undefined
+  let channelId: string | undefined
+  let channelMissing = false
+  const askedChannel =
+    ctx?.channelId === null || ctx?.channelId === undefined ? '' : String(ctx.channelId).trim()
+  type Block = { commerce?: { apiKey?: string; channelId?: string | number | null } | null } | null | undefined
+  if (sponsorId && typeof facade?.sponsorCommerce === 'function') {
+    // The block of the cart's channel, or of the campaign in context (see Vio.sponsorCommerce).
+    const sponsor = facade.sponsorCommerce(sponsorId, ctx ?? {}) as Block
+    if (sponsor?.commerce?.apiKey) {
+      commerceKey = sponsor.commerce.apiKey
+      sponsorResolved = true
+      const ch = sponsor.commerce.channelId
+      if (ch !== null && ch !== undefined && String(ch).trim()) channelId = String(ch).trim()
+    } else if (askedChannel && facade.bootstrapCache) {
+      channelMissing = true
+    }
+  } else if (sponsorId && !askedChannel && typeof facade?.findSponsor === 'function') {
+    // An older facade on the page: the sponsor's first block, as before.
+    const sponsor = facade.findSponsor(sponsorId) as Block
     if (sponsor?.commerce?.apiKey) {
       commerceKey = sponsor.commerce.apiKey
       sponsorResolved = true
     }
   }
-  if (sponsorId && !sponsorResolved && typeof console !== 'undefined') {
+  if (channelMissing && typeof console !== 'undefined') {
+    console.warn(
+      `[Vio] channel ${askedChannel} of sponsor ${sponsorId} is no longer in the bootstrap — ` +
+        'not calling it with another channel\'s key',
+    )
+  } else if (sponsorId && !sponsorResolved && typeof console !== 'undefined') {
     // Say it plainly: the call is about to go out with the platform key, which
     // commerce rejects. Silence here is what made this look like bad
     // credentials for a whole day.
@@ -1044,6 +1083,8 @@ export async function getCartGraphQLOptions(sponsorId?: number): Promise<CartQue
     apiKey: anyCfg.apiKey,
     commerceKey,
     sponsorResolved,
+    ...(channelId ? { channelId } : {}),
+    ...(channelMissing ? { channelMissing } : {}),
   }
 }
 

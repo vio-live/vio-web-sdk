@@ -24,7 +24,7 @@ import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import { resolveContent, type ContentRef } from './content.js'
 import { storedLanding, type Landing } from './analytics/client-context.js'
-import { checkoutAttributionOf, type CheckoutAttributionWire } from './checkout/attribution.js'
+import { checkoutAttributionOf, dominantCampaignOf, type CheckoutAttributionWire } from './checkout/attribution.js'
 import {
   MAX_DECLARATIONS_PER_LOAD,
   MAX_LOCATIONS_PER_DECLARATION,
@@ -32,6 +32,8 @@ import {
   SLOT_DECLARATION_TTL_MS,
   activeCampaignEntry,
   campaignCandidates,
+  campaignSponsorIds,
+  defaultCampaignEntry,
   normalizeSlotId,
   normalizeSlotKind,
   normalizeSlotLocations,
@@ -50,12 +52,17 @@ import {
 } from './slots.js'
 import { cartSlicesFrom, type CartSlice } from './cart/slices.js'
 import {
+  channelIdOf,
   findSponsorIn,
   rememberedCheckoutSponsor,
   rememberedSponsor,
+  sellingBlocksIn,
+  sponsorCommerceIn,
   sponsorIdentityFrom,
   toSponsorId,
   type RememberedCheckoutSponsor,
+  type SellingSponsor,
+  type SponsorCommerceContext,
   type SponsorIdentity,
 } from './sponsor-identity.js'
 import type { CartLineItem } from './cart/types.js'
@@ -71,6 +78,11 @@ import type {
 
 /** Mount storms (a carousel of cards, Vev blocks) collapse into ONE manifest. */
 const SLOT_DECLARATION_DEBOUNCE_MS = 1_000
+
+/** A bootstrap older than this is fetched again when the tab becomes visible (new campaigns, channels). */
+export const BOOTSTRAP_MAX_AGE_MS = 5 * 60_000
+/** After a failed refresh, the next one waits this long. */
+const BOOTSTRAP_REFRESH_BACKOFF_MS = 60_000
 
 /** How long the surface is given to answer its privacy mode (preloaded at init; never awaited by the payment path). */
 const PRIVACY_MODE_TIMEOUT_MS = 1_500
@@ -100,9 +112,23 @@ function privacyModeOfSurface(res: unknown): PrivacyAnswer {
 
 class VioFacade {
   private apiInstance: VioApi | null = null
-  private commerceClients = new Map<number, CommerceClient>()
+  /** Commerce clients by sponsor AND key: one sponsor may sell on several channels (one per campaign). */
+  private commerceClients = new Map<string, CommerceClient>()
   private bootstrapPromise: Promise<BootstrapResponse> | null = null
   private cachedBootstrap: BootstrapResponse | null = null
+  /** When the cached bootstrap arrived (ms epoch). */
+  private bootstrapAt = 0
+  /** A refresh of the bootstrap in flight (`refreshStaleBootstrap`). */
+  private bootstrapRefresh: Promise<void> | null = null
+  private bootstrapRefreshFailedAt = 0
+  /** The `visibilitychange` listener is installed once per page. */
+  private visibilityHooked = false
+  /**
+   * Every selling block this page has seen, by `sponsorId:channelId` — so a
+   * checkout opened on a channel keeps its key after a bootstrap refresh no
+   * longer lists that channel (`sponsorCommerce(…, { retired: true })`).
+   */
+  private seenChannels = new Map<string, SellingSponsor>()
   /** Last bootstrap failure — short backoff so cart mutations don't hammer a
    * dead endpoint on every call. */
   private bootstrapFailedAt = 0
@@ -160,6 +186,10 @@ class VioFacade {
     this.commerceClients.clear()
     this.bootstrapPromise = null
     this.cachedBootstrap = null
+    this.bootstrapAt = 0
+    this.bootstrapRefresh = null
+    this.bootstrapRefreshFailedAt = 0
+    this.seenChannels.clear()
     this.bootstrapFailedAt = 0
     this.generation++
     // The surface (its privacy mode) is the key's: forgotten, and asked again
@@ -342,7 +372,7 @@ class VioFacade {
       .then(
         (res) => {
           if (generation !== this.generation) return this.bootstrap()
-          this.cachedBootstrap = res
+          this.adoptBootstrap(res)
           this.bootstrapFailedAt = 0
           // The slots that mounted before this answer can be declared now.
           if (this.slotsDirty) this.scheduleSlotDeclaration()
@@ -366,6 +396,94 @@ class VioFacade {
 
   get bootstrapCache(): BootstrapResponse | null {
     return this.cachedBootstrap
+  }
+
+  /** A bootstrap becomes the page's: when it arrived, the channels it lists, and the tab-visible refresh. */
+  private adoptBootstrap(res: BootstrapResponse): void {
+    this.cachedBootstrap = res
+    this.bootstrapAt = Date.now()
+    try {
+      const ids = new Set<number>()
+      const add = (s: unknown) => {
+        const id = toSponsorId((s as { id?: unknown } | null | undefined)?.id)
+        if (id !== undefined) ids.add(id)
+      }
+      add(res?.primarySponsor)
+      if (Array.isArray(res?.secondarySponsors)) res.secondarySponsors.forEach(add)
+      if (Array.isArray(res?.campaigns)) {
+        for (const c of res.campaigns) {
+          if (!c || typeof c !== 'object') continue
+          add(c.primarySponsor)
+          if (Array.isArray(c.secondarySponsors)) c.secondarySponsors.forEach(add)
+        }
+      }
+      for (const id of ids) {
+        for (const { sponsor } of sellingBlocksIn(res, id)) {
+          const channel = channelIdOf(sponsor.commerce.channelId)
+          if (channel !== undefined) this.seenChannels.set(`${id}:${channel}`, sponsor)
+        }
+      }
+    } catch {
+      /* the memory of channels is a convenience */
+    }
+    this.hookVisibility()
+  }
+
+  /**
+   * The bootstrap is cached for the page's life, but a tab can stay open for
+   * days: when it becomes visible again and the cached one is older than
+   * five minutes, it is fetched again (new campaigns, channels). The old one
+   * stays until the new one arrives — and stays if the refresh fails. Carts
+   * keep their lines; a cart whose channel the new bootstrap no longer lists
+   * is moved to the current channel the next time it is used (CartManager),
+   * and an open checkout keeps paying with the key of its own channel.
+   */
+  private hookVisibility(): void {
+    if (this.visibilityHooked) return
+    if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return
+    this.visibilityHooked = true
+    document.addEventListener('visibilitychange', () => {
+      try {
+        if (document.visibilityState === 'visible') void this.refreshStaleBootstrap()
+      } catch {
+        /* never breaks the page */
+      }
+    })
+  }
+
+  /** Fetch the bootstrap again when the cached one is older than `maxAgeMs`; never throws, never clears the cache. */
+  private refreshStaleBootstrap(maxAgeMs: number = BOOTSTRAP_MAX_AGE_MS): Promise<void> {
+    try {
+      if (this.bootstrapRefresh) return this.bootstrapRefresh
+      if (!this.cachedBootstrap || this.bootstrapPromise || !Configuration.isInitialized) return Promise.resolve()
+      const now = Date.now()
+      if (now - this.bootstrapAt < maxAgeMs) return Promise.resolve()
+      if (this.bootstrapRefreshFailedAt && now - this.bootstrapRefreshFailedAt < BOOTSTRAP_REFRESH_BACKOFF_MS) {
+        return Promise.resolve()
+      }
+      const generation = this.generation
+      const refresh: Promise<void> = this.api
+        .bootstrap(Configuration.get().platform)
+        .then(
+          (res) => {
+            // Another key's answer, or nothing usable: the cached one stands.
+            if (generation !== this.generation || !res || typeof res !== 'object') return
+            this.adoptBootstrap(res)
+            this.bootstrapRefreshFailedAt = 0
+            if (this.slotsDirty) this.scheduleSlotDeclaration()
+          },
+          () => {
+            if (generation === this.generation) this.bootstrapRefreshFailedAt = Date.now()
+          },
+        )
+        .finally(() => {
+          if (this.bootstrapRefresh === refresh) this.bootstrapRefresh = null
+        })
+      this.bootstrapRefresh = refresh
+      return refresh
+    } catch {
+      return Promise.resolve()
+    }
   }
 
   /**
@@ -409,24 +527,68 @@ class VioFacade {
   }
 
   /**
-   * Get a CommerceClient scoped to a specific sponsor (via bootstrap).
-   * Throws if bootstrap hasn't been called or the sponsor is unknown.
+   * The block a sponsor sells with — its `commerce.apiKey` and `channelId` —
+   * by the rule one article = one campaign = one channel = one sponsor (see
+   * `sponsorCommerceIn`): `ctx.channelId` → that channel's block only (a cart
+   * created on a channel is only called with its key); else the campaign in
+   * context — `ctx.campaignId` candidates (the click's, the element's
+   * `vio-campaign`, an ancestor's `data-vio-campaign`), then
+   * `Vio.init({ campaignId })` — when the sponsor takes part in it; else the
+   * sponsor's first block that sells (the behaviour before). `campaignId:
+   * null` means no campaign at all, not even `Vio.init`'s. `retired: true`
+   * also answers a channel the current bootstrap no longer lists with the
+   * block this page saw for it (an open checkout after a bootstrap refresh).
+   * Blocks with `commerce: null` are skipped. `null` when none; never throws.
    */
-  commerceFor(sponsorId: number): CommerceClient {
+  sponsorCommerce(
+    sponsorId: number | string | null | undefined,
+    ctx: SponsorCommerceContext & { retired?: boolean } = {},
+  ): SellingSponsor | null {
+    try {
+      const id = toSponsorId(sponsorId)
+      if (id === undefined) return null
+      const channel = channelIdOf(ctx?.channelId)
+      if (channel !== undefined) {
+        const listed = sponsorCommerceIn(this.cachedBootstrap, id, { channelId: channel })
+        if (listed) return listed
+        return ctx.retired ? this.seenChannels.get(`${id}:${channel}`) ?? null : null
+      }
+      const campaignId = ctx?.campaignId === null ? [] : this.pageCampaignCandidates(ctx?.campaignId)
+      return sponsorCommerceIn(this.cachedBootstrap, id, { campaignId }) ?? null
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * Get a CommerceClient scoped to a sponsor (via bootstrap) — on the
+   * channel of the campaign in context (`ctx.campaignId`, the element's
+   * candidates first; see `sponsorCommerce`) or of `ctx.channelId`. Without
+   * `ctx`, the page's campaign (`Vio.init`) when the sponsor takes part in
+   * it, else the sponsor's first selling block, as before. Clients are kept
+   * per sponsor and key. Throws if bootstrap hasn't been called or nothing of
+   * the sponsor sells there.
+   */
+  commerceFor(sponsorId: number, ctx?: SponsorCommerceContext): CommerceClient {
     // Coacción a número: los web-components pasan sponsorId como string
-    // (atributo), y findSponsor compara con `===` contra el id numérico.
+    // (atributo), y la búsqueda compara contra el id numérico.
     sponsorId = Number(sponsorId) as number
-    const existing = this.commerceClients.get(sponsorId)
-    if (existing) return existing
-    const sponsor = this.findSponsor(sponsorId)
+    const sponsor = this.sponsorCommerce(sponsorId, ctx ?? {})
     if (!sponsor) {
+      const channel = channelIdOf(ctx?.channelId)
       throw new Error(
-        `[Vio] Sponsor ${sponsorId} not found in bootstrap. Call Vio.bootstrap() first or pass commerce-key directly.`,
+        channel !== undefined
+          ? `[Vio] Channel ${channel} of sponsor ${sponsorId} not found in bootstrap.`
+          : `[Vio] Sponsor ${sponsorId} not found in bootstrap. Call Vio.bootstrap() first or pass commerce-key directly.`,
       )
     }
+    const apiKey = sponsor.commerce.apiKey
+    const cacheKey = `${sponsorId}:${apiKey}`
+    const existing = this.commerceClients.get(cacheKey)
+    if (existing) return existing
     const cfg = Configuration.get()
-    const client = createCommerceClient({ endpoint: cfg.graphQLBase, apiKey: sponsor.commerce.apiKey })
-    this.commerceClients.set(sponsorId, client)
+    const client = createCommerceClient({ endpoint: cfg.graphQLBase, apiKey })
+    this.commerceClients.set(cacheKey, client)
     return client
   }
 
@@ -818,9 +980,10 @@ class VioFacade {
    * The attribution of the order a sponsor's cart is about to become
    * (ADR-0035 phase B) — what `CreateCheckout` / `UpdateCheckout` send as
    * `attribution` and shopcart writes on the order: the surface (its SDK
-   * key), the page's campaign (`pageCampaign()`; without one, the campaign
-   * that explains most units of the cart under the same rule `purchase` is
-   * split by — `cartSlices`) and, on a surface KNOWN to be `standard`
+   * key), the campaign of the order — always one the cart's sponsor takes part
+   * in (`orderCampaign`: the cart lines' own campaign, else the page's;
+   * without one, the campaign that explains most units of the cart under the
+   * same rule `purchase` is split by — `cartSlices`) and, on a surface KNOWN to be `standard`
    * (`privacyModeNow`), the page (`content()`'s url as origin + path, and
    * title) and where the session came in: the landing the session REMEMBERS
    * (`storedLanding`, else the one analytics resolved on this page) — never
@@ -832,10 +995,14 @@ class VioFacade {
     try {
       const config = Configuration.isInitialized ? Configuration.get() : undefined
       const content = this.content()
+      const sponsor = toSponsorId(sponsorId)
+      const belongs = (campaignId: number | undefined) =>
+        campaignId === undefined || campaignTakesSponsor(this.cachedBootstrap, campaignId, sponsor)
       return checkoutAttributionOf({
         surfaceKey: config?.apiKey,
-        pageCampaignId: toNumber(this.pageCampaign()?.id),
-        slices: this.cartSlices(sponsorId),
+        pageCampaignId: this.orderCampaign(sponsor),
+        // The fallback campaign of the slices, too, only when it is the sponsor's.
+        slices: this.cartSlices(sponsorId).filter((slice) => belongs(slice.campaignId)),
         content: { url: content.url, title: content.title },
         landing: this.rememberedLanding(),
         privacyMode: this.privacyModeNow(),
@@ -843,6 +1010,30 @@ class VioFacade {
     } catch {
       return undefined
     }
+  }
+
+  /**
+   * The campaign an order of `sponsorId` is credited to — one article = one
+   * campaign = one sponsor, so it is always one the sponsor takes part in:
+   * the campaign the cart's own lines were added from (their origins; the one
+   * that explains most units), else the page's — the elements' campaigns on
+   * the page (`vio-campaign` / `data-vio-campaign`, in document order), then
+   * `Vio.init({ campaignId })` — the first one active with that sponsor.
+   * `undefined` when neither says one (the slices then decide). Without a
+   * sponsor, the page's campaign as before.
+   */
+  private orderCampaign(sponsorId: number | undefined): number | undefined {
+    const boot = this.cachedBootstrap
+    if (sponsorId !== undefined) {
+      const lines: CartLineItem[] = [...(this.cart.getCart(sponsorId)?.items ?? [])]
+      const fromLines = dominantCampaignOf(
+        cartSlicesFrom(lines, () => undefined).filter(
+          (slice) => slice.campaignId !== undefined && campaignTakesSponsor(boot, slice.campaignId, sponsorId),
+        ),
+      )
+      if (fromLines !== undefined) return fromLines
+    }
+    return toNumber(activeCampaignEntry(boot, this.pageCampaignCandidates(documentCampaignHints()), sponsorId)?.id)
   }
 
   /** The landing the session remembers: what the first page stored, else what analytics resolved on this page load (consent pending); null otherwise. */
@@ -961,6 +1152,49 @@ class VioFacade {
   private findSponsor(sponsorId: number): Sponsor | undefined {
     // A sponsor may live only in a non-default campaign (the one a slot shows).
     return findSponsorIn(this.cachedBootstrap, sponsorId)
+  }
+}
+
+/**
+ * Whether a campaign is one the sponsor takes part in (primary or
+ * secondary), as the bootstrap lists it — `campaigns[]`, or the default
+ * campaign's top-level sponsors. A campaign the bootstrap does not list at
+ * all cannot be checked and counts (an origin remembered from an earlier
+ * page); without a sponsor every campaign does.
+ */
+function campaignTakesSponsor(
+  boot: BootstrapResponse | null | undefined,
+  campaignId: number,
+  sponsorId: number | undefined,
+): boolean {
+  if (sponsorId === undefined || !boot) return true
+  try {
+    const listed = (Array.isArray(boot.campaigns) ? boot.campaigns : []).filter(
+      (c): c is BootstrapCampaignEntry => !!c && typeof c === 'object' && toNumber(c.id) === campaignId,
+    )
+    if (listed.length > 0) return listed.some((c) => campaignSponsorIds(c).includes(sponsorId))
+    if (toNumber(boot.campaign?.id) === campaignId) {
+      const entry = defaultCampaignEntry(boot)
+      return !!entry && campaignSponsorIds(entry).includes(sponsorId)
+    }
+    return true
+  } catch {
+    return true
+  }
+}
+
+/** The campaigns the page's elements declare (`vio-campaign`, `data-vio-campaign`), in document order. */
+function documentCampaignHints(): string[] {
+  try {
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return []
+    const out: string[] = []
+    document.querySelectorAll('[vio-campaign], [data-vio-campaign]').forEach((el) => {
+      const value = el.getAttribute('vio-campaign') || el.getAttribute('data-vio-campaign')
+      if (value) out.push(value)
+    })
+    return out
+  } catch {
+    return []
   }
 }
 

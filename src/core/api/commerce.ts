@@ -322,6 +322,31 @@ class ChannelProduct {
 }
 
 /**
+ * Descriptions Commerce writes on a rate by itself, which say nothing about
+ * delivery: products' `shipping.service.ts` defaults ('By Outshifter', QA's
+ * 'Default Shipping Method'). Compared trimmed, case-insensitively.
+ */
+export const FILLER_SHIPPING_DESCRIPTIONS: readonly string[] = Object.freeze(['by outshifter', 'default shipping method'])
+
+/**
+ * A rate's description as a shopper should read it — in practice its
+ * delivery time — trimmed; '' when there is none or it is filler: one of
+ * `FILLER_SHIPPING_DESCRIPTIONS`, or a repeat of any of `repeats` (the rate's
+ * own name — dashboard-created rates copied it —, the product's title or the
+ * seller's name — products writes those on imports). Case-insensitive.
+ */
+export function shippingDescriptionOf(value: unknown, repeats: ReadonlyArray<unknown> = []): string {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (!text) return ''
+  const key = text.toLowerCase()
+  if (FILLER_SHIPPING_DESCRIPTIONS.includes(key)) return ''
+  for (const r of repeats) {
+    if (typeof r === 'string' && r.trim() && r.trim().toLowerCase() === key) return ''
+  }
+  return text
+}
+
+/**
  * The rates of a product for one country, cheapest first: `null` when they
  * could not be read (unknown), `[]` when the product has none there.
  */
@@ -338,13 +363,15 @@ export function shippingRatesFor(
     const price = row?.price
     const amount = typeof price?.amount_incl_taxes === 'number' ? price.amount_incl_taxes : price?.amount
     if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) continue
+    const name = String(s.name ?? '')
+    const description = shippingDescriptionOf(s.description, [name])
     out.push({
       id: String(s.id ?? ''),
-      name: String(s.name ?? ''),
+      name,
       price: amount,
       currency: String(price?.currency_code ?? ''),
       default: s.default === true,
-      description: typeof s.description === 'string' ? s.description.trim() : '',
+      description,
       logoUrl: httpsUrlOrEmpty(s.logo_url ?? s.logoUrl),
     })
   }

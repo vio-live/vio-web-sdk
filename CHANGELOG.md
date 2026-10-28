@@ -24,8 +24,38 @@ and *when*, and links there.
   its own, and `Vio.init` with another key switches `Vio.cart` to that connection's carts (the
   first one's come back if the page switches back). An answer that arrives for the connection the
   page left lands in that connection's cart, silently — never in the new one.
+- **The commerce key is the channel of the article's campaign, not the sponsor's first block.**
+  With two campaigns of one sponsor on a surface (Careless: campaign 2 on channel 482, an internal
+  test campaign 1 on channel 480), products, carts and checkouts used the default campaign's
+  channel even for an article of the other. The key now follows the campaign in context (the
+  click's `campaignId`, `vio-campaign`, `data-vio-campaign`, `Vio.init`'s), among the sponsor's
+  blocks (a block with `commerce: null` is skipped instead of throwing). `Vio.commerceFor(sponsorId)`
+  still works and takes an optional `{ campaignId?, channelId? }`; commerce clients are kept per
+  sponsor and key. New: `Vio.sponsorCommerce(sponsorId, ctx?)`.
+- **A cart remembers its channel.** `SponsorCartState.channelId` is stored when the backend cart is
+  created, and every later cart and checkout call for it (also the return from Vipps / Stripe,
+  through the per-checkout memory) uses that channel's key. If the bootstrap no longer lists the
+  channel, the stale `cartId` is dropped and the cart is created again on the current channel with
+  its lines — never a call with another channel's key. Carts from before keep the sponsor's first
+  block, as when they were created.
+- **The order's campaign belongs to the cart's sponsor.** `attribution.campaign_id` on the checkout
+  and `campaignId` on `vio:checkout-created` (→ `add_payment_info`) took the page's campaign even
+  when it was another sponsor's. Now: the campaign the cart's lines were added from, else the
+  page's (`data-vio-campaign` / `vio-campaign` on the page, then `Vio.init`'s) only when the sponsor
+  takes part in it, else the slices' rule — only campaigns of that sponsor.
+- **The bootstrap no longer lives for the whole page.** When the tab becomes visible again and the
+  cached bootstrap is older than 5 minutes, it is fetched again (the old one stays until the new
+  one arrives, and if the refresh fails). Carts keep their lines; an open checkout keeps paying
+  with its channel's key.
+- **«Frakt & retur» no longer shows filler as the delivery time.** A rate's description equal to
+  its own name (dashboard-created rates copied it), `By Outshifter` or `Default Shipping Method`
+  (products' defaults) is no description in `getShippingRates`; the detail also drops one equal
+  to the product's title or the brand / seller name.
 
 ### ⚠️ Upgrade notes
+- **Hosts with several articles (Replit, Vev):** pass `sponsorId` **and** `campaignId` on
+  `vio:product-click`, set `data-vio-campaign` on each article's wrapper, and do **not** set a
+  site-wide `Vio.init({ campaignId })` — the campaign in context decides which channel sells.
 - The carts kept in the old shared entry move, once, to the first connection that opens with none
   of its own. Nothing to do.
 - `Vio.cart` is the same object for the whole page, so listeners added to it keep working across a

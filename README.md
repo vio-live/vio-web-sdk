@@ -758,10 +758,12 @@ so what the Vipps page lists is what the shopper saw.
 **Two Vipps paths (2026-10-28).** The detail's «Kjøp nå med Vipps» is **Express**: the app
 fills in name and address. The **cart's** Vipps button opens the checkout with Vipps
 preselected, and the checkout's Vipps is always the **standard** payment, even when the
-brand has Express on. Our form collects name, e-mail, **Mobilnummer** (Norwegian, 8 digits,
-optional +47), address and the delivery with its price before paying. The payment goes out
-with `express: false`, and the address (with `phone` + `phone_code: '47'`) is on the
-checkout's shipping and billing address. **Apple Pay on the detail follows the same
+brand has Express on. Our form collects name, e-mail, **Mobilnummer**, address and the
+delivery with its price before paying. The mobile is required for Vipps only and accepts any
+market's number: the `+` prefix or the shipping country sets the calling code. The delivery is
+saved on the cart first; if that fails, no payment starts. The payment goes out with
+`express: false`, and the address (with `phone` + `phone_code`) is on the checkout's shipping
+and billing address. **Apple Pay on the detail follows the same
 rule**: its sheet's amount is fixed before the tap, so it opens only on an empty cart, for the
 product × the chosen quantity; otherwise the checkout opens (`paymentMethod: 'apple-pay'`).
 

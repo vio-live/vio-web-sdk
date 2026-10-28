@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CheckoutManager } from './checkout-manager.js'
 import * as cartQueries from '../api/cart-queries.js'
 import * as vipps from './payments/vipps.js'
-import { normalizeNorwegianMobile } from './phone.js'
+import { parsePhone } from './phone.js'
 
 /**
  * The checkout's Vipps is the standard payment (Mote & Livsstil,
@@ -58,11 +58,22 @@ describe('the standard Vipps payment (express: false)', () => {
     expect(pay.mock.calls[0]![0]).toMatchObject({ checkoutId: 'CHK-1', express: false, email: 'kari@example.no' })
   })
 
-  it('an incomplete address is not sent (the backend rejects partial Vipps addresses)', async () => {
+  it('an incomplete address (or no mobile) creates no checkout update and no payment — a clear error first', async () => {
+    for (const form of [{ ...FORM, address: '' }, { ...FORM, phone: '' }, { ...FORM, phone: '12' }]) {
+      const { update, pay } = spies()
+      const m = manager()
+      await expect(m.startVippsPayment(5, form, { express: false })).rejects.toThrow(/complete delivery address/)
+      expect(update).not.toHaveBeenCalled()
+      expect(pay).not.toHaveBeenCalled()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('a Swedish number on a Swedish address goes with phone_code 46', async () => {
     const { update } = spies()
     const m = manager()
-    await m.startVippsPayment(5, { ...FORM, address: '' }, { express: false })
-    expect(update.mock.calls[0]![0]).not.toHaveProperty('shippingAddress')
+    await m.startVippsPayment(5, { ...FORM, country: 'SE', phone: '070-123 45 67' }, { express: false })
+    expect((update.mock.calls[0]![0] as any).shippingAddress).toMatchObject({ phone: '701234567', phone_code: '46' })
   })
 
   it('Express (the product detail’s) still sends no address', async () => {
@@ -84,12 +95,28 @@ describe('the standard Vipps payment (express: false)', () => {
 })
 
 describe('the mobile number', () => {
-  it('eight digits, with or without +47 / 0047, spaces and dashes', () => {
+  it('Norwegian: eight digits, with or without +47 / 0047, spaces and dashes', () => {
     for (const ok of ['91234567', '912 34 567', '+47 912 34 567', '+4791234567', '0047 91234567', '912-34-567']) {
-      expect(normalizeNorwegianMobile(ok), ok).toBe('91234567')
+      expect(parsePhone(ok, 'NO'), ok).toEqual({ phone: '91234567', phone_code: '47' })
     }
-    for (const bad of ['', '1234567', '912345678', '+46 91234567', 'abcdefgh', null, undefined]) {
-      expect(normalizeNorwegianMobile(bad), String(bad)).toBeNull()
+    for (const bad of ['', '1234567', '912345678', 'abcdefgh', null, undefined]) {
+      expect(parsePhone(bad, 'NO'), String(bad)).toBeNull()
     }
+  })
+
+  it('an explicit +prefix names the country, whatever the shipping country', () => {
+    expect(parsePhone('+46 70 123 45 67', 'NO')).toEqual({ phone: '701234567', phone_code: '46' })
+    expect(parsePhone('+358 40 1234567', 'NO')).toEqual({ phone: '401234567', phone_code: '358' })
+    expect(parsePhone('+45 20 12 34 56', 'NO')).toEqual({ phone: '20123456', phone_code: '45' })
+    expect(parsePhone('+49 151 23456789', 'NO')).toEqual({ phone: '15123456789', phone_code: '49' })
+    expect(parsePhone('+44 7700 900123', 'NO')).toEqual({ phone: '7700900123', phone_code: '44' })
+  })
+
+  it('without a prefix, the shipping country’s code — the trunk 0 dropped', () => {
+    expect(parsePhone('070-123 45 67', 'SE')).toEqual({ phone: '701234567', phone_code: '46' })
+    expect(parsePhone('07700 900123', 'GB')).toEqual({ phone: '7700900123', phone_code: '44' })
+    expect(parsePhone('20123456', 'DK')).toEqual({ phone: '20123456', phone_code: '45' })
+    // An unknown country with no prefix: not usable.
+    expect(parsePhone('12345678', 'ZZ')).toBeNull()
   })
 })

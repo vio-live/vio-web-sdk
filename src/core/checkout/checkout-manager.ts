@@ -228,7 +228,7 @@ export const KLARNA_SHIPPING_OPTIONS: KlarnaShippingOption[] = [
   },
 ]
 import type { CheckoutAddress, CheckoutState, PaymentMethod } from './types.js'
-import { NORWAY_PHONE_CODE, normalizeNorwegianMobile } from './phone.js'
+import { parsePhone } from './phone.js'
 import type { CheckoutAttributionWire } from './attribution.js'
 
 // MARK: - Klarna native (Vio Commerce GraphQL Payment mutations)
@@ -396,8 +396,9 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
   if (!firstName && !lastName && !address1 && !city && !zip) return null
 
   // The mobile the form asked for (the courier texts it): national digits +
-  // calling code, the shape the order's address keeps.
-  const phone = normalizeNorwegianMobile(address.phone)
+  // calling code — from its own +prefix, else the shipping country's — the
+  // shape the order's address keeps. Not a usable number: none is sent.
+  const phone = parsePhone(address.phone, country_code)
 
   return {
     first_name: firstName,
@@ -406,7 +407,7 @@ function buildCheckoutAddress(address: any): Record<string, unknown> | null {
     city: city,
     zip: zip,
     country_code: country_code,
-    ...(phone ? { phone, phone_code: NORWAY_PHONE_CODE } : {}),
+    ...(phone ? { phone: phone.phone, phone_code: phone.phone_code } : {}),
   }
 }
 
@@ -1164,6 +1165,23 @@ export class CheckoutManager extends EventTarget {
     await this.cartManager.refreshFromServer(spId)
     // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
     this.assertPayableCart(spId)
+
+    // Vipps Express collects the address in its own flow — never push one onto
+    // the checkout for it (the backend rejects partial Vipps addresses). The
+    // standard Vipps payment (the checkout's) carries the form's address, and
+    // ONLY a complete one with a usable mobile — shopcart does not ask Vipps
+    // for the profile on it, so a payment without the address written would
+    // be an order with nowhere to ship. Checked before anything is created.
+    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
+    const addr =
+      typeof formData === 'object' && formData !== null ? formData : this.state?.address
+    const built = buildCheckoutAddress(addr)
+    if (isVipps && vippsWithAddress && !(isCompleteCheckoutAddress(built) && built?.phone)) {
+      throw new Error(
+        '[CheckoutManager] the standard Vipps payment needs the complete delivery address (name, street, postcode, city and a mobile number) — no payment started',
+      )
+    }
+    const addressObj = !isVipps ? built : vippsWithAddress ? built : null
     const cart = this.cartManager.getCart(spId)
     let cartId = cart?.cartId
     if (!cartId) {
@@ -1192,15 +1210,6 @@ export class CheckoutManager extends EventTarget {
       throw new Error('[CheckoutManager] no backend checkout — cannot start the payment')
     }
 
-    // Vipps Express collects the address in its own flow — never push one onto
-    // the checkout for it (the backend rejects partial Vipps addresses). The
-    // standard Vipps payment (the checkout's) carries the form's address, and
-    // only a complete one.
-    const isVipps = extraUpdateVars?.paymentMethod === 'Vipps'
-    const addr =
-      typeof formData === 'object' && formData !== null ? formData : this.state?.address
-    const built = buildCheckoutAddress(addr)
-    const addressObj = !isVipps ? built : vippsWithAddress && isCompleteCheckoutAddress(built) ? built : null
     const emailVal =
       (typeof formData === 'string'
         ? formData

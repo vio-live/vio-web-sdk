@@ -13,7 +13,7 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
-import { formatPrice, getGlobalCurrency } from '../../core/types.js'
+import { formatPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
 import {
   buyerRefOf,
   type PaymentSuccessDetail,
@@ -53,7 +53,7 @@ import {
   type AdyenSession,
 } from '../../core/checkout/payments/adyen.js'
 import type { StripeElementHandle } from '../../core/checkout/payments/stripe-embedded.js'
-import { isValidNorwegianMobile } from '../../core/checkout/phone.js'
+import { isValidPhone } from '../../core/checkout/phone.js'
 import { storageGet } from '../../core/safe-storage.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
@@ -77,6 +77,8 @@ const STRIPE_LOGO_SRC =
 
 /** Said when a pay button is pressed on a cart with nothing to pay for. */
 const EMPTY_CART_MESSAGE = 'Handlekurven er tom.'
+/** Said when the chosen delivery could not be saved on the cart before a hosted payment. */
+const SHIPPING_NOT_SAVED_MESSAGE = 'Kunne ikke lagre fraktmetoden. Prøv igjen.'
 
 export class VioCheckout extends LitElement {
   @property({ type: Boolean, reflect: true }) open = false
@@ -1791,13 +1793,33 @@ export class VioCheckout extends LitElement {
     )
   }
 
-  /** A number typed that is not a Norwegian mobile (nothing said while the field is empty). */
-  private get phoneError(): boolean {
-    const raw = String(this.form.phone ?? '').trim()
-    return raw.length > 0 && !isValidNorwegianMobile(raw)
+  /** The shipping country the mobile's calling code defaults to (no +prefix typed). */
+  private get phoneCountry(): string {
+    return String(this.form.country || getGlobalCountryCode())
   }
 
-  /** Whether all mandatory Leveringsadresse fields are filled (and the mobile is a Norwegian one). */
+  /**
+   * The mobile is required only for the standard Vipps payment — shopcart
+   * does not ask Vipps for the profile there. Every other method takes it
+   * when given and never waits for it (a host that pre-fills the form with
+   * `setAddress()` and no phone keeps working).
+   */
+  private get phoneRequired(): boolean {
+    return this.checkoutState?.paymentMethod === 'vipps'
+  }
+
+  /** A number typed that is not usable (nothing said while the field is empty). */
+  private get phoneError(): boolean {
+    const raw = String(this.form.phone ?? '').trim()
+    return raw.length > 0 && !isValidPhone(raw, this.phoneCountry)
+  }
+
+  /** The mobile as the chosen method needs it: valid when required, else anything. */
+  private get phoneReady(): boolean {
+    return !this.phoneRequired || isValidPhone(this.form.phone, this.phoneCountry)
+  }
+
+  /** Whether all mandatory Leveringsadresse fields are filled (the mobile only for Vipps). */
   private get isAddressValid(): boolean {
     const f = this.form
     if (!f) return false
@@ -1808,7 +1830,7 @@ export class VioCheckout extends LitElement {
       f.address && String(f.address).trim().length > 0 &&
       f.postalCode && String(f.postalCode).trim().length > 0 &&
       f.city && String(f.city).trim().length > 0 &&
-      isValidNorwegianMobile(f.phone),
+      this.phoneReady,
     )
   }
 
@@ -2117,23 +2139,35 @@ export class VioCheckout extends LitElement {
    */
   private async startVippsFromCheckout(): Promise<void> {
     const sponsorId = this.checkoutState?.sponsorId
-    await this.persistSelectedShipping('vipps')
     await Vio.checkout.startVippsPayment(sponsorId, this.form, { express: false })
   }
 
-  /** The chosen delivery on the cart before a hosted payment is minted (its total depends on it). */
-  private async persistSelectedShipping(method: string): Promise<void> {
+  /**
+   * The chosen delivery on the cart before a hosted payment is minted (its
+   * total depends on it). False — and the payment must not start — when it
+   * could not be saved: the selected rate has no supplier to save it under,
+   * or the backend refused. A cart with no rates at all has nothing to save.
+   */
+  private async persistSelectedShipping(method: string): Promise<boolean> {
+    if (this.availableShippingsList.length === 0) return true
     const selectedOpt = this.shippingList.find((s) => s.id === this.selectedShipping)
-    if (!selectedOpt?.supplierId) return
+    if (!selectedOpt?.supplierId) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[VioCheckout] no supplier for the selected shipping — ${method} not started`)
+      }
+      return false
+    }
     try {
-      await Vio.checkout.updateShippingsBySupplier(
+      const updated = await Vio.checkout.updateShippingsBySupplier(
         [{ shipping_id: selectedOpt.id, supplier_id: Number(selectedOpt.supplierId) }],
         this.checkoutState?.sponsorId,
       )
+      return updated != null
     } catch (err) {
       if (typeof console !== 'undefined') {
         console.warn(`[VioCheckout] updateShippingsBySupplier on ${method} pay failed:`, err)
       }
+      return false
     }
   }
 
@@ -2196,7 +2230,10 @@ export class VioCheckout extends LitElement {
     // (2026-10-28: the checkout's Vipps is the standard payment, it carries
     // our address and delivery; Express lives on the product detail).
     {
-      const missing = !this.isAddressValid
+      // The mobile counts for the method being paid with (Vipps), even before
+      // the state says it is the selected one.
+      const phoneMissing = method === 'vipps' && !isValidPhone(this.form.phone, this.phoneCountry)
+      const missing = !this.isAddressValid || phoneMissing
         ? 'Vennligst fyll ut alle feltene i leveringsadresse.'
         : !this.hasSelectedShipping
           ? 'Vennligst velg en fraktmetode.'
@@ -2235,9 +2272,14 @@ export class VioCheckout extends LitElement {
         this.stripeRequested = true
         return
       }
-      // Persist the chosen shipping before the link is minted (total depends on it).
-      await this.persistSelectedShipping('stripe')
+      // Persist the chosen shipping before the link is minted (total depends
+      // on it); a delivery that could not be saved starts no payment.
       this.stripeLoading = true
+      if (!(await this.persistSelectedShipping('stripe'))) {
+        this.stripeLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
       void Vio.checkout
         .startStripePayment(this.checkoutState?.sponsorId, this.form)
         .catch((err: unknown) => {
@@ -2252,6 +2294,13 @@ export class VioCheckout extends LitElement {
     }
     if (method === 'vipps') {
       this.vippsLoading = true
+      // The delivery Vipps will charge for is the one saved on the cart: not
+      // saved, no payment.
+      if (!(await this.persistSelectedShipping('vipps'))) {
+        this.vippsLoading = false
+        this.paymentError = SHIPPING_NOT_SAVED_MESSAGE
+        return
+      }
       const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.checkoutState?.sponsorId, source: 'checkout' })
       void this.startVippsFromCheckout()
         .catch((err: unknown) => {
@@ -4020,22 +4069,22 @@ export class VioCheckout extends LitElement {
               />
             </div>
             <div class="field">
-              <label for="vio-checkout-phone">Mobilnummer *</label>
+              <label for="vio-checkout-phone">${this.phoneRequired ? 'Mobilnummer *' : 'Mobilnummer (valgfritt)'}</label>
               <input
                 id="vio-checkout-phone"
                 class="phone-input"
                 type="tel"
-                required
+                ?required=${this.phoneRequired}
                 inputmode="tel"
                 autocomplete="tel"
-                placeholder="8 siffer"
+                placeholder=${this.phoneCountry.toUpperCase() === 'NO' ? '8 siffer' : '+46 70 123 45 67'}
                 aria-invalid=${this.phoneError ? 'true' : 'false'}
                 .value=${this.form.phone ?? ''}
                 @input=${(e: InputEvent) =>
                   this.onFieldChange('phone', (e.target as HTMLInputElement).value)}
               />
               ${this.phoneError
-                ? html`<div class="field-error" role="alert">Skriv et norsk mobilnummer (8 siffer)</div>`
+                ? html`<div class="field-error" role="alert">Skriv et gyldig mobilnummer (med landskode, f.eks. +46, hvis det ikke er norsk)</div>`
                 : ''}
             </div>
             <div class="field">

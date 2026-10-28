@@ -34,7 +34,7 @@ beforeEach(() => {
     this.selectedShipping = RATE.id
     this.shippingsReadyFor = this.embedSession()
   })
-  vi.spyOn(manager, 'updateShippingsBySupplier').mockResolvedValue(null)
+  vi.spyOn(manager, 'updateShippingsBySupplier').mockResolvedValue({ cart_id: 'cart-1' })
   // The brand has Express on: the checkout pays standard all the same.
   vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(true)
   vi.spyOn(manager, 'resumeKlarnaReturn').mockResolvedValue(undefined)
@@ -129,11 +129,63 @@ describe('Vipps in the checkout: the standard path', () => {
     const el = await openWith(['Vipps'], { ...FULL, phone: '1234' })
     manager.selectPaymentMethod('vipps')
     await renderCycles(el)
-    expect(shadowText(el)).toContain('Skriv et norsk mobilnummer (8 siffer)')
+    expect(shadowText(el)).toContain('Skriv et gyldig mobilnummer')
     expect(phoneInput(el)!.getAttribute('aria-invalid')).toBe('true')
     expect(payCta(el)!.disabled).toBe(true)
     await el.onPay('vipps')
     expect(start).not.toHaveBeenCalled()
+  })
+
+  it('a delivery that cannot be saved on the cart starts no payment, and says so', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const failure of ['rejects', 'null', 'no-supplier'] as const) {
+      if (failure === 'rejects') manager.updateShippingsBySupplier.mockRejectedValueOnce(new Error('503'))
+      if (failure === 'null') manager.updateShippingsBySupplier.mockResolvedValueOnce(null)
+      const el = await openWith(['Vipps'], FULL)
+      manager.selectPaymentMethod('vipps')
+      await renderCycles(el)
+      if (failure === 'no-supplier') {
+        el.shippingsAttempted = true // the stubbed load would put RATE back on the next state change
+        el.availableShippingsList = [{ ...RATE, supplierId: undefined }]
+      }
+      await el.onPay('vipps')
+      expect(start, failure).not.toHaveBeenCalled()
+      expect(el.paymentError, failure).toBe('Kunne ikke lagre fraktmetoden. Prøv igjen.')
+      expect(el.vippsLoading).toBe(false)
+      expect(document.querySelector('.vio-redirect-overlay')).toBeNull()
+      unmountAll()
+      manager.state = null
+    }
+  })
+
+  it('a foreign number with its +prefix is fine for Vipps', async () => {
+    const start = vi.spyOn(manager, 'startVippsPayment').mockResolvedValue({ payment_url: 'https://pay-mt.vipps.no/x' })
+    const el = await openWith(['Vipps'], { ...FULL, phone: '+46 70 123 45 67' })
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    expect(shadowText(el)).not.toContain('Skriv et gyldig mobilnummer')
+    await el.onPay('vipps')
+    expect(start).toHaveBeenCalledTimes(1)
+  })
+
+  it('the mobile is optional for any other method: it never gates their pay button', async () => {
+    vi.spyOn(manager, 'getStripeMode').mockResolvedValue('link')
+    const startStripe = vi.spyOn(manager, 'startStripePayment').mockResolvedValue({})
+    const { phone: _omit, ...noPhone } = FULL
+    const el = await openWith(['Stripe', 'Vipps'], noPhone)
+    el.stripeMode = 'link'
+    manager.selectPaymentMethod('stripe')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Mobilnummer (valgfritt)')
+    expect(payCta(el)!.disabled).toBe(false)
+    await el.onPay('stripe')
+    expect(startStripe).toHaveBeenCalledTimes(1)
+    // Switching to Vipps makes it required.
+    manager.selectPaymentMethod('vipps')
+    await renderCycles(el)
+    expect(shadowText(el)).toContain('Mobilnummer *')
+    expect(payCta(el)!.disabled).toBe(true)
   })
 
   it('a start the gateway refuses shows the shopper a sentence, not the gateway text (2026-10-09)', async () => {

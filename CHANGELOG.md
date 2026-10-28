@@ -52,11 +52,19 @@ and *when*, and links there.
 
   `COLLECTS_OWN_ADDRESS` no longer lists Vipps. See
   [README → Two Vipps paths](README.md#the-hand-over-to-vipps-028).
-- **«Mobilnummer» (required) in the checkout's address form.** It takes a Norwegian mobile:
-  8 digits, optional +47/0047, spaces allowed. Any other value shows «Skriv et norsk
-  mobilnummer (8 siffer)» and keeps the pay button disabled. It is sent as `phone` (the 8 digits)
-  + `phone_code: '47'` on the shipping and billing address of every method that takes our form
-  (Vipps, Stripe, Adyen, Klarna). `CheckoutAddress.phone` is new.
+- **«Mobilnummer» in the checkout's address form.** It is required only for the standard Vipps
+  payment, and optional for every other method; it never blocks their buttons or widgets.
+  - It accepts any market's number. A `+`/`00` prefix sets the calling code; without one, the
+    shipping country does (NO 47, SE 46, DK 45, FI 358, DE 49, GB 44…), falling back to the
+    page's country. A trunk 0 is dropped.
+  - A number that cannot be read shows «Skriv et gyldig mobilnummer…».
+  - It is sent as `phone` (national digits) + `phone_code` (digits, no plus) on the shipping and
+    billing address of every method that takes our form. `CheckoutAddress.phone` is new.
+- **The checkout's Vipps refuses to start without the delivery saved.** If the chosen rate cannot
+  be saved on the cart, the Vipps or Stripe-link payment does not start and the checkout says
+  «Kunne ikke lagre fraktmetoden. Prøv igjen.». This covers a failed save and a rate without a
+  supplier. `startVippsPayment(…, { express: false })` also throws before creating anything when
+  the address is incomplete or has no usable mobile.
 
 ### Fixed
 - **No checkout and no payment for an empty cart or a total of 0 kr.** `Vio.checkout.open()`
@@ -97,7 +105,17 @@ and *when*, and links there.
   payments, and must carry the address `phone`/`phone_code` through to the order. Until that is
   deployed, check a QA order to confirm the phone arrives.
 - Hosts that pre-fill the checkout form through `Vio.checkout.setAddress()` should include
-  `phone`, or the shopper has to type it.
+  `phone`, or the shopper has to type it when paying with Vipps. Other methods do not need it.
+- **The cart's Vipps button now opens the checkout through `vio:checkout-open`**, with
+  `paymentMethod: 'vipps'`. A host without a handler for that event loses direct Vipps from the
+  cart. The `vio:payment-redirect-*` events with `source: 'cart'` are gone; those with
+  `'detail'` and `'checkout'` remain.
+- **`startVippsPayment(sponsorId, form, { express: false })` writes the full address**, including
+  the mobile, to the checkout's shipping and billing address before it creates the payment.
+  Without the flag, or with `express: true`, nothing changes.
+- `Vio.checkout.open()` throws on a cart that totals 0, as well as on an empty one.
+- The «Lagt i handlekurven» toast is on by default. Use `<vio-product-detail no-added-toast>` to
+  turn it off.
 
 ## 0.30.0 — 2026-10-27
 

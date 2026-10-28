@@ -62,17 +62,19 @@ describe('the size picker is inside the buy zone', () => {
     const kids = [...buy.children].map((c) => c.className)
     expect(kids[0]).toContain('buy-options')
     expect(kids.findIndex((k) => k.includes('buy-vipps'))).toBeGreaterThan(0)
-    // The pinned zone's box starts after name, price and stock: sliding up it
-    // can cover the description, never them.
+    // The zone a host can pin starts after name, price and stock: sliding up
+    // it can cover the description, never them. «Frakt fra …» sits in it,
+    // right under the sizes.
     const purchase = q(el, '.info > .purchase')!
     expect(purchase.contains(buy)).toBe(true)
-    for (const sel of ['.name', '.price-row', '.stock', '.delivery-note']) {
+    for (const sel of ['.name', '.price-row', '.stock']) {
       const node = q(el, sel)
       if (node) expect(purchase.contains(node), sel).toBe(false)
     }
-    // …and the pinned bar is still the buy zone on desktop.
+    expect(buy.querySelector('.delivery-note')).not.toBeNull()
+    // …and pinning, when the host asks for it, applies to the buy zone.
     const css = (VioProductDetail as any).styles.cssText as string
-    expect(css).toMatch(/@media \(min-width: 601px\)[\s\S]*\.buy \{[\s\S]*position: var\(--vio-detail-buy-position, sticky\)/)
+    expect(css).toMatch(/\.buy \{[\s\S]*position: var\(--vio-detail-buy-position, static\)/)
   })
 })
 

@@ -60,6 +60,26 @@ export class VioProductCarousel extends LitElement {
   /** Currency for product prices. */
   @property({ type: String }) currency = 'NOK'
   /**
+   * `carousel` (default: one row that scrolls sideways) or `list` (the cards
+   * one under the other, full width, like products inside an article). Unset
+   * = the theme's `carouselLayout` (`--vio-carousel-layout`).
+   */
+  @property({ type: String, reflect: true }) layout = ''
+  /** Every card shows its product's description (see `descriptions` to write your own). Off by default. */
+  @property({ type: Boolean, attribute: 'show-description' }) showDescription = false
+  /**
+   * The editor's own text per product, over the catalogue's: `{ "<productId>": "text" }`
+   * (attribute: the same as JSON). Shown even without `show-description`; `""`
+   * hides that product's description.
+   */
+  @property({ type: Object }) descriptions: Record<string, string> = {}
+  /** The cards' buy button: `icon` (default), `bar` or `hidden` — see `<vio-product>`. */
+  @property({ type: String, attribute: 'button-style' }) buttonStyle: 'icon' | 'bar' | 'hidden' = 'icon'
+  /** Text of the `bar` button (default «Kjøp»). */
+  @property({ type: String, attribute: 'button-label' }) buttonLabel = 'Kjøp'
+  /** `layout` resolved against the theme on connect. */
+  @state() private resolvedLayout: 'carousel' | 'list' = 'carousel'
+  /**
    * Slot this carousel sits in (ADR-0027). Optional: without it the carousel
    * registers itself as `carousel-N` (its position among the carousels on the
    * page). Set it to name the place yourself or to share one slot between
@@ -206,6 +226,21 @@ export class VioProductCarousel extends LitElement {
       .scroller { padding: 0 var(--vio-space-lg, 24px) 8px; }
     }
     .scroller::-webkit-scrollbar { display: none; }
+    /* layout="list": one card under the other, as wide as the column. */
+    .viewport.list .scroller {
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--vio-carousel-list-gap, 32px);
+      max-width: var(--vio-carousel-list-max-width, 480px);
+      margin: 0 auto;
+      padding: 0 var(--vio-space-lg, 24px);
+      overflow: visible;
+      scroll-snap-type: none;
+    }
+    .viewport.list .scroller vio-product,
+    .viewport.list ::slotted(*),
+    .viewport.list .skeleton { flex: 0 0 auto; width: 100%; }
+    .viewport.list .nav-btn { display: none; }
     ::slotted(*),
     vio-product {
       flex: 0 0 240px;
@@ -277,6 +312,29 @@ export class VioProductCarousel extends LitElement {
       50% { opacity: 0.5; }
     }
   `
+
+  private overrideFor(p: Product): string | undefined {
+    const own = this.descriptions?.[String(p.id)]
+    return typeof own === 'string' ? own : undefined
+  }
+
+  private descriptionFor(p: Product): string {
+    return this.overrideFor(p) ?? cardDescription(p.description)
+  }
+
+  /** The editor's text always shows (unless empty); the catalogue's only with show-description. */
+  private showsDescription(p: Product): boolean {
+    const own = this.overrideFor(p)
+    return own !== undefined ? own.trim() !== '' : this.showDescription
+  }
+
+  override willUpdate(changed: Map<string, unknown>): void {
+    if (changed.has('layout') || !this.hasUpdated) {
+      const fromTheme = typeof getComputedStyle === 'function' ? getComputedStyle(this).getPropertyValue('--vio-carousel-layout') : ''
+      const value = (this.layout || fromTheme).trim().replace(/^["']|["']$/g, '').toLowerCase()
+      this.resolvedLayout = value === 'list' ? 'list' : 'carousel'
+    }
+  }
 
   override connectedCallback(): void {
     super.connectedCallback()
@@ -528,6 +586,10 @@ export class VioProductCarousel extends LitElement {
             name=${p.title}
             price=${displayPrice(p)}
             retailer=${retailer}
+            description=${this.descriptionFor(p)}
+            ?show-description=${this.showsDescription(p)}
+            button-style=${this.buttonStyle}
+            button-label=${this.buttonLabel}
             image-url=${img}
             ?has-variants=${(p.variants?.length ?? 0) > 1}
             .vioSlot=${this.effectiveSlot}
@@ -557,7 +619,7 @@ export class VioProductCarousel extends LitElement {
           ? html`<a class="see-all" href=${this.seeAllHref}>${this.seeAllLabel}</a>`
           : ''}
       </div>
-      <div class="viewport">
+      <div class="viewport ${this.resolvedLayout}">
         <button
           class="nav-btn prev"
           @click=${() => this.scrollByDirection(-1)}
@@ -585,4 +647,17 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-product-carousel': VioProductCarousel
   }
+}
+
+/** The product's description as one plain-text paragraph for a card (the card clamps it). */
+function cardDescription(description: string | null | undefined): string {
+  if (!description) return ''
+  return description
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
 }

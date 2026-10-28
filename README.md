@@ -693,7 +693,7 @@ or on the element (`vio-product-detail { --vio-detail-logo-height: 48px; }`).
 | `detailOptionHeight` / `detailOptionGap` | `--vio-detail-option-height` / `--vio-detail-option-gap` | `36px` / `6px` | Size / option buttons (height is also their min width) |
 | `detailOptionRadius` / `detailOptionWrap` | `--vio-detail-option-radius` / `--vio-detail-option-wrap` | `0` / `wrap` | `nowrap` = one line that scrolls sideways |
 | `detailButtonHeight` / `detailButtonRadius` | `--vio-detail-button-height` / `--vio-detail-button-radius` | `52px` / `0` | Quantity stepper and «Legg i handlekurv» |
-| `detailBuyPosition` / `detailBuyShadow` | `--vio-detail-buy-position` / `--vio-detail-buy-shadow` | phones `static`, desktop `sticky` | Whether the buy zone (Vipps, quantity, add to cart) stays at the bottom of the panel while scrolling |
+| `detailBuyPosition` / `detailBuyShadow` | `--vio-detail-buy-position` / `--vio-detail-buy-shadow` | `static` | `sticky` pins the buy zone (Vipps, quantity, add to cart) to the bottom of the panel while scrolling |
 | `cartWidth` / `checkoutWidth` | `--vio-cart-width` / `--vio-checkout-width` | `440px` | Drawer widths (desktop) |
 | `confirmLogoHeight` / `confirmTitleSize` / `confirmCheckBg` | `--vio-confirm-logo-height` / `--vio-confirm-title-size` / `--vio-confirm-check-bg` | `40px` / `24px` / green | The confirmation |
 | `redirectBg` / `redirectSpinner` | `--vio-redirect-bg` / `--vio-redirect-spinner` | translucent white / Vipps orange | The «Åpner Vipps …» overlay |
@@ -713,7 +713,8 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
   (`delivery-shipping`, `delivery-withdrawal`), `stock`, `buy`, `buy-options`, `option-group`,
   `option-label`, `option-chosen`, `option-prompt`, `options`, `option` (+ `option-selected`),
   `buy-pending`, `buy-vipps`, `vipps-note`, `quantity-row`, `add-to-cart`, `seller-note`,
-  `seller-terms`, `seller-refund`, `description`, `added-toast` (`added-toast-checkout`,
+  `seller-terms`, `seller-refund`, `description`, `highlights`, `highlight`, `shipping-returns`,
+  `slide`, `image-dots`, `carousel-arrow`, `added-toast` (`added-toast-checkout`,
   `added-toast-continue`).
 - `<vio-cart>`: `cart-shipping`, `cart-total`.
 - `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`.
@@ -723,15 +724,51 @@ vio-product-detail::part(add-to-cart) { letter-spacing: 0; text-transform: none;
 vio-product-detail::part(option-selected) { background: #2b2b2b; }
 ```
 
-**The detail's order:** the selling brand top left; the main image; the thumbnails;
-name, price, «Frakt fra X · 14 dagers angrerett», stock; then, **on phones**, the buy zone —
-the sizes (none preselected; every buy button asks «Velg størrelse» first), **Vipps first**
-(when the channel has it), quantity + «Legg i handlekurv», then the other ways to pay, and under them
-«Du handler direkte hos {brand}.» (the product's brand, never the article's) with links to
-the brand's «Kjøpsvilkår» and «Angrerett og retur» when it gave them (the sponsor block's
-`termsUrl` / `refundPolicyUrl`, https only, opened in a new tab) — and the
-description; **on desktop**, the description first and the buy zone pinned at the bottom
-of the panel. The description folds: «Beskrivelse» opens on a tap.
+**The detail's order:** the selling brand top left; the images (thumbnails, or a carousel);
+name and stock on one line, the price; the buy zone — the sizes (none preselected; every buy
+button asks «Velg størrelse» first), «Frakt fra X · 14 dagers angrerett», **Vipps first** (when
+the channel has it), quantity + «Legg i handlekurv», the other ways to pay, and under them «Du
+handler direkte hos {brand}.» (the product's brand, never the article's) with links to the
+brand's «Kjøpsvilkår» and «Angrerett og retur» when it gave them (the sponsor block's
+`termsUrl` / `refundPolicyUrl`, https only, new tab); the brand's promises; «Beskrivelse»; and
+«Frakt & retur». The same order on every screen.
+
+### Options of the detail and the product cards (0.32)
+
+Every one is off or as before unless the host sets it: per element (attribute), or for the
+whole page through `applyVioTheme` (theme key → custom property). The element wins.
+
+**`<vio-product-detail>`**
+
+| Attribute | Theme key | Values | What |
+|---|---|---|---|
+| `gallery` | `detailGallery` | `thumbs` (default) · `carousel` | `carousel`: every photo in one swipeable row with a dot per photo, no thumbnails — less height. `detailCarouselPeek` (`--vio-detail-carousel-peek`) shows the edge of the next one |
+| `description-mode` | `detailDescriptionMode` | `preview` (default) · `folded` · `open` | «Beskrivelse»: the first lines fading out + «Les mer» (`detailDescriptionPreviewLines`, `3`); only the heading until a tap; or all of it |
+| `highlights` | — | `[{ icon, title, text }]` (JSON) | The brand's promises under the buy zone. By default the brand's own (dashboard Settings → Brand, sponsor block `highlights`); this list replaces them on the page. Icons: `plane heart shirt truck return leaf star shield mailbox home pin clock`, or an image URL. `detailHighlightsDisplay: 'none'` hides the strip |
+| `delivery-time` | — | text, e.g. `2-5 virkedager` | «Leveringstid …» in «Frakt & retur» for a brand whose rates do not say it (each rate's own text in Commerce — «Leveringstid 1-5 dager» — wins) |
+| `carrier-logos` | — | `{ "Bring": "https://…" }` (JSON) | Carrier logos by the name the rate starts with («Bring - Pakke i postkasse»), for rates without their own logo in Commerce (`logo_url`, which wins); otherwise a line icon by the kind of delivery |
+| — | `detailShippingReturnsDisplay` | `block` (default) · `none` | «Frakt & retur»: one row per carrier (logo or icon, carrier, how it delivers, price), the delivery time, the right of withdrawal and the brand's pages |
+
+The sheet closes with a pull down from its top bar, or from anywhere while its content is at the top.
+
+**`<vio-product-carousel>`** (and its cards, `<vio-product>`)
+
+| Attribute | Theme key | Values | What |
+|---|---|---|---|
+| `layout` | `carouselLayout` | `carousel` (default) · `list` | `list`: one card under the other, as wide as the column (`--vio-carousel-list-max-width`, `480px`) |
+| `show-description` | — | boolean | Each card shows its product's description (`cardDescriptionLines`, `4`) |
+| `descriptions` | — | `{ "<productId>": "text" }` (JSON) | The editor's own text for a product, over the catalogue's — shown even without `show-description`; `""` hides that one |
+| `button-style` | — | `icon` (default) · `bar` · `hidden` | The buy button: the round bag on the image, a full-width «Kjøp» bar under the price (as the Vev card), or none. Both add to the cart, or open the product when it has sizes |
+| `button-label` | — | text, default `Kjøp` | The bar's text («Kjøp · 2» once two are in the cart) |
+
+Card look, by theme key (custom property): `cardFont`, `cardBorder`, `cardImageAspect`,
+`cardImageFit`, `cardImageBg`, `cardImagePadding`, `cardMetaPadding`, `cardPriceFont`,
+`cardAccent`, `cardBarRadius`, `cardDescriptionLines`, `cardRetailerOrder` (`-1` lifts the seller
+line above the name). CSS only: `--vio-card-border-hover-color`, `--vio-card-add-size`,
+`--vio-card-add-icon-size`, `--vio-card-brand-{size,tracking,weight,color,gap}`,
+`--vio-card-name-{font,size,weight,gap}`, `--vio-card-price-{size,weight,gap}`,
+`--vio-card-retailer-{display,size,tracking,weight,color,margin}`,
+`--vio-card-description-{size,color,gap}`, `--vio-card-accent-text`.
 
 ### The hand-over to Vipps (0.28)
 

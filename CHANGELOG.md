@@ -14,6 +14,41 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **Options for the product detail** (README → *Options of the detail and the product cards*):
+  `gallery="carousel"` (every photo in one swipeable row with dots, no thumbnails),
+  `description-mode` (`preview` · `folded` · `open`), `highlights`, `delivery-time`,
+  `carrier-logos`; theme keys `detailGallery`, `detailCarouselPeek`, `detailDescriptionMode`,
+  `detailDescriptionPreviewLines`, `detailHighlightsDisplay`, `detailShippingReturnsDisplay`.
+- **The brand's promises** under the buy zone (icon, title, line of text — up to three), from the
+  sponsor block's `highlights` (dashboard Settings → Brand) unless the host passes its own.
+- **«Frakt & retur»** fold after «Beskrivelse»: one row per carrier (its logo from Commerce's
+  `logo_url`, or `carrier-logos`, or a line icon by the kind of delivery), how it delivers, the
+  price; the delivery time the brand wrote on the rate («Leveringstid 1-5 dager»); the right of
+  withdrawal and the brand's pages.
+- **Product cards:** `<vio-product-carousel layout="list">` (one under the other),
+  `show-description` / `descriptions` (the catalogue's text or the editor's own per product),
+  `button-style` (`icon` · `bar` · `hidden`) and `button-label` (the Vev card's «Kjøp» bar); card
+  look through theme keys `card*` and `--vio-card-*`.
+- `commerce.channel.product.getShippingRates` returns each rate's `description` and `logoUrl`.
+
+### Changed
+- **The detail's order is the same on every screen**: sizes first in the buy zone, «Frakt fra …»
+  under them, stock on the name's line, «Beskrivelse» at the very bottom. The buy zone no longer
+  pins itself on desktop (`detailBuyPosition: 'sticky'` brings that back).
+- **«Beskrivelse» shows a preview** (the first three lines and «Les mer») instead of being folded
+  shut. `description-mode="folded"` keeps the old behaviour.
+- **The sheets close with a pull down from anywhere** while their content is at the top, not only
+  from the grab bar or the top bar (detail, cart, checkout).
+
+### ⚠️ Upgrade notes
+- Rates are asked with `logo_url`; a gateway without the field is asked again without it once
+  (and not again on that page), so the rates never go missing over a logo.
+- A host that styled `details.description-block` for «Beskrivelse» now gets
+  `.description-preview` (`part="description"` unchanged).
+
 ## 0.31.0 — 2026-10-28
 
 ### Added

@@ -73,6 +73,13 @@ export interface SponsorCommerceBlock {
   paymentMethods?: string[]
 }
 
+/** One of a brand's promises («Rask levering» / «2-5 virkedager»), with a line icon of the SDK's set. */
+export interface SponsorHighlight {
+  icon: string
+  title: string
+  text?: string | null
+}
+
 export interface Sponsor {
   id: number
   name: string
@@ -85,6 +92,8 @@ export interface Sponsor {
   termsUrl?: string | null
   /** The brand's returns / refund policy page. */
   refundPolicyUrl?: string | null
+  /** The brand's promises (Settings → Brand): up to three, shown under the buy zone of the product detail. */
+  highlights?: SponsorHighlight[] | null
   commerce: SponsorCommerceBlock
 }
 

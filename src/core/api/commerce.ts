@@ -147,6 +147,43 @@ export const GET_PRODUCT_SHIPPING = /* GraphQL */ `
         product_shipping {
           id
           name
+          description
+          default
+          shipping_country {
+            country
+            price {
+              amount
+              amount_incl_taxes
+              currency_code
+            }
+          }
+        }
+      }
+    }
+  }
+`
+
+/** The same, with the carrier logo of each rate (a gateway without `logo_url` refuses it: see getShippingRates). */
+export const GET_PRODUCT_SHIPPING_WITH_LOGO = /* GraphQL */ `
+  query GetProductShippingWithLogo(
+    $productIds: [Int!]
+    $useCache: Boolean!
+    $currency: String
+    $shippingCountryCode: String
+  ) {
+    Channel {
+      GetProductsByIds(
+        product_ids: $productIds
+        useCache: $useCache
+        currency: $currency
+        shipping_country_code: $shippingCountryCode
+      ) {
+        id
+        product_shipping {
+          id
+          name
+          description
+          logo_url
           default
           shipping_country {
             country
@@ -170,6 +207,22 @@ export interface ProductShippingRate {
   price: number
   currency: string
   default: boolean
+  /** What the brand wrote for the rate — in practice its delivery time («Leveringstid 1-5 dager»); '' when none. */
+  description: string
+  /** The carrier's logo for the rate (https), '' when none. */
+  logoUrl: string
+}
+
+/**
+ * Whether the gateway knows `ProductShipping.logo_url` (2026-10-28): unknown
+ * until the first answer, `false` after a gateway refused the field — then
+ * the rates are asked without it for the rest of the page, so an SDK newer
+ * than its gateway never loses the rates over a logo.
+ */
+let gatewayHasShippingLogo: boolean | undefined
+/** Tests only. */
+export function resetShippingLogoSupport(): void {
+  gatewayHasShippingLogo = undefined
 }
 
 export interface GetProductsByIdsOptions {
@@ -238,15 +291,27 @@ class ChannelProduct {
     options: { currency?: string | null; country?: string | null } = {},
   ): Promise<ProductShippingRate[] | null> {
     const country = options.country || getGlobalCountryCode()
+    const variables = {
+      productIds: [productId],
+      useCache: false,
+      currency: options.currency ?? getGlobalCurrency(),
+      shippingCountryCode: country,
+    }
+    type Answer = { Channel: { GetProductsByIds: Array<{ id: number; product_shipping?: unknown }> } }
     try {
-      const data = await this.client.request<{
-        Channel: { GetProductsByIds: Array<{ id: number; product_shipping?: unknown }> }
-      }>(GET_PRODUCT_SHIPPING, {
-        productIds: [productId],
-        useCache: false,
-        currency: options.currency ?? getGlobalCurrency(),
-        shippingCountryCode: country,
-      })
+      let data: Answer
+      if (gatewayHasShippingLogo === false) {
+        data = await this.client.request<Answer>(GET_PRODUCT_SHIPPING, variables)
+      } else {
+        try {
+          data = await this.client.request<Answer>(GET_PRODUCT_SHIPPING_WITH_LOGO, variables)
+          gatewayHasShippingLogo = true
+        } catch (err) {
+          if (!/logo_url/.test(String((err as Error)?.message ?? ''))) throw err
+          gatewayHasShippingLogo = false
+          data = await this.client.request<Answer>(GET_PRODUCT_SHIPPING, variables)
+        }
+      }
       const product = data.Channel?.GetProductsByIds?.[0]
       if (!product) return null
       return shippingRatesFor(product.product_shipping, country)
@@ -279,6 +344,8 @@ export function shippingRatesFor(
       price: amount,
       currency: String(price?.currency_code ?? ''),
       default: s.default === true,
+      description: typeof s.description === 'string' ? s.description.trim() : '',
+      logoUrl: httpsUrlOrEmpty(s.logo_url ?? s.logoUrl),
     })
   }
   return out.sort((a, b) => a.price - b.price)
@@ -311,4 +378,11 @@ export class CommerceClient {
 
 export function createCommerceClient(options: CommerceClientOptions): CommerceClient {
   return new CommerceClient(options)
+}
+
+/** An https URL as given, or '' (http, javascript: and anything else are dropped). */
+function httpsUrlOrEmpty(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const url = value.trim()
+  return /^https:\/\/[^\s]+$/i.test(url) ? url : ''
 }

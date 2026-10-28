@@ -14,6 +14,21 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Changed
+- **The product detail no longer picks a size for the shopper.** Only an option with a single
+  value is preselected. The chosen value is shown beside the option's name («Størrelse: M») and
+  on its pill. Every buy button (Vipps, «Legg i handlekurv», «Kjøp nå», Stripe, Klarna, Apple Pay)
+  checks for a missing choice first: it shows «Velg størrelse» (or «Velg farge», etc.) and adds or
+  pays nothing. «Få igjen — N stk» now counts only the variant actually chosen. Before a size is
+  chosen it says «På lager» if any size is in stock.
+
+### ⚠️ Upgrade notes
+- The detail's buy buttons stay enabled before a size is chosen. Tapping one shows the prompt
+  instead of buying. A host that clicks `.add-to-cart` from a script needs a value in every option
+  first.
+
 ## 0.30.0 — 2026-10-27
 
 ### Added

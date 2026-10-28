@@ -153,6 +153,8 @@ export class VioProductDetail extends LitElement {
   @state() private isLoading = false
   @state() private fetchError = ''
   @state() private selectedOptions: SelectedOptions = {}
+  /** The option a buy button asked for and the shopper has not chosen yet ('' = none asked). */
+  @state() private selectionPrompt = ''
   @state() private quantity = 1
   @state() private activeImageIndex = 0
   /** The thumbnail row is wider than its box (arrows shown with a mouse). */
@@ -585,6 +587,17 @@ export class VioProductDetail extends LitElement {
       background: repeating-linear-gradient(-45deg, #fafafa, #fafafa 5px, #f0f0f0 5px, #f0f0f0 10px);
     }
     .option-pill.unavailable:hover { border-color: var(--vio-color-border, #e5e5e5); }
+    /* The value chosen, beside the option's name: «Størrelse: M». */
+    .option-chosen { color: var(--vio-color-text, #0a0a0a); font-weight: 700; }
+    /* A buy button was tapped before choosing: say what is missing. */
+    .option-prompt {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--vio-color-accent, #c14a3b);
+    }
+    .option-group.needs-choice .option-pill:not(.unavailable) {
+      border-color: var(--vio-color-accent, #c14a3b);
+    }
 
     /* The buy zone: Vipps first, then quantity + add to cart, then the other
        ways to pay. --vio-detail-buy-position: sticky pins it to the bottom of
@@ -935,6 +948,7 @@ export class VioProductDetail extends LitElement {
         this.sellerName = null
         this.sellerSettled = false
         this.selectedOptions = {}
+        this.selectionPrompt = ''
         this.quantity = 1
         this.activeImageIndex = 0
         this.fetchError = ''
@@ -1027,14 +1041,18 @@ export class VioProductDetail extends LitElement {
     }
 
     if (this.product) {
-      // Auto-select the first value of each option (so qty + add fire correctly
-      // even when the user doesn't actively pick).
+      // Nothing is chosen for the shopper: an option with a single value is
+      // the only one preselected (there is nothing to choose). A size picked
+      // for them was bought without being looked at — the first size, the
+      // wrong one (Mote & Livsstil, 2026-10-28). The buy buttons ask for the
+      // missing choice instead (requireSelection).
       const initial: SelectedOptions = {}
       for (const opt of this.product.options ?? []) {
         const values = normalizeValues(opt.values)
-        if (values.length > 0) initial[opt.name] = values[0]!
+        if (values.length === 1) initial[opt.name] = values[0]!
       }
       this.selectedOptions = initial
+      this.selectionPrompt = ''
       // Pre-prepare Apple Pay so its sheet can open synchronously on tap
       // (Apple blocks it otherwise). The button only shows if Apple Pay actually
       // works (real Stripe account + domain registered for Apple Pay).
@@ -1322,23 +1340,86 @@ export class VioProductDetail extends LitElement {
     return price?.compare_at_incl_taxes ?? price?.compare_at ?? null
   }
 
+  /** The options the shopper has to choose (those with values), in order. */
+  private choosableOptions(): ProductOption[] {
+    return (this.product?.options ?? []).filter((o) => normalizeValues(o.values).length > 0)
+  }
+
+  /** The first option still without a value, or null when every one is chosen. */
+  private missingOption(): ProductOption | null {
+    return this.choosableOptions().find((o) => !String(this.selectedOptions[o.name] ?? '').trim()) ?? null
+  }
+
+  /**
+   * Units that can be sold. With every option chosen, the chosen variant's;
+   * before that, the most any variant still matching the partial choice has
+   * — so the stepper and «Utsolgt» do not speak for a variant (the first
+   * one) the shopper never picked.
+   */
   private get availableQuantity(): number {
+    if (this.missingOption() && Array.isArray(this.product?.variants) && this.product!.variants.length > 0) {
+      const sel = this.selectedOptions
+      const qtys = this.product!.variants
+        .filter((v) => this.variantMatchesSelection(v, sel))
+        .map((v) => this.variantSellableQty(v))
+      return qtys.length > 0 ? Math.max(0, ...qtys) : 0
+    }
     const v = this.selectedVariant()
     if (v) return this.variantSellableQty(v)
     return this.product?.quantity ?? 0
   }
 
+  /**
+   * «Få igjen — N stk» only for the variant actually chosen: before a size is
+   * picked the count belonged to the first variant, which said «Få igjen» of
+   * a product with plenty of other sizes.
+   */
   private stockLabel(): { text: string; cls: 'in-stock' | 'low-stock' | 'out-of-stock' } {
     const qty = this.availableQuantity
     if (qty <= 0) return { text: 'Utsolgt', cls: 'out-of-stock' }
-    if (qty <= 3) return { text: `Få igjen — ${qty} stk`, cls: 'low-stock' }
+    if (qty <= 3 && !this.missingOption()) return { text: `Få igjen — ${qty} stk`, cls: 'low-stock' }
     return { text: 'På lager', cls: 'in-stock' }
+  }
+
+  /** «Velg størrelse» for a size, «Velg farge» for a colour… */
+  private promptFor(option: ProductOption): string {
+    const name = String(option.name ?? '').trim()
+    if (!name || /^(st(ø|o)rrelse|str\.?|size)$/i.test(name)) return 'Velg størrelse'
+    return `Velg ${name.toLowerCase()}`
+  }
+
+  /**
+   * Every buy button goes through here first: with an option not chosen yet,
+   * nothing is added or paid — the picker says what is missing and comes
+   * into view (it sits right above the buttons, inside the buy zone).
+   */
+  private requireSelection(): boolean {
+    const missing = this.missingOption()
+    if (!missing) {
+      this.selectionPrompt = ''
+      return true
+    }
+    this.selectionPrompt = missing.name
+    void this.updateComplete.then(() => {
+      const group = this.renderRoot.querySelector<HTMLElement>('.option-group.needs-choice')
+      group?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' })
+    })
+    return false
   }
 
   /** Pick an option value. If the exact combination doesn't exist, jump to an
    * in-stock variant that carries the value and adopt its full option map
    * (keeps the selection always resolvable to a real variant). */
   private selectOption(optionName: string, value: string): void {
+    this.applyOption(optionName, value)
+    if (this.selectionPrompt && !this.missingOption()) this.selectionPrompt = ''
+    else if (this.selectionPrompt) this.selectionPrompt = this.missingOption()?.name ?? ''
+    // The chosen variant may have fewer units than the stepper shows.
+    const max = this.availableQuantity
+    if (max > 0 && this.quantity > max) this.quantity = max
+  }
+
+  private applyOption(optionName: string, value: string): void {
     const newSelection = { ...this.selectedOptions, [optionName]: value }
     const exactInStock = this.product?.variants?.find(
       (v) => this.variantMatchesSelection(v, newSelection) && this.variantSellableQty(v) > 0,
@@ -1417,6 +1498,7 @@ export class VioProductDetail extends LitElement {
 
   private async addToCart(): Promise<void> {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.adding = true
     try {
       const variantId = this.addCurrentToCart()
@@ -1447,6 +1529,7 @@ export class VioProductDetail extends LitElement {
    */
   private async buyWithKlarna(): Promise<void> {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.adding = true
     try {
       this.addCurrentToCart()
@@ -1480,6 +1563,7 @@ export class VioProductDetail extends LitElement {
    */
   private buyNow(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
     this.dispatchEvent(
@@ -1504,6 +1588,7 @@ export class VioProductDetail extends LitElement {
 
   private buyWithVipps(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     // Vipps pays the sponsor's WHOLE cart — the checkout is built on the cart,
     // not on this product (see buyNow). Straight to Vipps only when the cart
     // is empty, so what the Vipps page lists is what was tapped; with lines
@@ -1566,6 +1651,7 @@ export class VioProductDetail extends LitElement {
   /** Buy with Stripe — opens the checkout with Stripe preselected. */
   private buyWithStripe(): void {
     if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
     this.dispatchEvent(
@@ -1615,6 +1701,7 @@ export class VioProductDetail extends LitElement {
    */
   private buyWithApplePay(): void {
     if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    if (!this.requireSelection()) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
     if (cartHasLines || this.applePayAmount !== this.unitPrice * this.quantity) {
       this.addCurrentToCart()
@@ -1973,9 +2060,16 @@ export class VioProductDetail extends LitElement {
     return html`${options.map((opt) => {
       const values = normalizeValues(opt.values)
       if (values.length === 0) return ''
+      const chosen = String(this.selectedOptions[opt.name] ?? '').trim()
+      const asked = this.selectionPrompt === opt.name && !chosen
       return html`
-        <div class="option-group" part="option-group">
-          <div class="option-label" part="option-label">${opt.name}</div>
+        <div class="option-group ${asked ? 'needs-choice' : ''}" part="option-group">
+          <div class="option-label" part="option-label">
+            ${opt.name}${chosen ? html`: <span class="option-chosen" part="option-chosen">${chosen}</span>` : ''}
+          </div>
+          ${asked
+            ? html`<div class="option-prompt" part="option-prompt" role="alert">${this.promptFor(opt)}</div>`
+            : ''}
           <div class="option-values" part="options">
             ${values.map((val) => {
               const available = this.isValueAvailable(opt.name, val)

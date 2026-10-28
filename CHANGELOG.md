@@ -14,6 +14,24 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Fixed
+- **One cart per connection.** Every connection of a site (environment + key) shared one stored
+  cart, and every tab adopted what the others wrote: two tabs on two connections (Staging and Prod
+  side by side) could take each other's cart for a moment. Each connection now keeps its own
+  (`vio.cart.v1:<environment>:<hash of the key>` — never the key itself), a tab only listens to
+  its own, and `Vio.init` with another key switches `Vio.cart` to that connection's carts (the
+  first one's come back if the page switches back). An answer that arrives for the connection the
+  page left lands in that connection's cart, silently — never in the new one.
+
+### ⚠️ Upgrade notes
+- The carts kept in the old shared entry move, once, to the first connection that opens with none
+  of its own. Nothing to do.
+- `Vio.cart` is the same object for the whole page, so listeners added to it keep working across a
+  re-init. A host that archived and restored carts per connection itself (Replit's
+  `vioCartConnections`) can rely on this instead.
+
 ## 0.32.0 — 2026-10-28
 
 > First version published to npm since 0.29.0: **0.30.0 and 0.31.0 were never published on their own** — their

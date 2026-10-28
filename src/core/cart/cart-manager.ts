@@ -12,7 +12,7 @@
  * phase B) so the order is born attributed — see `origin-wire.ts`.
  */
 
-import { storageGet, storageSet } from '../safe-storage.js'
+import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import {
   formatPrice,
   getGlobalCountryCode,
@@ -36,7 +36,31 @@ import {
   updateShippingsBySupplier as gqlUpdateShippingsBySupplier,
 } from '../api/cart-queries.js'
 
-const STORAGE_KEY = 'vio.cart.v1'
+/** Where the carts are kept: one entry per connection (see `cartStorageKey`). */
+export const CART_STORAGE_PREFIX = 'vio.cart.v1'
+
+/**
+ * The storage key of the carts of one connection (environment + surface key).
+ * Before 0.33 every connection of a site shared `vio.cart.v1`, and every tab
+ * adopted what the others wrote: two tabs on two connections (Replit's admin,
+ * staging and prod side by side) took each other's cart for a moment. Now each
+ * connection has its own entry and a tab only listens to its own. The scope is
+ * the environment and a short hash of the key — never the key itself. `''`
+ * (no connection yet) is the old shared key.
+ */
+export function cartStorageKey(scope: string): string {
+  return scope ? `${CART_STORAGE_PREFIX}:${scope}` : CART_STORAGE_PREFIX
+}
+
+/** The scope of a connection: `environment:` + an FNV-1a hash of its key (not reversible to the key). */
+export function cartScopeOf(environment: string, apiKey: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < apiKey.length; i++) {
+    h ^= apiKey.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return `${environment || 'production'}:${h.toString(16).padStart(8, '0')}`
+}
 
 export interface CartChangeDetail {
   cartsBySponsor: Map<number, SponsorCartState>
@@ -184,9 +208,29 @@ export class CartManager extends EventTarget {
    * older one landing after a newer optimistic change rolled the line back.) */
   private qtySyncs = new Map<string, QtySync>()
 
-  constructor() {
+  /** The storage key of this connection's carts. */
+  private readonly storageKey: string
+  /**
+   * Whether this is the page's connection now. A manager left behind by a
+   * re-init (another key) still finishes its requests and keeps its own
+   * carts, but says nothing to the page: no `vio:cart-*` events.
+   */
+  private active = true
+
+  constructor(scope = '') {
     super()
+    this.storageKey = cartStorageKey(scope)
     this.cartsBySponsor = this.loadFromStorage()
+    // The carts a site kept in the shared entry before each connection had its
+    // own move, once, to the first connection that opens with none of its own.
+    if (scope && this.cartsBySponsor.size === 0) {
+      const legacy = this.loadFromStorage(CART_STORAGE_PREFIX)
+      if (legacy.size > 0) {
+        this.cartsBySponsor = legacy
+        this.persist()
+        storageRemove('local', CART_STORAGE_PREFIX)
+      }
+    }
     // The carts are shared by every tab of the site through localStorage, but
     // each tab used to read them once, here, and never again: a payment in one
     // tab left the others showing — and adding to — a cart that was already
@@ -196,6 +240,16 @@ export class CartManager extends EventTarget {
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       window.addEventListener('storage', this.onStorage)
     }
+  }
+
+  /** The page's connection is (or is no longer) this one; see `active`. */
+  setActive(active: boolean): void {
+    this.active = active
+  }
+
+  /** Tell the listeners what this connection's carts hold now (after the page switched to it). */
+  announce(): void {
+    this.emit()
   }
 
   private nextSeq(sponsorId: number): number {
@@ -317,7 +371,7 @@ export class CartManager extends EventTarget {
   private emitError(message: string, err?: unknown): void {
     if (typeof console !== 'undefined') console.warn('[CartManager]', message, err ?? '')
     this.dispatchEvent(new CustomEvent('error', { detail: { message } }))
-    if (typeof document !== 'undefined') {
+    if (this.active && typeof document !== 'undefined') {
       document.dispatchEvent(
         new CustomEvent('vio:cart-error', { bubbles: true, detail: { message } }),
       )
@@ -757,7 +811,7 @@ export class CartManager extends EventTarget {
       cart.items = cart.items.filter((i) => i !== item)
       // Choke point de la baja: sale acá y no en la UI para que también
       // cuente cuando el host llama removeItem() por API.
-      if (typeof document !== 'undefined') {
+      if (this.active && typeof document !== 'undefined') {
         document.dispatchEvent(
           new CustomEvent('vio:removed-from-cart', {
             bubbles: true,
@@ -971,7 +1025,7 @@ export class CartManager extends EventTarget {
 
   /** `vio:cart-updated` on `document` — see `CartUpdatedDetail`. */
   private emitCartUpdated(sponsorId: number, source: CartUpdatedDetail['source']): void {
-    if (typeof document === 'undefined') return
+    if (!this.active || typeof document === 'undefined') return
     const cart = this.cartsBySponsor.get(sponsorId)
     const items = (cart?.items ?? []).map((item) => ({ ...item }))
     const detail: CartUpdatedDetail = {
@@ -996,7 +1050,7 @@ export class CartManager extends EventTarget {
    * that changed (`source: 'storage'`); nothing when nothing did.
    */
   private onStorage = (e: StorageEvent): void => {
-    if (e.key !== null && e.key !== STORAGE_KEY) return
+    if (e.key !== null && e.key !== this.storageKey) return
     const stored = this.loadFromStorage()
     const changed: number[] = []
     for (const sponsorId of new Set([...this.cartsBySponsor.keys(), ...stored.keys()])) {
@@ -1089,15 +1143,15 @@ export class CartManager extends EventTarget {
     try {
       const obj: Record<string, SponsorCartState> = {}
       for (const [k, v] of this.cartsBySponsor) obj[String(k)] = v
-      storageSet('local', STORAGE_KEY, JSON.stringify(obj), { memory: false })
+      storageSet('local', this.storageKey, JSON.stringify(obj), { memory: false })
     } catch {
       // A cart that cannot be serialised is not worth an exception.
     }
   }
 
-  private loadFromStorage(): Map<number, SponsorCartState> {
+  private loadFromStorage(key: string = this.storageKey): Map<number, SponsorCartState> {
     try {
-      const raw = storageGet('local', STORAGE_KEY)
+      const raw = storageGet('local', key)
       if (!raw) return new Map()
       const obj = JSON.parse(raw) as Record<string, SponsorCartState>
       const map = new Map<number, SponsorCartState>()

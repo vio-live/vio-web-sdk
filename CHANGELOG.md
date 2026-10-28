@@ -14,7 +14,10 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.35.0 — 2026-10-29
+
+> 0.34.0 was never published on its own: its changes (section order of the product detail and layout tracking,
+> below) ship in this version too.
 
 ### Added
 - **`vippsCartPayment: 'express' | 'checkout'`** (theme key, `--vio-vipps-cart-payment`) and the

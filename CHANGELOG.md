@@ -26,6 +26,10 @@ and *when*, and links there.
 - **The cart drawer shows shipping and the total including it.** It uses the rate chosen on the
   server cart, or the cheapest rate offered. Without a known rate it reads «Frakt: Beregnes i
   kassen» and shows no total (`part="cart-shipping"`, `part="cart-total"`).
+- **«Lagt i handlekurven» after «Legg i handlekurv».** The detail closes and a small toast offers
+  **«Til kassen»** and **«Fortsett å handle»** (`part="added-toast"`). «Til kassen» dispatches
+  `vio:checkout-open` for that brand, the same event the cart's «Til kassen» sends. It does nothing
+  when the cart was emptied in the meantime. The toast closes by itself after 8 s.
 ### Changed
 - **The product detail no longer picks a size for the shopper.** Only an option with a single
   value is preselected. The chosen value is shown beside the option's name («Størrelse: M») and
@@ -58,6 +62,9 @@ and *when*, and links there.
   (it already threw for an empty cart). It now also throws for a cart of 0 kr.
 - Host CSS that placed `::part(option-group)` relative to `::part(buy)` should be checked: the
   option groups are now inside `buy`.
+- A host that already answers `vio:added-to-cart` with its own UI (for example, opening its cart
+  drawer) can turn the new toast off with `<vio-product-detail no-added-toast>`. The toast's
+  «Til kassen» relies on the host's `vio:checkout-open` handler, like the cart's does.
 
 ## 0.30.0 — 2026-10-27
 

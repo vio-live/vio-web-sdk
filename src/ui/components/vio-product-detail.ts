@@ -30,6 +30,9 @@ import { SlotRegistration } from '../slot-registration.js'
 import { toCampaignId } from '../../core/slots.js'
 import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
 
+/** How long «Lagt i handlekurven» stays without a tap. */
+const ADDED_TOAST_MS = 8000
+
 interface SelectedOptions {
   [optionName: string]: string
 }
@@ -78,6 +81,12 @@ export class VioProductDetail extends LitElement {
   @property({ type: String, attribute: 'vio-content-id' }) vioContentId = ''
   /** Per-element override of the content title. */
   @property({ type: String, attribute: 'vio-content-title' }) vioContentTitle = ''
+  /**
+   * No «Lagt i handlekurven» toast after «Legg i handlekurv» — for a host
+   * that answers `vio:added-to-cart` with its own (opening its cart drawer,
+   * say). Off by default: the toast shows.
+   */
+  @property({ type: Boolean, attribute: 'no-added-toast' }) noAddedToast = false
   private readonly slotRegistration = new SlotRegistration(this, 'detail')
   /** What the click that opened the detail carried ('' when nothing), and for which product. */
   private eventSlot = ''
@@ -171,6 +180,13 @@ export class VioProductDetail extends LitElement {
   /** The top bar's logo file is square-ish: a mark, so its name goes beside it. */
   @state() private logoSquare = false
   @state() private adding = false
+  /**
+   * «Lagt i handlekurven» after an add, with «Til kassen» and «Fortsett å
+   * handle» (Mote & Livsstil, 2026-10-28: an add closed the detail and said
+   * nothing). Outlives the detail: the brand and attribution of the add.
+   */
+  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown> } | null = null
+  private addedToastTimer: ReturnType<typeof setTimeout> | null = null
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
   /** Payment method names enabled for the sponsor (backend-configured).
@@ -904,6 +920,49 @@ export class VioProductDetail extends LitElement {
         background: var(--vio-color-surface-muted, #f1f1f1);
       }
     }
+    /* «Lagt i handlekurven»: above the page, below where a thumb reaches. */
+    .added-toast {
+      position: fixed;
+      left: 50%;
+      bottom: max(16px, env(safe-area-inset-bottom));
+      transform: translateX(-50%);
+      z-index: 1102;
+      width: min(420px, calc(100vw - 32px));
+      box-sizing: border-box;
+      padding: 14px 16px;
+      background: var(--vio-color-surface, #fff);
+      color: var(--vio-color-text, #0a0a0a);
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+      border-radius: var(--vio-radius-lg, 8px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+      font-family: var(--vio-font-sans, -apple-system, sans-serif);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .added-toast-text { font-size: 14px; font-weight: 600; }
+    .added-toast-text::before { content: '✓ '; color: #2e7d32; }
+    .added-toast-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .added-toast-actions button {
+      min-height: 44px;
+      padding: 0 12px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: var(--vio-detail-button-radius, 0);
+    }
+    .added-toast-checkout {
+      background: var(--vio-color-text, #0a0a0a);
+      color: var(--vio-color-text-on-primary, #fff);
+      border: 1px solid var(--vio-color-text, #0a0a0a);
+    }
+    .added-toast-continue {
+      background: transparent;
+      color: var(--vio-color-text, #0a0a0a);
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+    }
+
     .error {
       padding: 80px 24px;
       text-align: center;
@@ -920,6 +979,8 @@ export class VioProductDetail extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = null
     document.removeEventListener('vio:product-click', this.boundProductClick)
     this.slotRegistration.clear()
     this.bottomSheet.disconnect()
@@ -984,7 +1045,10 @@ export class VioProductDetail extends LitElement {
     }
   }
 
-  show(): void { this.open = true }
+  show(): void {
+    this.open = true
+    this.hideAddedToast()
+  }
   close(): void {
     this.open = false
     // Reset state after the slide-out animation completes.
@@ -1581,10 +1645,53 @@ export class VioProductDetail extends LitElement {
           },
         }),
       )
+      this.showAddedToast()
       this.close()
     } finally {
       this.adding = false
     }
+  }
+
+  /** The toast after an add; it goes by itself after a while. */
+  private showAddedToast(): void {
+    if (this.noAddedToast) return
+    this.addedToast = {
+      sponsorId: this.sponsorId,
+      detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
+    }
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = setTimeout(() => this.hideAddedToast(), ADDED_TOAST_MS)
+  }
+
+  private hideAddedToast(): void {
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = null
+    this.addedToast = null
+  }
+
+  /** «Til kassen»: the checkout of the brand just added to — the host opens it on `vio:checkout-open`, as from the cart. */
+  private toastToCheckout(): void {
+    const toast = this.addedToast
+    this.hideAddedToast()
+    if (!toast) return
+    const cart = Vio.cart.getCart(toast.sponsorId)
+    const total = (cart?.items ?? []).reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
+    // Nothing to pay for (removed meanwhile, or 0 kr): no checkout.
+    if (!cart || cart.items.length === 0 || !(total > 0)) return
+    this.dispatchEvent(new CustomEvent('vio:checkout-open', { bubbles: true, composed: true, detail: toast.detail }))
+  }
+
+  private renderAddedToast() {
+    if (!this.addedToast) return nothing
+    return html`
+      <div class="added-toast" part="added-toast" role="status" aria-live="polite">
+        <div class="added-toast-text">Lagt i handlekurven</div>
+        <div class="added-toast-actions">
+          <button class="added-toast-checkout" part="added-toast-checkout" @click=${this.toastToCheckout}>Til kassen</button>
+          <button class="added-toast-continue" part="added-toast-continue" @click=${this.hideAddedToast}>Fortsett å handle</button>
+        </div>
+      </div>
+    `
   }
 
   /**
@@ -1922,6 +2029,7 @@ export class VioProductDetail extends LitElement {
 
         ${this.renderBody()}
       </div>
+      ${this.renderAddedToast()}
     `
   }
 

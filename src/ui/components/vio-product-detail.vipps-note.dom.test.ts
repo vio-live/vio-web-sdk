@@ -3,10 +3,14 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { mount, unmountAll, settle } from '../test-harness.js'
 import { Vio } from '../../core/client.js'
 import { VioProductDetail } from './vio-product-detail.js'
+import { formatPrice } from '../../core/types.js'
 
 /**
  * Under «Kjøp nå med Vipps», when it goes straight to the app (Express): one
- * line saying what happens there (Mote & Livsstil, 2026-10-28).
+ * line saying what happens there (Mote & Livsstil, 2026-10-28). With lines
+ * already in the brand's cart the button pays the WHOLE cart (2026-10-29), so
+ * the line says what will be paid: «Betaler hele handlekurven · n varer ·
+ * total», n and total including this product at the chosen quantity.
  */
 
 const LINE = 'Vipps fyller inn navn og adresse – du godkjenner og betaler i appen'
@@ -68,10 +72,37 @@ describe('the line under the Vipps button', () => {
     expect(note(el)).toBeNull()
   })
 
-  it('lines already in the cart: no line (the checkout opens first)', async () => {
+  it('lines already in the cart: what will be paid — every unit with this one, and the total', async () => {
+    methods([{ name: 'Vipps' }])
+    vi.spyOn(Vio.cart, 'getCart').mockReturnValue({ sponsorId: 4, currency: 'NOK', items: [{ unitPrice: 1299, quantity: 2 }] } as any)
+    const el = await open()
+    // 2 in the cart + 1 of this product; 2 × 1299 + 699.
+    expect(note(el)).toBe(`Betaler hele handlekurven · 3 varer · ${formatPrice(3297, 'NOK')}`)
+    expect(el.shadowRoot!.querySelector('.buy-vipps')!.nextElementSibling?.className).toContain('vipps-note')
+    // The quantity counts.
+    el.quantity = 2
+    await settle(el)
+    expect(note(el)).toBe(`Betaler hele handlekurven · 4 varer · ${formatPrice(3996, 'NOK')}`)
+  })
+
+  it('the line follows the cart: an add elsewhere (a change event) counts it again', async () => {
+    methods([{ name: 'Vipps', config: [{ name: 'express', value: 'true' }] }])
+    let items: Array<{ unitPrice: number; quantity: number }> = []
+    vi.spyOn(Vio.cart, 'getCart').mockImplementation(() => ({ sponsorId: 4, currency: 'NOK', items }) as any)
+    const el = await open()
+    expect(note(el)).toBe(LINE)
+    items = [{ unitPrice: 500, quantity: 1 }]
+    Vio.cart.dispatchEvent(new CustomEvent('change', { detail: { cartsBySponsor: new Map(), itemCount: 1 } }))
+    await settle(el)
+    expect(note(el)).toBe(`Betaler hele handlekurven · 2 varer · ${formatPrice(1199, 'NOK')}`)
+  })
+
+  it('vipps-cart-payment="checkout" and lines in the cart: no line (the checkout opens first)', async () => {
     methods([{ name: 'Vipps' }])
     vi.spyOn(Vio.cart, 'getCart').mockReturnValue({ sponsorId: 4, currency: 'NOK', items: [{ unitPrice: 1, quantity: 1 }] } as any)
     const el = await open()
+    el.setAttribute('vipps-cart-payment', 'checkout')
+    await settle(el)
     expect(note(el)).toBeNull()
   })
 })

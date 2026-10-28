@@ -2,9 +2,11 @@
  * <vio-cart> — slide-in cart drawer, reactively bound to `Vio.cart`.
  *
  * Subscribes to CartManager's `change` events on connect; auto-renders
- * the current multi-sponsor state. Express-only checkout: Apple Pay pays
- * the whole cart in-drawer; the Klarna button dispatches `vio:checkout-open`
- * (express) for the host to open <vio-checkout>.
+ * the current multi-sponsor state. «Til kassen» dispatches `vio:checkout-open`
+ * for the host to open <vio-checkout>; Apple Pay pays the whole cart
+ * in-drawer; Vipps pays the sponsor's whole cart with Vipps Express
+ * (`vipps-cart-payment="checkout"` opens the checkout instead); the Klarna
+ * button dispatches `vio:checkout-open` (express).
  *
  * For the visual demo without `Vio.init`, the CartManager works standalone
  * (state is purely local + localStorage).
@@ -13,6 +15,8 @@
 import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
+import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
+import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
 import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
@@ -68,6 +72,13 @@ export class VioCart extends LitElement {
   @property({ type: String }) heading = 'Handlekurv'
   @property({ type: String, attribute: 'empty-label' }) emptyLabel = 'Handlekurven er tom'
   @property({ type: String, attribute: 'subtotal-label' }) subtotalLabel = 'Sum'
+  /**
+   * What the Vipps button does: `express` (default) — Vipps Express for the
+   * sponsor's whole cart, straight to the app — or `checkout` — our checkout
+   * with Vipps preselected (`vio:checkout-open`, as in 0.31–0.34). Unset =
+   * the theme's `vippsCartPayment` (`--vio-vipps-cart-payment`).
+   */
+  @property({ type: String, attribute: 'vipps-cart-payment' }) vippsCartPayment = ''
 
   @state() private carts: Map<number, SponsorCartState> = new Map()
   @state() private itemCount = 0
@@ -79,6 +90,8 @@ export class VioCart extends LitElement {
   /** Asking for the brand's methods: a neutral placeholder instead of every method's button (see methodEnabled). */
   @state() private methodsLoading = false
   @state() private vippsOfficial = false
+  /** A Vipps payment is being started from here: one at a time. */
+  private vippsStarting = false
   /** Whether the method lookup has been attempted — see boundOnCartChange. */
   private paymentMethodsAttempted = false
   /** Set after an Apple Pay express purchase — switches the drawer to the
@@ -709,7 +722,6 @@ export class VioCart extends LitElement {
     )
   }
 
-  /** Vipps — opens the checkout with Vipps preselected. */
   /**
    * Open the checkout without preselecting a method.
    *
@@ -732,21 +744,80 @@ export class VioCart extends LitElement {
   }
 
   /**
-   * Vipps from the cart: the checkout opens with Vipps preselected — the
-   * standard path, where our form collects name, address, mobile and the
-   * delivery (with its price) before paying (Mote & Livsstil, 2026-10-28).
-   * It no longer starts Express from here: Express is the product detail's
-   * «Kjøp nå med Vipps» only.
+   * Vipps from the cart (2026-10-29: «el botón negro va con el nuestro y el
+   * botón de Vipps paga el carrito entero»): Vipps Express for the sponsor's
+   * WHOLE cart — the same Express as the detail's «Kjøp nå med Vipps»: the
+   * hand-over overlay, `vio:payment-redirect-*` with source `'cart'`, the
+   * return and its confirmation. «Til kassen» is the way into our checkout.
+   * When the brand has Express off, or this cart cannot have it (several
+   * suppliers, no rate), the checkout opens with Vipps preselected.
+   *
+   * `vipps-cart-payment="checkout"` keeps the 0.31–0.34 behaviour: the
+   * checkout opens with Vipps preselected, the standard payment.
    */
   private onVipps(): void {
     if (!this.payable) return
-    const firstSponsorId = [...this.carts.keys()][0]
-    if (firstSponsorId === undefined) return
+    if (resolveVippsCartPayment(this, this.vippsCartPayment) === 'checkout') {
+      const firstSponsorId = [...this.carts.keys()][0]
+      if (firstSponsorId === undefined) return
+      this.openCheckoutWithVipps(firstSponsorId)
+      return
+    }
+    if (this.vippsStarting) return
+    const sponsorId = this.vippsSponsorId()
+    if (sponsorId === undefined) return
+    this.vippsStarting = true
+    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId, source: 'cart' })
+    void this.startVippsExpressOrCheckout(sponsorId, redirect).finally(() => {
+      this.vippsStarting = false
+    })
+  }
+
+  /**
+   * The one sponsor whose cart the Vipps button pays: the first with
+   * something to pay for. Express is built on THAT sponsor's backend cart
+   * only — another sponsor's lines are never in it.
+   */
+  private vippsSponsorId(): number | undefined {
+    for (const cart of this.carts.values()) {
+      const total = cart.items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
+      if (cart.items.length > 0 && total > 0) return cart.sponsorId
+    }
+    return undefined
+  }
+
+  private async startVippsExpressOrCheckout(sponsorId: number, redirect: PaymentRedirectHandle): Promise<void> {
+    let fallback = true
+    try {
+      // A +/− a moment ago may still be syncing: Vipps must get the cart it produced.
+      await Vio.cart.waitForCartMutations(sponsorId)
+      // The seller may have switched Express off on its Vipps row: then the
+      // button is an ordinary way into the checkout, with Vipps preselected.
+      if (!(await Vio.checkout.getVippsExpressEnabled(sponsorId))) {
+        redirect.abort('express-off')
+      } else {
+        const res = await Vio.checkout.startVippsExpress(sponsorId)
+        // A redirect is on its way; anything else opens the checkout.
+        fallback = !res?.payment_url
+        if (fallback) redirect.abort('not-started')
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCart] Vipps Express not started:', err)
+      }
+      redirect.fail(err instanceof Error ? err.message : String(err))
+    }
+    if (!fallback) return
+    this.openCheckoutWithVipps(sponsorId)
+  }
+
+  /** Our checkout with Vipps preselected: the host opens it on `vio:checkout-open`. */
+  private openCheckoutWithVipps(sponsorId: number): void {
     this.dispatchEvent(
       new CustomEvent('vio:checkout-open', {
         bubbles: true,
         composed: true,
-        detail: { sponsorId: firstSponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(firstSponsorId) },
+        detail: { sponsorId, paymentMethod: 'vipps', express: false, ...sponsorDetail(sponsorId) },
       }),
     )
   }

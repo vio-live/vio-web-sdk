@@ -1238,7 +1238,10 @@ export class CheckoutManager extends EventTarget {
     // The order's attribution (ADR-0035 phase B): on the checkout when it is
     // created here, and again on the update right before paying.
     const attribution = await this.attributionFor(spId)
-    let checkoutId = this.state?.checkoutId
+    // Only this sponsor's open checkout is reused: a payment for one brand's
+    // cart (the drawer's Vipps Express) never goes out on another brand's
+    // checkout — and so never with its lines.
+    let checkoutId = this.state?.sponsorId === spId ? this.state.checkoutId : undefined
     if (!checkoutId) {
       const checkoutRes = attribution
         ? await gqlCreateCheckout(cartId, opts, { attribution })

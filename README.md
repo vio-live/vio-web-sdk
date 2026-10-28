@@ -712,6 +712,7 @@ or on the element (`vio-product-detail { --vio-detail-logo-height: 48px; }`).
 | `cartWidth` / `checkoutWidth` | `--vio-cart-width` / `--vio-checkout-width` | `440px` | Drawer widths (desktop) |
 | `confirmLogoHeight` / `confirmTitleSize` / `confirmCheckBg` | `--vio-confirm-logo-height` / `--vio-confirm-title-size` / `--vio-confirm-check-bg` | `40px` / `24px` / green | The confirmation |
 | `redirectBg` / `redirectSpinner` | `--vio-redirect-bg` / `--vio-redirect-spinner` | translucent white / Vipps orange | The «Åpner Vipps …» overlay |
+| `vippsCartPayment` | `--vio-vipps-cart-payment` | `express` | What the Vipps button of `<vio-cart>` and `<vio-product-detail>` pays when the cart has lines: `express` = Vipps Express for the sponsor's whole cart; `checkout` = our checkout with Vipps preselected (0.31–0.34). See [The hand-over to Vipps](#the-hand-over-to-vipps-028) |
 
 Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detail-image-position`,
 `--vio-detail-image-radius`, `--vio-detail-thumb-fit` (`cover`), `--vio-detail-thumb-border-width`,
@@ -762,6 +763,7 @@ whole page through `applyVioTheme` (theme key → custom property). The element 
 | `highlights` | — | `[{ icon, title, text }]` (JSON) | The brand's promises under the buy zone. By default the brand's own (dashboard Settings → Brand, sponsor block `highlights`); this list replaces them on the page. Icons: `plane heart shirt truck return leaf star shield mailbox home pin clock`, or an image URL. `detailHighlightsDisplay: 'none'` hides the strip |
 | `delivery-time` | — | text, e.g. `2-5 virkedager` | «Leveringstid …» in «Frakt & retur» for a brand whose rates do not say it (each rate's own text in Commerce — «Leveringstid 1-5 dager» — wins) |
 | `carrier-logos` | — | `{ "Bring": "https://…" }` (JSON) | Carrier logos by the name the rate starts with («Bring - Pakke i postkasse»), for rates without their own logo in Commerce (`logo_url`, which wins); otherwise a line icon by the kind of delivery |
+| `vipps-cart-payment` | `vippsCartPayment` | `express` (default) · `checkout` | «Kjøp nå med Vipps» when the brand's cart already has lines: the product is added and the **whole cart** goes to Vipps Express, the line under the button saying «Betaler hele handlekurven · n varer · total»; or (`checkout`) the checkout opens first, Vipps preselected. Also on `<vio-cart>` (its Vipps button) |
 | — | `detailShippingReturnsDisplay` | `block` (default) · `none` | «Frakt & retur»: one row per carrier (logo or icon, carrier, how it delivers, price), the delivery time, the right of withdrawal and the brand's pages |
 
 The sheet closes with a pull down from its top bar, or from anywhere while its content is at the top.
@@ -905,24 +907,41 @@ tap, so a second payment cannot start. Events on `document`:
 `source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
 in the light DOM.
 
-**The detail's Vipps button pays the whole cart.** «Kjøp nå med Vipps» on the product
-detail adds the product to the sponsor's cart and the checkout is built on that cart —
-every line in it. It goes straight to Vipps only when the cart was **empty**; with lines
-already in it, the product is added and the checkout opens first (`vio:checkout-open`
-with `paymentMethod: 'vipps'`, no hand-over events), every line and the total on screen,
-so what the Vipps page lists is what the shopper saw.
+**The Vipps buttons pay the sponsor's whole cart with Express (2026-10-29).** The black
+«Til kassen» in `<vio-cart>` is the way into our checkout; the Vipps buttons go to Vipps:
 
-**Two Vipps paths (2026-10-28).** The detail's «Kjøp nå med Vipps» is **Express**: the app
-fills in name and address. The **cart's** Vipps button opens the checkout with Vipps
-preselected, and the checkout's Vipps is always the **standard** payment, even when the
+- **`<vio-cart>`**: the Vipps button starts **Vipps Express for the whole cart** of the
+  sponsor (every line of its backend cart, never another sponsor's) — the hand-over above with
+  `source: 'cart'`, `add_payment_info` once, and the return from Vipps and its confirmation
+  exactly as from the detail. No `vio:checkout-open`.
+- **`<vio-product-detail>`**: «Kjøp nå med Vipps» adds the product (size, quantity) and starts
+  Express for the sponsor's cart. With an **empty** cart that is the product alone (the line
+  under the button: «Vipps fyller inn navn og adresse – du godkjenner og betaler i appen»). With
+  **lines already in it**, the whole cart is paid, and the line under the button says so before
+  the tap: «Betaler hele handlekurven · {n} varer · {total}» — n = every unit including this
+  product at the chosen quantity, total = the cart's subtotal with it (shipping is chosen in
+  Vipps).
+
+When the brand has Express off, or the cart cannot have it (several suppliers, digital goods,
+no rate for the country — shopcart answers `express: false` and creates nothing), the checkout
+opens with Vipps preselected (`vio:payment-redirect-cancel` with `'express-off'` /
+`'not-started'`, then `vio:checkout-open`).
+
+**The option: `vipps-cart-payment` / `vippsCartPayment`.** `express` is the default.
+`checkout` brings back 0.31–0.34 exactly: the cart's Vipps button opens the checkout with Vipps
+preselected (`vio:checkout-open`, `paymentMethod: 'vipps'`, no hand-over), and the detail's
+does the same when the cart already has lines (product added first); an empty cart is Express
+either way.
+
+**The checkout's Vipps is the standard payment** (2026-10-28), even when the
 brand has Express on. Our form collects name, e-mail, **Mobilnummer**, address and the
 delivery with its price before paying. The mobile is required for Vipps only and accepts any
 market's number: the `+` prefix or the shipping country sets the calling code. The delivery is
 saved on the cart first; if that fails, no payment starts. The payment goes out with
 `express: false`, and the address (with `phone` + `phone_code`) is on the checkout's shipping
-and billing address. **Apple Pay on the detail follows the same
-rule**: its sheet's amount is fixed before the tap, so it opens only on an empty cart, for the
-product × the chosen quantity; otherwise the checkout opens (`paymentMethod: 'apple-pay'`).
+and billing address. **Apple Pay on the detail** has its sheet's amount fixed before the tap,
+so it opens only on an empty cart, for the product × the chosen quantity; otherwise the
+checkout opens (`paymentMethod: 'apple-pay'`).
 
 ### What the shopper pays is what the page shows — the cart, the server, the other tabs
 

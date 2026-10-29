@@ -26,6 +26,7 @@ import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-ta
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
+import { highlightsStyles, renderHighlights } from '../highlights.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -144,7 +145,8 @@ export class VioCart extends LitElement {
     }
   }
 
-  static override styles = css`
+  static override styles = [
+    css`
     :host { display: contents; }
 
     .backdrop {
@@ -520,7 +522,9 @@ export class VioCart extends LitElement {
       font-family: var(--vio-font-sans, -apple-system, sans-serif);
     }
     .confirm-close:hover { background: #222; }
-  `
+  `,
+    highlightsStyles('cart'),
+  ]
 
   override connectedCallback(): void {
     super.connectedCallback()
@@ -1059,10 +1063,22 @@ export class VioCart extends LitElement {
                         </button>
                       `
                   : ''}
+                ${this.renderBrandHighlights()}
               </div>
             `}
       </aside>
     `
+  }
+
+  /**
+   * The selling brand's promises under the ways to pay, as in the product
+   * detail (one article = one brand: the cart's brand). Hidden with the theme's
+   * `cartHighlightsDisplay: 'none'`; nothing when the brand has none.
+   */
+  private renderBrandHighlights() {
+    const sponsorId = [...this.carts.keys()].find((id) => (this.carts.get(id)?.items.length ?? 0) > 0)
+    if (sponsorId === undefined) return ''
+    return renderHighlights(resolveSponsorIdentity(sponsorId)?.highlights ?? [])
   }
 
   /** «Frakt» (the chosen or cheapest rate) and «Totalt» with it; «Beregnes i kassen» when unknown. */

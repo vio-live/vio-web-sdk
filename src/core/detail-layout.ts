@@ -221,6 +221,8 @@ export function normalizeLayoutOrigin(origin: unknown): DetailLayoutOrigin {
 
 interface DetailLayoutStore {
   layout: unknown
+  /** The page's heading for the description fold (`Vio.configureDetail({ descriptionLabel })`), or null. */
+  descriptionLabel?: string | null
   listeners: Set<() => void>
 }
 
@@ -240,6 +242,29 @@ export function setGlobalDetailLayout(layout: unknown): void {
   s.layout = layout ?? null
   // Validated now so a bad layout warns at the call, not at the next open.
   normalizeDetailLayout(s.layout)
+  for (const listener of [...s.listeners]) {
+    try {
+      listener()
+    } catch {
+      /* a listener never breaks the call */
+    }
+  }
+}
+
+/** The page's heading for the description fold, or null (the detail says «Beskrivelse»). */
+export function currentGlobalDescriptionLabel(): string | null {
+  return store().descriptionLabel ?? null
+}
+
+/**
+ * Set (or with null reset) the heading of the description fold for every
+ * detail of the page — e.g. «Produktbeskrivelse». Plain text, trimmed, at most
+ * 40 characters; anything else resets it. Open details re-render.
+ */
+export function setGlobalDescriptionLabel(label: unknown): void {
+  const s = store()
+  const text = typeof label === 'string' ? label.trim() : ''
+  s.descriptionLabel = text && text.length <= 40 ? text : null
   for (const listener of [...s.listeners]) {
     try {
       listener()

@@ -14,6 +14,16 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **The heading of the description fold is configurable**: `Vio.configureDetail({ descriptionLabel: 'Produktbeskrivelse' })`
+  for the page, or `description-label` on `<vio-product-detail>` (wins). Default «Beskrivelse». Feedback from Aller
+  (29/10): a folded «Produktbeskrivelse» right under the price — with the section order
+  `[..., 'price', 'description', 'options', 'purchase', ...]` and `detailDescriptionMode: 'folded'`.
+- **The brand's promises in the cart** too, under the ways to pay (same strip as the product detail, from the
+  sponsor block's `highlights`). Hide them with `applyVioTheme({ cartHighlightsDisplay: 'none' })`.
+
 ## 0.35.0 — 2026-10-29
 
 > 0.34.0 was never published on its own: its changes (section order of the product detail and layout tracking,

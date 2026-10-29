@@ -10,6 +10,8 @@ import { LitElement, css, html } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
 import { SlotRegistration } from '../slot-registration.js'
+import { emitCta, trackCtaClicks } from '../cta.js'
+import type { CtaInput } from '../../core/analytics/cta.js'
 
 export class VioProduct extends LitElement {
   /** Brand label shown at the top (uppercase, gray, small). */
@@ -312,9 +314,13 @@ export class VioProduct extends LitElement {
     this.updateInCart()
     this.slotRegistration.connect(this.slotAttributes())
     Vio.cart.addEventListener('change', this.boundCartChange)
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = trackCtaClicks(this, 'card', this.ctaContext)
   }
 
   override disconnectedCallback(): void {
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = null
     Vio.cart.removeEventListener('change', this.boundCartChange)
     this.slotRegistration.clear()
     super.disconnectedCallback()
@@ -367,9 +373,28 @@ export class VioProduct extends LitElement {
     )
   }
 
+  /** Stops reporting the taps on the buttons (`vio:cta-click`). */
+  private stopCtaClicks: (() => void) | null = null
+
+  /** What a tap on the card says (`vio:cta-click`): its product, sponsor and attribution. */
+  private ctaContext = (): Partial<CtaInput> => {
+    const a = this.attribution()
+    return {
+      productId: this.productId || undefined,
+      sponsorId: this.sponsorId || this.sponsorFromAttribution(),
+      campaignId: a.campaignId,
+      slot: a.slot,
+      contentId: a.contentId,
+      contentTitle: a.contentTitle,
+      componentTemplateId: a.componentTemplateId,
+    }
+  }
+
   private onKeydown(e: KeyboardEvent): void {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault()
+      // A key on the card is its tap (a key on its button is a click already).
+      if (e.target === e.currentTarget) emitCta(this, 'card', 'open', this.ctaContext)
       this.onClick()
     }
   }
@@ -427,6 +452,8 @@ export class VioProduct extends LitElement {
     return html`
       <div
         class="card"
+        data-vio-cta="open"
+        data-vio-cta-label=""
         @click=${this.onClick}
         @keydown=${this.onKeydown}
         role="button"
@@ -440,6 +467,8 @@ export class VioProduct extends LitElement {
           ${this.buttonStyle === 'icon'
             ? html`<button
             class="add-btn ${this.inCart ? 'in-cart' : ''} ${this.justAdded ? 'pop' : ''}"
+            data-vio-cta="add"
+            data-vio-cta-label="Legg i kurv"
             @click=${this.onAdd}
             aria-label=${this.inCart ? 'I handlekurven – legg til en til' : 'Legg i kurv'}
             title=${this.inCart ? 'I handlekurven' : 'Legg i kurv'}
@@ -468,7 +497,7 @@ export class VioProduct extends LitElement {
           ${this.price ? html`<div class="price">${this.price}</div>` : ''}
           ${this.retailer ? html`<div class="retailer">${this.retailer}</div>` : ''}
           ${this.buttonStyle === 'bar'
-            ? html`<button class="bar-btn ${this.justAdded ? 'pop' : ''}" @click=${this.onAdd}>
+            ? html`<button class="bar-btn ${this.justAdded ? 'pop' : ''}" data-vio-cta="add" data-vio-cta-label=${this.buttonLabel} @click=${this.onAdd}>
                 ${this.inCart ? `${this.buttonLabel} · ${this.cartQty}` : this.buttonLabel}
               </button>`
             : ''}

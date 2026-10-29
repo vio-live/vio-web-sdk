@@ -14,6 +14,27 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Added
+- **Button tracking: `cta_click`** — which buttons shoppers use. Every tap on a button of
+  `<vio-product-detail>`, `<vio-cart>`, `<vio-product>` and `<vio-checkout>` sends one `cta_click`
+  (in `context`: `cta`, `cta_location`, `cta_label`, `option_value`, `product_id`,
+  `product_variant_id`, the detail's layout, and the usual attribution), on the tap, before the
+  action. Each tap also dispatches **`vio:cta-click`** (bubbles, composed; React `onCtaClick`).
+  **`Vio.trackCta({ cta, location, label, variant, … })`** sends the same event for a host's own
+  buttons (`location: 'host' | 'card' | 'block'`, `cta_variant` for the button option being
+  tested). Ids and fields: [README → Button tracking](README.md#button-tracking-cta_click-unreleased).
+
+### ⚠️ Upgrade notes
+- **The collector must know `cta_click`** (and its context fields) before this ships: an older
+  collector rejects the event — the rest of the batch is not affected.
+- On `cta_click`, **`variant_id` is the layout's experiment variant** (as on `view_item`); the
+  product variant is **`product_variant_id`**.
+- Hosts with `autoTrack: false` (Vev) get no `cta_click` from the SDK's buttons unless they forward
+  `vio:cta-click` themselves (`Vio.trackCta(e.detail)`).
+- Nothing is sent before `Vio.analytics.start()`, `Vio.trackCta()` included.
+
 ## 0.36.0 — 2026-10-29
 
 ### Changed

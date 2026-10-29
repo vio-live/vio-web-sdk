@@ -52,6 +52,7 @@ export const VioProduct = createComponent({
   events: {
     onProductClick: 'vio:product-click',
     onProductAdd: 'vio:product-add',
+    onCtaClick: 'vio:cta-click',
   },
 })
 
@@ -70,6 +71,7 @@ export const VioProductDetail = createComponent({
     onAddedToCart: 'vio:added-to-cart',
     onCheckoutOpen: 'vio:checkout-open',
     onLayoutApplied: 'vio:detail-layout-applied',
+    onCtaClick: 'vio:cta-click',
   },
 })
 
@@ -80,6 +82,7 @@ export const VioCart = createComponent({
   events: {
     onPaymentSuccess: 'vio:payment-success',
     onCheckoutOpen: 'vio:checkout-open',
+    onCtaClick: 'vio:cta-click',
   },
 })
 
@@ -89,6 +92,7 @@ export const VioCheckout = createComponent({
   elementClass: VioCheckoutEl,
   events: {
     onPaymentSuccess: 'vio:payment-success',
+    onCtaClick: 'vio:cta-click',
   },
 })
 

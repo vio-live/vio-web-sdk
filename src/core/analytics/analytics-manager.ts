@@ -50,6 +50,7 @@ import {
   type Landing,
 } from './client-context.js'
 import { readInternal, resolveInternal, writeInternal } from './internal-traffic.js'
+import { ctaContextOf, type CtaClickDetail, type CtaInput } from './cta.js'
 import type { CartManager, CartChangeDetail } from '../cart/cart-manager.js'
 import { cartSlicesFrom, hasExplicitCampaign, itemLayoutOf, lineItemsByLayout, type CartSlice } from '../cart/slices.js'
 import { layoutToken, normalizeLayoutOrigin } from '../detail-layout.js'
@@ -78,6 +79,8 @@ export const ANALYTICS_EVENT_NAMES = [
   'ad_click',
   'poll_impression',
   'contest_impression',
+  // which button a shopper tapped (see ./cta.ts, README «Button tracking»)
+  'cta_click',
   // session
   'session_start',
   'session_end',
@@ -121,6 +124,21 @@ export interface AnalyticsContext {
   /** Código corto del fallo (`sdk_error` / `checkout_error`). */
   errorCode?: string
   variant?: string
+  /**
+   * `cta_click` only (see ./cta.ts): the button's id (`cta`), where it is
+   * (`cta_location`), its visible text (`cta_label`), the host's name of the
+   * button option it tests (`cta_variant`), the option value chosen
+   * (`option_value`), the product (`product_id`) and the PRODUCT variant
+   * (`product_variant_id` — `variantId` above is the layout's experiment
+   * variant). Build them with `ctaContextOf()`, which validates them.
+   */
+  cta?: string
+  ctaLocation?: string
+  ctaLabel?: string
+  ctaVariant?: string
+  optionValue?: string
+  productId?: string
+  productVariantId?: string
   /**
    * The slot (ADR-0027) the component sits in — its `vio-slot`. Attribution
    * follows it: the event's `campaign_id` is the campaign assigned to the slot
@@ -515,6 +533,21 @@ export class AnalyticsManager extends EventTarget {
   }
 
   /**
+   * One `cta_click` — a tap on a button (README «Button tracking»). What
+   * `Vio.trackCta()` calls for a host's own buttons; the SDK's elements reach
+   * it through `vio:cta-click`. Only once `start()` ran — like the funnel
+   * events of the elements, never queued before. An invalid `cta` is ignored
+   * with one `console.warn`; consent, `privateContent`, internal traffic,
+   * batching and attribution are those of every event.
+   */
+  trackCta(input: CtaInput): void {
+    if (!hasDom() || !this.started) return
+    const context = ctaContextOf(input)
+    if (!context) return
+    this.track('cta_click', { context })
+  }
+
+  /**
    * Impression helper: observes an element and tracks ONE
    * `component_impression` per (session, campaignComponentId) when the
    * contract's rule is met (≥50% visible, ≥1s dwell). Returns an
@@ -680,6 +713,15 @@ export class AnalyticsManager extends EventTarget {
       layout_revision: ctx.layoutRevision,
       experiment_id: ctx.experimentId,
       variant_id: ctx.variantId,
+      // `cta_click` (./cta.ts). Con `privateContent` el texto del botón y el
+      // valor elegido no salen del dispositivo: pueden nombrar el producto.
+      cta: ctx.cta,
+      cta_location: ctx.ctaLocation,
+      cta_label: this.options.privateContent ? undefined : ctx.ctaLabel,
+      cta_variant: ctx.ctaVariant,
+      option_value: this.options.privateContent ? undefined : ctx.optionValue,
+      product_id: ctx.productId,
+      product_variant_id: ctx.productVariantId,
     })
 
     const com = opts.commerce
@@ -972,6 +1014,12 @@ export class AnalyticsManager extends EventTarget {
           ],
         },
       })
+    })
+
+    // A tap on one of the SDK's buttons (src/ui/cta.ts) → `cta_click`.
+    on('vio:cta-click', (ev) => {
+      const d = (ev as CustomEvent<CtaClickDetail>).detail
+      if (d) this.trackCta(d)
     })
 
     on('vio:open-cart', () => {

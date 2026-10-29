@@ -174,6 +174,19 @@ export type {
   PaymentSuccessResult,
   PurchaseIds,
 } from './analytics/analytics-manager.js'
+// Button tracking (`cta_click`): `Vio.trackCta()` and `vio:cta-click`.
+export {
+  ctaContextOf,
+  ctaText,
+  isCtaId,
+  CTA_LOCATIONS,
+  CTA_ID_PATTERN,
+  CTA_VARIANT_PATTERN,
+  CTA_TEXT_MAX_LENGTH,
+  type CtaInput,
+  type CtaClickDetail,
+  type CtaLocation,
+} from './analytics/cta.js'
 export { SDK_VERSION } from './version.js'
 
 // Checkout

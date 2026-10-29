@@ -27,6 +27,9 @@ import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
 import { highlightsStyles, renderHighlights } from '../highlights.js'
+import { trackCtaClicks } from '../cta.js'
+import type { CtaInput } from '../../core/analytics/cta.js'
+import { lineOrigins } from '../../core/cart/cart-manager.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -551,15 +554,50 @@ export class VioCart extends LitElement {
     this.itemCount = Vio.cart.itemCount
     Vio.cart.addEventListener('change', this.boundOnCartChange)
     void this.loadAvailablePaymentMethods()
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = trackCtaClicks(this, 'cart', this.ctaContext)
   }
 
   override disconnectedCallback(): void {
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = null
     Vio.cart.removeEventListener('change', this.boundOnCartChange)
     this.bottomSheet.disconnect()
     super.disconnectedCallback()
   }
 
   close(): void { this.open = false }
+
+  /** Stops reporting the taps on the buttons (`vio:cta-click`). */
+  private stopCtaClicks: (() => void) | null = null
+
+  /**
+   * What a tap on a button of the cart says (`vio:cta-click`): a line's
+   * buttons name its product, variant and sponsor, and where its most recent
+   * units came from (campaign, slot, article); the footer's buttons name the
+   * sponsor they pay (Vipps: the one it pays; the others: the first).
+   */
+  private ctaContext = (_cta: string, button: Element | null): Partial<CtaInput> => {
+    const lineId = button?.getAttribute('data-vio-cta-line')
+    if (lineId) {
+      for (const cart of this.carts.values()) {
+        const item = cart.items.find((i) => i.id === lineId)
+        if (!item) continue
+        const origin = [...lineOrigins(item)].reverse().find((o) => o.campaignId !== undefined || o.slot || o.contentId)
+        return {
+          productId: item.productId,
+          productVariantId: item.variantId,
+          sponsorId: item.sponsorId,
+          campaignId: origin?.campaignId,
+          slot: origin?.slot,
+          contentId: origin?.contentId,
+        }
+      }
+      return {}
+    }
+    const sponsorId = _cta === 'vipps' ? this.vippsSponsorId() : [...this.carts.keys()][0]
+    return { sponsorId }
+  }
   show(): void {
     // `vio:open-cart` es un COMANDO ("abrí el carrito") y varios hosts lo
     // escuchan para llamar a este show() — Vev entre ellos. Si show()
@@ -924,12 +962,12 @@ export class VioCart extends LitElement {
     const sponsorCarts = [...this.carts.values()].filter((c) => c.items.length > 0)
 
     return html`
-      <div class="backdrop" @click=${this.close}></div>
+      <div class="backdrop" data-vio-cta="close" data-vio-cta-label="" @click=${this.close}></div>
       <aside class="drawer" role="dialog" aria-modal="true" aria-label=${this.heading} tabindex="-1">
-        <div class="handle" @click=${this.close} aria-hidden="true"></div>
+        <div class="handle" data-vio-cta="close" data-vio-cta-label="" @click=${this.close} aria-hidden="true"></div>
         <div class="header">
           <h2 class="heading">${this.confirmedOrder ? 'Takk!' : this.heading}</h2>
-          <button class="close" @click=${this.close} aria-label="Lukk">×</button>
+          <button class="close" data-vio-cta="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
         ${this.confirmedOrder
@@ -959,6 +997,8 @@ export class VioCart extends LitElement {
                                 <span class="item-qty">
                                   <button
                                     class="qty-btn"
+                                    data-vio-cta="quantity_minus"
+                                    data-vio-cta-line=${item.id}
                                     @click=${() => this.onDecrement(item)}
                                     aria-label="Reduser"
                                   >
@@ -967,6 +1007,8 @@ export class VioCart extends LitElement {
                                   ${item.quantity}
                                   <button
                                     class="qty-btn"
+                                    data-vio-cta="quantity_plus"
+                                    data-vio-cta-line=${item.id}
                                     @click=${() => this.onIncrement(item)}
                                     aria-label="Øk"
                                   >
@@ -974,6 +1016,8 @@ export class VioCart extends LitElement {
                                   </button>
                                   <button
                                     class="qty-btn"
+                                    data-vio-cta="remove"
+                                    data-vio-cta-line=${item.id}
                                     @click=${() => this.onRemove(item)}
                                     aria-label="Fjern"
                                     style="margin-left: 8px;"
@@ -1006,6 +1050,7 @@ export class VioCart extends LitElement {
                 ${this.renderShippingRows()}
                 <button
                   class="checkout-btn"
+                  data-vio-cta="checkout"
                   @click=${this.onCheckout}
                   ?disabled=${!this.payable}
                   aria-label="Til kassen"
@@ -1019,6 +1064,7 @@ export class VioCart extends LitElement {
                   ? html`
                       <button
                         class="applepay-btn"
+                        data-vio-cta="apple_pay"
                         @click=${this.onApplePay}
                         aria-label="Betal med Apple Pay"
                       >
@@ -1031,6 +1077,7 @@ export class VioCart extends LitElement {
                   ? html`
                       <button
                         class="stripe-btn"
+                        data-vio-cta="stripe"
                         @click=${this.onStripe}
                         aria-label="Betal med Stripe"
                       >
@@ -1042,6 +1089,7 @@ export class VioCart extends LitElement {
                   ? html`
                       <button
                         class="klarna-btn"
+                        data-vio-cta="klarna"
                         @click=${this.onKlarnaExpress}
                         aria-label="Betal med Klarna"
                       >
@@ -1067,12 +1115,14 @@ export class VioCart extends LitElement {
                           stretched="true"
                           role="button"
                           aria-label="Betal med Vipps"
+                          data-vio-cta="vipps"
                           @click=${this.onVipps}
                         ></vipps-mobilepay-button>
                       `
                     : html`
                         <button
                           class="vipps-btn"
+                          data-vio-cta="vipps"
                           @click=${this.onVipps}
                           aria-label="Betal med Vipps"
                         >
@@ -1148,7 +1198,7 @@ export class VioCart extends LitElement {
             <span>${formatPrice(o.total, o.currency)}</span>
           </div>
         </div>
-        <button class="confirm-close" @click=${this.closeConfirmation}>Lukk</button>
+        <button class="confirm-close" data-vio-cta="close" @click=${this.closeConfirmation}>Lukk</button>
       </div>
     `
   }

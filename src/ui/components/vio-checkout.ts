@@ -56,6 +56,8 @@ import type { StripeElementHandle } from '../../core/checkout/payments/stripe-em
 import { isValidPhone } from '../../core/checkout/phone.js'
 import { storageGet } from '../../core/safe-storage.js'
 import { DialogFocus } from '../dialog-focus.js'
+import { trackCtaClicks } from '../cta.js'
+import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
@@ -1623,6 +1625,8 @@ export class VioCheckout extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = null
     Vio.checkout.removeEventListener('change', this.boundOnCheckoutChange)
     Vio.checkout.removeEventListener('payment-complete', this.boundOnPaymentComplete)
     Vio.checkout.removeEventListener('payment-error', this.boundOnPaymentError)
@@ -1711,7 +1715,17 @@ export class VioCheckout extends LitElement {
     void this.mountAdyenIfNeeded()
     this.dropStaleStripe()
     void this.mountStripeIfNeeded()
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = trackCtaClicks(this, 'checkout', this.ctaContext)
   }
+
+  /** Stops reporting the taps on the buttons (`vio:cta-click`). */
+  private stopCtaClicks: (() => void) | null = null
+
+  /** What a tap on a button of the checkout says (`vio:cta-click`): the sponsor whose cart it pays. */
+  private ctaContext = (): Partial<CtaInput> => ({
+    sponsorId: this.checkoutState?.sponsorId ?? this.orderSponsor?.sponsorId,
+  })
 
   close(): void {
     this.open = false
@@ -2672,7 +2686,7 @@ export class VioCheckout extends LitElement {
 
   override render() {
     return html`
-      <div class="backdrop" @click=${this.close}></div>
+      <div class="backdrop" data-vio-cta="close" data-vio-cta-label="" @click=${this.close}></div>
       <div
         class="modal ${this.express ? 'as-side' : this.orderConfirmed ? 'as-confirm' : ''}"
         role="dialog"
@@ -2680,13 +2694,13 @@ export class VioCheckout extends LitElement {
         aria-label=${this.heading}
         tabindex="-1"
       >
-        <div class="handle" @click=${this.close} aria-hidden="true"></div>
+        <div class="handle" data-vio-cta="close" data-vio-cta-label="" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar">
           <div class="topbar-title">
             <h2 class="heading">${this.orderConfirmed ? 'Takk!' : this.heading}</h2>
             ${this.renderTopbarSponsor()}
           </div>
-          <button class="close" @click=${this.close} aria-label="Lukk">×</button>
+          <button class="close" data-vio-cta="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
         <div class="body">
@@ -2807,7 +2821,7 @@ export class VioCheckout extends LitElement {
     return html`
       <section class="section provider-receipt">
         <slot name=${slot}></slot>
-        <button class="confirm-close" @click=${this.close}>Lukk</button>
+        <button class="confirm-close" data-vio-cta="close" @click=${this.close}>Lukk</button>
       </section>
     `
   }
@@ -2928,7 +2942,7 @@ export class VioCheckout extends LitElement {
               </div>
             `
           : ''}
-        <button class="confirm-close" @click=${this.close}>Fortsett å handle</button>
+        <button class="confirm-close" data-vio-cta="close" @click=${this.close}>Fortsett å handle</button>
       </section>
     `
   }
@@ -3632,6 +3646,7 @@ export class VioCheckout extends LitElement {
                   : !this.hasSelectedShipping
                     ? 'Vennligst velg en fraktmetode'
                     : ''}
+                data-vio-cta="pay_adyen"
                 @click=${() => {
                   this.adyenRequested = true
                 }}
@@ -3850,6 +3865,7 @@ export class VioCheckout extends LitElement {
                   : !this.hasSelectedShipping
                     ? 'Vennligst velg en fraktmetode'
                     : ''}
+                data-vio-cta="pay_stripe"
                 @click=${() => {
                   this.stripeRequested = true
                 }}
@@ -3864,6 +3880,7 @@ export class VioCheckout extends LitElement {
               <button
                 class="payment-btn primary complete-cta"
                 ?disabled=${this.stripePaying || !this.stripeReady}
+                data-vio-cta="pay_stripe_confirm"
                 @click=${() => void this.onStripePay()}
               >
                 ${this.stripePaying ? 'Betaler…' : `Betal ${this.payTotalLabel()}`}
@@ -3943,6 +3960,7 @@ export class VioCheckout extends LitElement {
         <div class="klarna-widget" id="vio-klarna-payments-container"></div>
         <button
           class="payment-btn primary complete-cta"
+          data-vio-cta="pay_klarna"
           @click=${() => void this.onKlarnaAuthorize()}
           ?disabled=${this.klarnaAuthorizing ||
           !this.klarnaHandle ||
@@ -4203,6 +4221,7 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
+                          data-vio-cta="pay_stripe"
                           @click=${() => void this.onPay('stripe')}
                           ?disabled=${this.stripeLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
@@ -4221,6 +4240,7 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
+                          data-vio-cta="pay_vipps"
                           @click=${() => void this.onPay('vipps')}
                           ?disabled=${this.vippsLoading || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
@@ -4239,6 +4259,7 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
+                          data-vio-cta="pay_apple_pay"
                           @click=${() => void this.onPay('apple-pay')}
                           ?disabled=${this.applePayInProgress || !this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
@@ -4257,6 +4278,7 @@ export class VioCheckout extends LitElement {
                     ? html`
                         <button
                           class="payment-btn primary complete-cta"
+                          data-vio-cta=${`pay_${ctaMethod(method)}`}
                           @click=${this.onCompleteOrder}
                           ?disabled=${!this.cartPayable || !this.isAddressValid || !this.hasSelectedShipping}
                           title=${!this.isAddressValid
@@ -4300,6 +4322,8 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button
                             class="payment-btn primary"
+                            data-vio-cta="select_apple_pay"
+                            data-vio-cta-label="Apple Pay"
                             @click=${() => this.onPay('apple-pay')}
                             ?disabled=${this.applePayInProgress}
                           >
@@ -4313,6 +4337,8 @@ export class VioCheckout extends LitElement {
                       ? html`
                           <button
                             class="payment-btn"
+                            data-vio-cta="select_stripe"
+                            data-vio-cta-label="Stripe"
                             @click=${() => this.onPay('stripe')}
                             ?disabled=${this.stripeLoading}
                           >
@@ -4322,49 +4348,49 @@ export class VioCheckout extends LitElement {
                       : ''}
                     ${this.methodEnabled('klarna') && this.klarnaAvailable
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('klarna')}>
+                          <button class="payment-btn" data-vio-cta="select_klarna" data-vio-cta-label="Klarna" @click=${() => this.onPay('klarna')}>
                             Klarna
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('kustom')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('kustom')}>
+                          <button class="payment-btn" data-vio-cta="select_kustom" data-vio-cta-label="Kustom" @click=${() => this.onPay('kustom')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Kustom</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('qliro')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('qliro')}>
+                          <button class="payment-btn" data-vio-cta="select_qliro" data-vio-cta-label="Qliro" @click=${() => this.onPay('qliro')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Qliro</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('walley')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('walley')}>
+                          <button class="payment-btn" data-vio-cta="select_walley" data-vio-cta-label="Walley" @click=${() => this.onPay('walley')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Walley</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('nexi')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('nexi')}>
+                          <button class="payment-btn" data-vio-cta="select_nexi" data-vio-cta-label="Nexi" @click=${() => this.onPay('nexi')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Nexi</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('adyen')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('adyen')}>
+                          <button class="payment-btn" data-vio-cta="select_adyen" @click=${() => this.onPay('adyen')}>
                             <span style="font-weight:700;font-size:15px;letter-spacing:-0.01em">${this.methodLabel('adyen')}</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('vipps')
                       ? html`
-                          <button class="payment-btn" @click=${() => this.onPay('vipps')} aria-label="Vipps">
+                          <button class="payment-btn" data-vio-cta="select_vipps" @click=${() => this.onPay('vipps')} aria-label="Vipps">
                             ${this.vippsOfficial
                               ? html`<vipps-mobilepay-button
                                   brand="vipps"
@@ -4434,4 +4460,9 @@ declare global {
   interface HTMLElementTagNameMap {
     'vio-checkout': VioCheckout
   }
+}
+
+/** A payment method as a button id word: `apple-pay` → `apple_pay`. */
+function ctaMethod(method: PaymentMethod | string | null | undefined): string {
+  return String(method ?? 'unknown').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'unknown'
 }

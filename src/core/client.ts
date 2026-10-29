@@ -22,6 +22,7 @@ import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
+import type { CtaInput } from './analytics/cta.js'
 import { resolveContent, type ContentRef } from './content.js'
 import {
   copyAppliedLayout,
@@ -271,6 +272,24 @@ class VioFacade {
    */
   detailLayout(): AppliedDetailLayout {
     return copyAppliedLayout(resolveDetailLayout(null))
+  }
+
+  /**
+   * Report a tap on one of the host's own buttons (its cards, its article
+   * blocks) as `cta_click`, the event the SDK's own buttons send — so the
+   * dashboard compares them on one scale. `{ cta, location?, label?,
+   * variant?, optionValue?, productId?, productVariantId?, sponsorId?,
+   * campaignId?, slot?, contentId?, layout? }`; `location` is `host` by
+   * default (`card` / `block` for the host's cards and article blocks). An
+   * invalid `cta` is ignored with one `console.warn`. Nothing is sent before
+   * `Vio.analytics.start()`. Never throws. See README «Button tracking».
+   */
+  trackCta(input: CtaInput): void {
+    try {
+      this.analytics.trackCta(input)
+    } catch {
+      /* tracking never breaks the host's click */
+    }
   }
 
   get isInitialized(): boolean { return Configuration.isInitialized }

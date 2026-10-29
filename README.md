@@ -577,6 +577,103 @@ To **undo** it, open any page with **`?vio_internal=0`**. Things to know:
   (`Vio.analytics.isInternal` reads it). `resolveInternal()` / `INTERNAL_KEY` are
   exported from `/core`.
 
+### Button tracking (`cta_click`) (unreleased)
+
+Which buttons shoppers use. Every tap on a button of the SDK's elements sends **one
+`cta_click`**, through the same pipeline as every other event (consent,
+`privateContent`, internal traffic, batching, attribution). A host's own buttons
+send the same event with **`Vio.trackCta()`**, so the dashboard compares them on
+one scale.
+
+**When.** On the tap, before the button's own action runs (before any navigation
+to Vipps, Stripe…) — it never blocks or delays the action, and one tap is one
+event. Only once `Vio.analytics.start()` ran (with `autoTrack`, the default);
+before that nothing is queued. A host with `autoTrack: false` hears the DOM event
+(below) and decides itself.
+
+**The wire** — everything in `context`, next to `campaign_id` / `location_id` /
+`content_*` / `sponsor_id` as every event carries them:
+
+| field | what |
+|---|---|
+| `cta` | the button id, `[a-z0-9_.:-]`, 1–64 chars (lists below) |
+| `cta_location` | `detail` · `cart` · `card` · `checkout` · `host` · `block` |
+| `cta_label` | the visible text of the button, trimmed, ≤ 64 (`Kjøp nå med Vipps`, `Til kassen`) |
+| `cta_variant` | the host's name of the button option it is testing, `[A-Za-z0-9._:-]`, ≤ 64 (`bar-kjop`, `outline-velg`). The SDK's own buttons send none |
+| `option_value` | the option value chosen, ≤ 64 (`size`: `M`, `42`) |
+| `product_id` | the product (string) |
+| `product_variant_id` | the **product** variant, when known (every option chosen, or a single variant) |
+| `layout_id` · `layout_revision` · `experiment_id` · `variant_id` | the `<vio-product-detail>` layout shown — only a non-default one, as on `view_item`. **`variant_id` is the layout's experiment variant**, never the product's: that one is `product_variant_id` |
+| `component_template_id` | `product-detail` / `product-card` (or the carousel's) for the SDK's elements |
+
+No PII: ids, the button's own text and the option value. With
+`start({ privateContent: true })` `cta_label` and `option_value` stay on the device
+too (they can name the product), with `content_url` / `content_title` /
+`content_id`; `cta`, `cta_location`, `cta_variant` and the ids still go. Without
+consent (`requireConsent`) the event goes with the visit's ephemeral ids, as every
+event. A browser marked as internal sends `client.internal: true`.
+
+**The SDK's buttons.**
+
+| element (`cta_location`) | `cta` ids |
+|---|---|
+| `<vio-product-detail>` (`detail`) | `vipps` (Kjøp nå med Vipps) · `apple_pay` · `stripe` · `klarna` · `buy_now` (Kjøp nå) · `add_to_cart` (Legg i handlekurv) · `size` (any option value chosen, with `option_value`) · `quantity_plus` · `quantity_minus` · `description_open` («Beskrivelse» / the text / «Les mer», when the tap opens it) · `shipping_returns_open` («Frakt & retur», when it opens) · `terms_link` (Kjøpsvilkår) · `refund_link` (Angrerett og retur) · `checkout` («Til kassen» in the added-to-cart toast) · `close` (×, the backdrop, the handle) · `gallery_swipe` (the first change of photo per open product: a swipe, an arrow or a thumbnail) |
+| `<vio-cart>` (`cart`) | `checkout` (Til kassen) · `vipps` · `apple_pay` · `stripe` · `klarna` · `remove` · `quantity_plus` · `quantity_minus` · `close` |
+| `<vio-product>` card (`card`) | `open` (a tap — or Enter — on the card or its image) · `add` (the bag or bar button) |
+| `<vio-checkout>` (`checkout`) | `select_<method>` (a method of the list: `select_vipps`, `select_stripe`, `select_klarna`, `select_apple_pay`, `select_kustom`, `select_qliro`, `select_walley`, `select_nexi`, `select_adyen`) · `pay_<method>` (the pay button of the chosen method: `pay_vipps`, `pay_stripe`, `pay_klarna`, `pay_apple_pay`, `pay_adyen`, `pay_kustom`…) · `pay_stripe_confirm` («Betal» under Stripe's own payment form) · `close` (×, the backdrop, the handle, «Lukk» / «Fortsett å handle» on the receipt) |
+
+A detail's buttons carry the open product (`product_id`, `product_variant_id`), its
+sponsor, slot, campaign and article; a cart line's carry its product, variant,
+sponsor and where its units came from; the cart's and the checkout's footer
+buttons carry the sponsor they pay.
+
+**The DOM event.** Each SDK button tap also dispatches **`vio:cta-click`**
+(`bubbles`, `composed`) from the element, so a host can mirror it to its own
+analytics. `detail` is the `Vio.trackCta` shape: `{ cta, location, label?,
+optionValue?, productId?, productVariantId?, sponsorId?, campaignId?, slot?,
+contentId?, contentTitle?, componentTemplateId?, layout? }`. React: `onCtaClick` on
+`VioProduct`, `VioProductDetail`, `VioCart` and `VioCheckout`.
+
+```js
+window.addEventListener('vio:cta-click', (e) => myAnalytics.track('button', e.detail))
+```
+
+**A host's own buttons** (Replit's cards and article blocks):
+
+```js
+Vio.trackCta({
+  cta: 'choose_size',        // required: [a-z0-9_.:-], ≤ 64 — invalid → ignored, one console.warn
+  location: 'block',         // 'host' (default) | 'card' | 'block' | … — unknown → 'host', warned
+  label: 'Velg størrelse',   // the button's visible text
+  variant: 'outline-velg',   // the button option you are testing — invalid → left out, warned
+  optionValue: undefined,    // the value chosen, for `size`
+  productId: 408948,
+  productVariantId: undefined,
+  sponsorId: 4,
+  campaignId: 31,            // else resolved from slot / sponsor, as every event
+  slot: 'article-12-block-1',
+  contentId: 'art-12',
+  layout: undefined,         // { layoutId, layoutRevision, experimentId, variantId } when it is a detail layout
+})
+```
+
+It sends nothing before `Vio.analytics.start()` and never throws. It does not
+dispatch `vio:cta-click` (the host already knows its own tap). Ids to use in the
+blocks — the same as the SDK's where the button does the same thing:
+
+| block button | `cta` |
+|---|---|
+| a size chosen | `size` (with `optionValue`) |
+| add to the cart | `add_to_cart` |
+| «Velg størrelse» — opens the detail to choose | `choose_size` |
+| «Produktbeskrivelse» / «Vis mer» | `description_open` |
+| Vipps directly | `vipps` |
+| the image or the title (opens the detail) | `open` |
+
+Name the button option you are testing with `variant` (`bar-kjop` vs
+`outline-velg`) and keep `cta` the same for buttons that do the same thing: the
+dashboard groups by `cta` and splits by `cta_variant` / `cta_label`.
+
 ## Sponsor identity — name and logo
 
 The elements say **who sells**: the sponsor's (brand's) display name and logo.

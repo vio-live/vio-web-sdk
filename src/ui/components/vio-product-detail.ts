@@ -30,6 +30,8 @@ import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { SlotRegistration } from '../slot-registration.js'
 import { HIGHLIGHT_ICONS, highlightsStyles, renderHighlights } from '../highlights.js'
+import { emitCta, trackCtaClicks } from '../cta.js'
+import type { CtaInput } from '../../core/analytics/cta.js'
 import { toCampaignId } from '../../core/slots.js'
 import { renderSponsorMark, resolveSponsorIdentity, sponsorDetail, usableLogo } from '../sponsor-identity.js'
 import {
@@ -1359,6 +1361,47 @@ export class VioProductDetail extends LitElement {
     highlightsStyles('detail'),
   ]
 
+  /** Stops reporting the taps on the buttons (`vio:cta-click`). */
+  private stopCtaClicks: (() => void) | null = null
+  /** The product open when the shopper last changed photo: `gallery_swipe` once per open. */
+  private gallerySwipedFor: Product | null = null
+  /** A finger, a pen or a wheel is on the carousel: its scroll is the shopper's swipe, not the SDK's. */
+  private galleryGesture = false
+
+  /**
+   * What a tap on a button of the detail says (`vio:cta-click`, README
+   * «Button tracking»): the open product and the variant chosen (when every
+   * option is), its sponsor and attribution, and the layout shown (only a
+   * non-default one). `gallery_swipe` only once per open product.
+   */
+  private ctaContext = (cta: string): Partial<CtaInput> | null => {
+    const product = this.product
+    if (cta === 'gallery_swipe') {
+      if (!product || this.gallerySwipedFor === product) return null
+      this.gallerySwipedFor = product
+    }
+    const a = this.attribution()
+    const variants = Array.isArray(product?.variants) ? product!.variants : []
+    const variant = product && (variants.length === 1 || !this.missingOption()) ? this.selectedVariant() : null
+    const layout = layoutOriginOf(this.layoutNow)
+    return {
+      productId: product?.id ?? (this.productId || undefined),
+      productVariantId: variant?.id,
+      sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+      campaignId: a.campaignId,
+      slot: a.slot,
+      contentId: a.contentId,
+      contentTitle: a.contentTitle,
+      componentTemplateId: a.componentTemplateId,
+      layout: layout.layoutId ? layout : null,
+    }
+  }
+
+  /** The carousel scrolled under the shopper's finger: their first swipe of this product. */
+  private onGalleryGesture = (): void => {
+    this.galleryGesture = true
+  }
+
   /** The cart changed (another tab, the drawer): the line under Vipps counts it again. */
   private boundCartChange = (): void => {
     if (this.open) this.requestUpdate()
@@ -1373,6 +1416,8 @@ export class VioProductDetail extends LitElement {
     this.slotRegistration.connect(this.slotAttributes())
     void this.loadVippsButton()
     document.addEventListener('vio:product-click', this.boundProductClick)
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = trackCtaClicks(this, 'detail', this.ctaContext)
   }
 
   override disconnectedCallback(): void {
@@ -1380,6 +1425,8 @@ export class VioProductDetail extends LitElement {
     this.addedToastTimer = null
     document.removeEventListener('vio:product-click', this.boundProductClick)
     Vio.cart.removeEventListener('change', this.boundCartChange)
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = null
     this.slotRegistration.clear()
     this.bottomSheet.disconnect()
     this.unsubscribeLayout?.()
@@ -1465,6 +1512,10 @@ export class VioProductDetail extends LitElement {
 
   /** The photo in view is the active one (dots, Apple Pay sheet, events). */
   private onCarouselScroll = (): void => {
+    if (this.galleryGesture) {
+      this.galleryGesture = false
+      emitCta(this, 'detail', 'gallery_swipe', this.ctaContext)
+    }
     const track = this.carouselTrack()
     const step = this.carouselStep(track)
     if (!track || !step) return
@@ -2221,7 +2272,7 @@ export class VioProductDetail extends LitElement {
       <div class="added-toast" part="added-toast" role="status" aria-live="polite">
         <div class="added-toast-text">Lagt i handlekurven</div>
         <div class="added-toast-actions">
-          <button class="added-toast-checkout" part="added-toast-checkout" @click=${this.toastToCheckout}>Til kassen</button>
+          <button class="added-toast-checkout" part="added-toast-checkout" data-vio-cta="checkout" @click=${this.toastToCheckout}>Til kassen</button>
           <button class="added-toast-continue" part="added-toast-continue" @click=${this.hideAddedToast}>Fortsett å handle</button>
         </div>
       </div>
@@ -2530,7 +2581,14 @@ export class VioProductDetail extends LitElement {
     const current = Math.min(this.activeImageIndex, Math.max(0, count - 1))
     return html`
       <div class="gallery carousel" part="gallery">
-        <div class="carousel-track" part="image" @scroll=${this.onCarouselScroll}>
+        <div
+          class="carousel-track"
+          part="image"
+          @scroll=${this.onCarouselScroll}
+          @pointerdown=${this.onGalleryGesture}
+          @touchstart=${this.onGalleryGesture}
+          @wheel=${this.onGalleryGesture}
+        >
           ${images.map(
             (img, idx) => html`
               <div class="carousel-slide" part="slide" aria-label=${`Bilde ${idx + 1} av ${count}`}>
@@ -2545,6 +2603,7 @@ export class VioProductDetail extends LitElement {
                 class="carousel-arrow prev"
                 part="carousel-arrow"
                 aria-label="Forrige bilde"
+                data-vio-cta="gallery_swipe"
                 ?disabled=${current === 0}
                 @click=${() => this.stepCarousel(-1)}
               >‹</button>
@@ -2552,6 +2611,7 @@ export class VioProductDetail extends LitElement {
                 class="carousel-arrow next"
                 part="carousel-arrow"
                 aria-label="Neste bilde"
+                data-vio-cta="gallery_swipe"
                 ?disabled=${current === count - 1}
                 @click=${() => this.stepCarousel(1)}
               >›</button>
@@ -2590,13 +2650,20 @@ export class VioProductDetail extends LitElement {
     const toggle = () => {
       if (foldable) this.descriptionOpen = !this.descriptionOpen
     }
+    // A tap that opens the fold is `description_open`; closing it is not reported.
+    const opens = foldable && !open ? 'description_open' : nothing
     return html`<div class="description-block description-preview ${open ? 'open' : ''} ${foldable ? 'clipped' : ''} ${mode}" part="description">
-      <button class="desc-head" type="button" aria-expanded=${open ? 'true' : 'false'} @click=${toggle}>${this.descriptionHeading()}</button>
+      <button class="desc-head" type="button" aria-expanded=${open ? 'true' : 'false'} data-vio-cta=${opens} @click=${toggle}>${this.descriptionHeading()}</button>
       ${mode === 'folded' && !open
         ? nothing
-        : html`<div class="description ${open ? '' : 'collapsed'}" @click=${() => !this.descriptionOpen && toggle()}>${text}</div>`}
+        : html`<div
+            class="description ${open ? '' : 'collapsed'}"
+            data-vio-cta=${opens}
+            data-vio-cta-label=${opens === nothing ? nothing : this.descriptionHeading()}
+            @click=${() => !this.descriptionOpen && toggle()}
+          >${text}</div>`}
       ${mode === 'preview' && this.descriptionClipped
-        ? html`<button class="desc-more" type="button" @click=${toggle}>${this.descriptionOpen ? 'Vis mindre' : 'Les mer'}</button>`
+        ? html`<button class="desc-more" type="button" data-vio-cta=${opens} @click=${toggle}>${this.descriptionOpen ? 'Vis mindre' : 'Les mer'}</button>`
         : nothing}
     </div>`
   }
@@ -2643,12 +2710,12 @@ export class VioProductDetail extends LitElement {
       times.length === 1 ? times[0] : times.length === 0 && this.deliveryTime.trim() ? `Leveringstid: ${this.deliveryTime.trim()}` : ''
     const links = [
       identity?.refundPolicyUrl
-        ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer">Angrerett og retur</a>`
+        ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer" data-vio-cta="refund_link">Angrerett og retur</a>`
         : null,
-      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer">Kjøpsvilkår</a>` : null,
+      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer" data-vio-cta="terms_link">Kjøpsvilkår</a>` : null,
     ].filter(Boolean)
     return html`<details class="description-block shipping-returns" part="shipping-returns">
-      <summary>Frakt &amp; retur</summary>
+      <summary data-vio-cta="shipping_returns_open">Frakt &amp; retur</summary>
       <div class="description shipping-returns-body">
         <div class="sr-title">Frakt</div>
         ${rates.length
@@ -2747,8 +2814,8 @@ export class VioProductDetail extends LitElement {
     // The brand's own pages, when it gave them (Settings → Brand): its terms
     // and its returns policy, opened in a new tab.
     const links = [
-      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer" part="seller-terms">Kjøpsvilkår</a>` : null,
-      identity?.refundPolicyUrl ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer" part="seller-refund">Angrerett og retur</a>` : null,
+      identity?.termsUrl ? html`<a href=${identity.termsUrl} target="_blank" rel="noopener noreferrer" part="seller-terms" data-vio-cta="terms_link">Kjøpsvilkår</a>` : null,
+      identity?.refundPolicyUrl ? html`<a href=${identity.refundPolicyUrl} target="_blank" rel="noopener noreferrer" part="seller-refund" data-vio-cta="refund_link">Angrerett og retur</a>` : null,
     ].filter(Boolean)
     return html`<p class="seller-note" part="seller-note">
       Du handler direkte hos <strong>${name}</strong>.${links.length ? html`<span class="seller-links">${links}</span>` : nothing}
@@ -2774,12 +2841,12 @@ export class VioProductDetail extends LitElement {
 
   override render() {
     return html`
-      <div class="backdrop" @click=${this.close}></div>
+      <div class="backdrop" data-vio-cta="close" data-vio-cta-label="" @click=${this.close}></div>
       <div class="modal" role="dialog" aria-modal="true" aria-label="Produkt" tabindex="-1">
-        <div class="handle" @click=${this.close} aria-hidden="true"></div>
+        <div class="handle" data-vio-cta="close" data-vio-cta-label="" @click=${this.close} aria-hidden="true"></div>
         <div class="topbar" part="topbar">
           <div class="topbar-sponsor ${this.logoSquare ? 'is-square' : ''}" part="sponsor">${this.renderTopbarSponsor()}</div>
-          <button class="close" part="close" @click=${this.close} aria-label="Lukk">×</button>
+          <button class="close" part="close" data-vio-cta="close" @click=${this.close} aria-label="Lukk">×</button>
         </div>
 
         ${this.renderBody()}
@@ -2835,6 +2902,7 @@ export class VioProductDetail extends LitElement {
                           class="gallery-thumb ${idx === this.activeImageIndex ? 'active' : ''}"
                           part=${idx === this.activeImageIndex ? 'thumb thumb-active' : 'thumb'}
                           @click=${() => (this.activeImageIndex = idx)}
+                          data-vio-cta=${idx === this.activeImageIndex ? nothing : 'gallery_swipe'}
                           aria-label=${`Bilde ${idx + 1}`}
                           aria-current=${idx === this.activeImageIndex ? 'true' : 'false'}
                         >
@@ -2989,6 +3057,7 @@ export class VioProductDetail extends LitElement {
                     stretched="true"
                     role="button"
                     aria-label="Kjøp nå med Vipps"
+                    data-vio-cta="vipps"
                     @click=${this.buyWithVipps}
                   ></vipps-mobilepay-button>
                 `
@@ -2996,6 +3065,7 @@ export class VioProductDetail extends LitElement {
                   <button
                     class="buy-vipps"
                     part="buy-vipps"
+                    data-vio-cta="vipps"
                     @click=${this.buyWithVipps}
                     ?disabled=${this.adding}
                     aria-label="Kjøp nå med Vipps"
@@ -3013,6 +3083,7 @@ export class VioProductDetail extends LitElement {
             <div class="qty-stepper">
               <button
                 class="qty-btn"
+                data-vio-cta="quantity_minus"
                 @click=${() => (this.quantity = Math.max(1, this.quantity - 1))}
                 aria-label="Reduser antall"
               >
@@ -3021,6 +3092,7 @@ export class VioProductDetail extends LitElement {
               <span class="qty-value">${this.quantity}</span>
               <button
                 class="qty-btn"
+                data-vio-cta="quantity_plus"
                 @click=${() =>
                   (this.quantity = Math.min(this.availableQuantity, this.quantity + 1))}
                 aria-label="Øk antall"
@@ -3032,6 +3104,7 @@ export class VioProductDetail extends LitElement {
             <button
               class="add-to-cart"
               part="add-to-cart"
+              data-vio-cta="add_to_cart"
               @click=${this.addToCart}
               ?disabled=${this.availableQuantity <= 0 || this.adding}
             >
@@ -3048,6 +3121,7 @@ export class VioProductDetail extends LitElement {
             ? html`
                 <button
                   class="buy-now"
+                  data-vio-cta="buy_now"
                   @click=${this.buyNow}
                   ?disabled=${this.adding}
                   aria-label="Kjøp nå"
@@ -3064,6 +3138,7 @@ export class VioProductDetail extends LitElement {
             ? html`
                 <button
                   class="buy-applepay"
+                  data-vio-cta="apple_pay"
                   @click=${this.buyWithApplePay}
                   ?disabled=${this.adding}
                   aria-label="Kjøp nå med Apple Pay"
@@ -3078,6 +3153,7 @@ export class VioProductDetail extends LitElement {
             ? html`
                 <button
                   class="buy-stripe"
+                  data-vio-cta="stripe"
                   @click=${this.buyWithStripe}
                   ?disabled=${this.adding}
                   aria-label="Kjøp nå med Stripe"
@@ -3096,6 +3172,8 @@ export class VioProductDetail extends LitElement {
             ? html`
                 <button
                   class="buy-klarna"
+                  data-vio-cta="klarna"
+                  data-vio-cta-label="Kjøp nå med Klarna"
                   @click=${this.buyWithKlarna}
                   ?disabled=${this.adding}
                 >
@@ -3143,6 +3221,8 @@ export class VioProductDetail extends LitElement {
                 <button
                   class="option-pill ${available ? '' : 'unavailable'}"
                   part=${isSelected ? 'option option-selected' : 'option'}
+                  data-vio-cta="size"
+                  data-vio-cta-option=${val}
                   @click=${() => this.selectOption(opt.name, val)}
                   aria-pressed=${isSelected}
                   ?disabled=${!available}

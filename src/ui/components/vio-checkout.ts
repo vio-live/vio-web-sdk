@@ -1064,6 +1064,8 @@ export class VioCheckout extends LitElement {
     // Reattached after a removal: disconnectedCallback unmounted the widgets
     // and updated() skips mounting while detached, so look again now.
     this.requestUpdate()
+    this.stopCtaClicks?.()
+    this.stopCtaClicks = trackCtaClicks(this, 'checkout', this.ctaContext)
   }
 
   /**
@@ -1715,8 +1717,6 @@ export class VioCheckout extends LitElement {
     void this.mountAdyenIfNeeded()
     this.dropStaleStripe()
     void this.mountStripeIfNeeded()
-    this.stopCtaClicks?.()
-    this.stopCtaClicks = trackCtaClicks(this, 'checkout', this.ctaContext)
   }
 
   /** Stops reporting the taps on the buttons (`vio:cta-click`). */

@@ -760,11 +760,13 @@ whole page through `applyVioTheme` (theme key → custom property). The element 
 |---|---|---|---|
 | `gallery` | `detailGallery` | `thumbs` (default) · `carousel` | `carousel`: every photo in one swipeable row with a dot per photo, no thumbnails — less height. `detailCarouselPeek` (`--vio-detail-carousel-peek`) shows the edge of the next one |
 | `description-mode` | `detailDescriptionMode` | `preview` (default) · `folded` · `open` | «Beskrivelse»: the first lines fading out + «Les mer» (`detailDescriptionPreviewLines`, `3`); only the heading until a tap; or all of it |
+| `description-label` | — (`Vio.configureDetail({ descriptionLabel })`) | text, default `Beskrivelse` | Heading of the description fold, e.g. `Produktbeskrivelse` |
 | `highlights` | — | `[{ icon, title, text }]` (JSON) | The brand's promises under the buy zone. By default the brand's own (dashboard Settings → Brand, sponsor block `highlights`); this list replaces them on the page. Icons: `plane heart shirt truck return leaf star shield mailbox home pin clock`, or an image URL. `detailHighlightsDisplay: 'none'` hides the strip |
 | `delivery-time` | — | text, e.g. `2-5 virkedager` | «Leveringstid …» in «Frakt & retur» for a brand whose rates do not say it (each rate's own text in Commerce — «Leveringstid 1-5 dager» — wins) |
 | `carrier-logos` | — | `{ "Bring": "https://…" }` (JSON) | Carrier logos by the name the rate starts with («Bring - Pakke i postkasse»), for rates without their own logo in Commerce (`logo_url`, which wins); otherwise a line icon by the kind of delivery |
 | `vipps-cart-payment` | `vippsCartPayment` | `express` (default) · `checkout` | «Kjøp nå med Vipps» when the brand's cart already has lines: the product is added and the **whole cart** goes to Vipps Express, the line under the button saying «Betaler hele handlekurven · n varer · total»; or (`checkout`) the checkout opens first, Vipps preselected. Also on `<vio-cart>` (its Vipps button) |
 | — | `detailShippingReturnsDisplay` | `block` (default) · `none` | «Frakt & retur»: one row per carrier (logo or icon, carrier, how it delivers, price), the delivery time, the right of withdrawal and the brand's pages |
+| — | `cartHighlightsDisplay` | `grid` (default) · `none` | The brand's promises in the cart, under the ways to pay |
 
 The sheet closes with a pull down from its top bar, or from anywhere while its content is at the top.
 

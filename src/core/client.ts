@@ -27,6 +27,7 @@ import {
   copyAppliedLayout,
   resolveDetailLayout,
   setGlobalDetailLayout,
+  setGlobalDescriptionLabel,
   type AppliedDetailLayout,
   type DetailLayout,
 } from './detail-layout.js'
@@ -257,8 +258,10 @@ class VioFacade {
    * out of the call is left as it is. See README «Section order and layout
    * tracking».
    */
-  configureDetail(options: { layout?: DetailLayout | null } = {}): void {
+  configureDetail(options: { layout?: DetailLayout | null; descriptionLabel?: string | null } = {}): void {
     if (options && typeof options === 'object' && 'layout' in options) setGlobalDetailLayout(options.layout ?? null)
+    // The heading of the description fold («Produktbeskrivelse»); null goes back to «Beskrivelse».
+    if (options && typeof options === 'object' && 'descriptionLabel' in options) setGlobalDescriptionLabel(options.descriptionLabel ?? null)
   }
 
   /**

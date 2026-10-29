@@ -73,7 +73,7 @@ describe('the size picker is inside the buy zone', () => {
     }
     expect(buy.querySelector('.delivery-note')).not.toBeNull()
     // …and pinning, when the host asks for it, applies to the buy zone.
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).toMatch(/\.buy \{[\s\S]*position: var\(--vio-detail-buy-position, static\)/)
   })
 })

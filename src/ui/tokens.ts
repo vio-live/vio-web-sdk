@@ -237,6 +237,8 @@ export interface VioThemeOverrides {
   detailHighlightsDisplay?: string
   /** «Frakt & retur» in the detail: `block` (default) or `none` (hidden). */
   detailShippingReturnsDisplay?: string
+  /** The brand's promises in the cart, under the ways to pay: `grid` (default, shown when the brand has some) or `none`. */
+  cartHighlightsDisplay?: string
   /** `<vio-product-carousel>`: `carousel` (default, one row) or `list` (cards one under the other). Its `layout` attribute wins. */
   carouselLayout?: string
   /** Thumbnail size (default `64px`). One row, scrolls sideways. */
@@ -353,6 +355,7 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   detailDescriptionPreviewLines: '--vio-detail-description-preview-lines',
   detailHighlightsDisplay: '--vio-detail-highlights-display',
   detailShippingReturnsDisplay: '--vio-detail-shipping-returns-display',
+  cartHighlightsDisplay: '--vio-cart-highlights-display',
   detailThumbSize: '--vio-detail-thumb-size',
   detailThumbGap: '--vio-detail-thumb-gap',
   detailThumbRadius: '--vio-detail-thumb-radius',

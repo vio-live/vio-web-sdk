@@ -66,14 +66,14 @@ describe('the buy zone', () => {
 
   it('scrolls with the page on every screen by default; the host can pin it', async () => {
     await open()
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).toMatch(/position: var\(--vio-detail-buy-position, static\)/)
     expect(css).not.toMatch(/--vio-detail-buy-position, sticky/)
   })
 
   it('the description comes after the buy zone on every screen (at the very bottom)', async () => {
     const el = await open()
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).not.toMatch(/\.description-block \{ order: 1; \}/)
     const purchase = root(el).querySelector('.info > .purchase')!
     const kids = [...purchase.children].map((c) => c.className)
@@ -84,7 +84,7 @@ describe('the buy zone', () => {
 describe('the thumbnails', () => {
   it('are one row that never wraps, every thumb a part', async () => {
     const el = await open()
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).toMatch(/\.gallery-thumbs \{[^}]*flex-wrap: nowrap/)
     expect(root(el).querySelectorAll('[part~="thumb"]')).toHaveLength(10)
     expect(root(el).querySelectorAll('[part~="thumb-active"]')).toHaveLength(1)
@@ -149,7 +149,7 @@ describe('the layout knobs are public', () => {
 
   it('every new property is read by a stylesheet (none is a dead knob)', async () => {
     await open()
-    const detail = (VioProductDetail as any).styles.cssText as string
+    const detail = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     for (const v of [
       '--vio-detail-logo-height', '--vio-detail-image-fit', '--vio-detail-image-aspect', '--vio-detail-image-max-height',
       '--vio-detail-image-zoom', '--vio-detail-image-inset', '--vio-detail-logo-zoom', '--vio-detail-thumb-size', '--vio-detail-thumb-gap',
@@ -247,7 +247,7 @@ describe('the options a host sets (Replit, Vev, a page)', () => {
 
   it('the theme can hide the promises and «Frakt & retur»; the gallery and the description mode follow it too', async () => {
     await open()
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).toContain('display: var(--vio-detail-highlights-display, grid)')
     expect(css).toContain('display: var(--vio-detail-shipping-returns-display, block)')
     const src = String(Object.getOwnPropertyDescriptor((VioProductDetail as any).prototype, 'willUpdate')?.value)
@@ -255,10 +255,28 @@ describe('the options a host sets (Replit, Vev, a page)', () => {
   })
 })
 
+describe('the heading of the description', () => {
+  it('«Beskrivelse» by default; the page can say «Produktbeskrivelse»; the element wins', async () => {
+    const el = await open()
+    const head = () => root(el).querySelector('.desc-head')?.textContent?.trim()
+    expect(head()).toBe('Beskrivelse')
+    Vio.configureDetail({ descriptionLabel: 'Produktbeskrivelse' })
+    await settle(el)
+    expect(head()).toBe('Produktbeskrivelse')
+    el.descriptionLabel = 'Om produktet'
+    await settle(el)
+    expect(head()).toBe('Om produktet')
+    el.descriptionLabel = ''
+    Vio.configureDetail({ descriptionLabel: null })
+    await settle(el)
+    expect(head()).toBe('Beskrivelse')
+  })
+})
+
 describe('the main image', () => {
   it('one 4:5 box it fills, the same for every image (no jump), inside the padding by default', async () => {
     await open()
-    const css = (VioProductDetail as any).styles.cssText as string
+    const css = [(VioProductDetail as any).styles].flat().map((s: any) => s.cssText).join("\n") as string
     expect(css).toContain('aspect-ratio: var(--vio-detail-image-aspect, 4 / 5)')
     expect(css).toContain('object-fit: var(--vio-detail-image-fit, cover)')
     expect(css).toMatch(/margin-inline: calc\(\s*var\(--vio-detail-image-inset, var\(--vio-detail-padding-x/)

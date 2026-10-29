@@ -14,7 +14,10 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.37.0 — 2026-10-29
+
+> **Deploy the collector `89f2766` (vio-analytics#38) before using this version:** an older collector rejects
+> `cta_click` (the rest of the batch is kept, those clicks are lost).
 
 ### Added
 - **Button tracking: `cta_click`** — which buttons shoppers use. Every tap on a button of

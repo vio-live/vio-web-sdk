@@ -67,6 +67,17 @@ function cartShipping(
   return null
 }
 
+/**
+ * Whether the cart's shipping price is only a «from»: no rate chosen yet and
+ * more than one offered (the shopper picks it in Vipps or in the checkout).
+ */
+function cartShippingIsFrom(items: ReadonlyArray<{ shipping?: unknown; availableShippings?: unknown[] }>, currency: string): boolean {
+  if (items.some((item) => ratePrice(item.shipping, currency) !== null)) return false
+  return items.some(
+    (item) => (item.availableShippings ?? []).filter((r) => ratePrice(r, currency) !== null).length > 1,
+  )
+}
+
 export class VioCart extends LitElement {
   /** Drawer visibility. Reflects to attribute for `:host([open])`. */
   @property({ type: Boolean, reflect: true }) open = false
@@ -365,6 +376,12 @@ export class VioCart extends LitElement {
       font-size: 14px;
     }
     .total-row { font-weight: 700; font-size: 16px; margin-top: 0; }
+    /* Where the shipping method is chosen: in Vipps, or in the checkout. */
+    .shipping-hint {
+      margin: calc(var(--vio-space-md, 16px) * -0.5) 0 var(--vio-space-md, 16px);
+      font-size: 12px;
+      color: var(--vio-color-text-secondary, #666);
+    }
     .subtotal-value { font-weight: 700; font-size: 16px; }
 
     /* Apple Pay express — pay the whole cart directly. */
@@ -1084,6 +1101,12 @@ export class VioCart extends LitElement {
   /** «Frakt» (the chosen or cheapest rate) and «Totalt» with it; «Beregnes i kassen» when unknown. */
   private renderShippingRows() {
     const shipping = this.shippingAcrossSponsors
+    // A «from» price until a rate is chosen among several — the shopper picks
+    // it in Vipps or in the next step, and the note says so.
+    const from = shipping !== null && shipping > 0 && [...this.carts.values()].some(
+      (cart) => cart.items.length > 0 && cartShippingIsFrom(cart.items, cart.currency),
+    )
+    const fra = from ? 'fra ' : ''
     return html`
       <div class="shipping-row" part="cart-shipping">
         <span class="subtotal-label">Frakt</span>
@@ -1091,14 +1114,15 @@ export class VioCart extends LitElement {
           ? 'Beregnes i kassen'
           : shipping <= 0
             ? 'Gratis'
-            : formatPrice(shipping, this.primaryCurrency)}</span>
+            : `${fra}${formatPrice(shipping, this.primaryCurrency)}`}</span>
       </div>
       ${shipping !== null
         ? html`<div class="total-row" part="cart-total">
             <span>Totalt</span>
-            <span>${formatPrice(this.totalAcrossSponsors + shipping, this.primaryCurrency)}</span>
+            <span>${fra}${formatPrice(this.totalAcrossSponsors + shipping, this.primaryCurrency)}</span>
           </div>`
         : ''}
+      <p class="shipping-hint" part="cart-shipping-hint">Frakt velger du i Vipps eller i neste steg.</p>
     `
   }
 

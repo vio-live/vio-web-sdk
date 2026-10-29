@@ -3,6 +3,7 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest'
 import { mount, unmountAll, settle, shadowText } from '../test-harness.js'
 import { Vio } from '../../core/client.js'
 import { VioCheckout } from './vio-checkout.js'
+import { rememberCheckoutSponsor } from '../../core/sponsor-identity.js'
 
 /**
  * Coming back from an embedded checkout's confirmation page must never start
@@ -268,5 +269,57 @@ describe('the provider shows its own receipt', () => {
     const el = await mount<HTMLElement>('vio-checkout')
     await renderCycles(el)
     expect(shadowText(el)).toContain('Takk')
+  })
+})
+
+/**
+ * Kustom's confirmation URL names no sponsor (`?order_id=…&checkout_id=…`), and
+ * by the time the shopper is back the order may have completed the cart. The
+ * read then went out with the platform key and was refused: «Vi kunne ikke
+ * bekrefte betalingen» on a paid order (QA, 2026-10-29, orders 4634–4638).
+ */
+describe('Kustom return: whose checkout it is', () => {
+  const RETURNING = 9
+  beforeEach(() => {
+    try { localStorage.clear() } catch { /* no storage */ }
+    rememberCheckoutSponsor('CHK-K', { sponsorId: RETURNING, channelId: '77' })
+    vi.spyOn(manager, 'mountKustomCheckout').mockImplementation(fakeMount)
+    vi.spyOn(manager, 'renderKustomSnippet').mockImplementation((c: any, h: any) => { c.innerHTML = h })
+  })
+  afterEach(() => {
+    try { localStorage.clear() } catch { /* no storage */ }
+  })
+
+  it('with no cart left, reopens and reads with the sponsor and checkout this tab remembered', async () => {
+    vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map())
+    landOn('?order_id=KCO-1&payment_processor=KUSTOM&checkout_id=CHK-K')
+    const read = vi.spyOn(manager, 'getKustomOrder')
+      .mockResolvedValue({ order_id: 'KCO-1', status: 'checkout_complete', html_snippet: '<p>receipt</p>' })
+    const el = await mount<HTMLElement>('vio-checkout')
+    await renderCycles(el)
+    expect(manager.open).toHaveBeenCalledWith(RETURNING)
+    expect(read).toHaveBeenCalledWith('KCO-1', RETURNING, 'CHK-K')
+    expect(shadowText(el)).not.toContain('Vi kunne ikke bekrefte betalingen')
+  })
+
+  it("with another brand's cart first, reopens the returning checkout's sponsor, not the first cart's", async () => {
+    vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map([[SPONSOR, {} as any], [RETURNING, {} as any]]))
+    landOn('?order_id=KCO-2&payment_processor=KUSTOM&checkout_id=CHK-K')
+    vi.spyOn(manager, 'getKustomOrder')
+      .mockResolvedValue({ order_id: 'KCO-2', status: 'checkout_complete', html_snippet: '<p>receipt</p>' })
+    const el = await mount<HTMLElement>('vio-checkout')
+    await renderCycles(el)
+    expect(manager.open).toHaveBeenCalledWith(RETURNING)
+    expect(manager.open).not.toHaveBeenCalledWith(SPONSOR)
+  })
+
+  it("getKustomOrder: the remembered checkout's sponsor and channel win over the open checkout's", async () => {
+    manager.state = { sponsorId: SPONSOR, subtotal: 0, currency: 'NOK' }
+    const options = vi.spyOn(manager, 'gqlOptions').mockRejectedValue(new Error('stop here'))
+    await expect(manager.getKustomOrder('KCO-3', SPONSOR, 'CHK-K')).rejects.toThrow('stop here')
+    expect(options).toHaveBeenCalledWith(RETURNING, 'CHK-K')
+    // A checkout this tab knows nothing of: the sponsor given, as before.
+    await expect(manager.getKustomOrder('KCO-4', SPONSOR)).rejects.toThrow('stop here')
+    expect(options).toHaveBeenLastCalledWith(SPONSOR, undefined)
   })
 })

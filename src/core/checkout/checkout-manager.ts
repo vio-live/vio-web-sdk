@@ -1516,9 +1516,17 @@ export class CheckoutManager extends EventTarget {
     }
   }
 
-  /** Re-read a Kustom order — used on the confirmation return trip. */
-  async getKustomOrder(orderId: string, sponsorId?: number): Promise<KustomOrder | null> {
-    const opts = await this.gqlOptions(sponsorId ?? this.state?.sponsorId)
+  /**
+   * Re-read a Kustom order — used on the confirmation return trip. The order
+   * id is Kustom's, so it says nothing of whose it is: `checkoutId` (Vio's,
+   * from the return URL) does. The sponsor and channel this tab remembered for
+   * that checkout win over the open checkout's, as for Qliro and Walley —
+   * without them a return with no cart left (the order already completed it)
+   * read with the platform key and was refused (QA, 2026-10-29).
+   */
+  async getKustomOrder(orderId: string, sponsorId?: number, checkoutId?: string): Promise<KustomOrder | null> {
+    const checkout = checkoutId || undefined
+    const opts = await this.gqlOptions(this.sponsorIdOfCheckout(checkout) ?? sponsorId ?? this.state?.sponsorId, checkout)
     return gqlGetKustomOrder(orderId, opts)
   }
 

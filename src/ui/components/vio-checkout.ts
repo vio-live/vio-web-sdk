@@ -1252,7 +1252,7 @@ export class VioCheckout extends LitElement {
         this.returningFrom = 'kustom'
         this.setOrderSponsor(sponsorId, kustomReturn.checkoutId)
         if (!this.checkoutState) {
-          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          const spIdToUse = this.returnSponsorOf(sponsorId, kustomReturn.checkoutId)
           if (spIdToUse) {
             try {
               Vio.checkout.open(spIdToUse)
@@ -1274,6 +1274,7 @@ export class VioCheckout extends LitElement {
           const order = await Vio.checkout.getKustomOrder(
             kustomOrderId,
             this.checkoutState?.sponsorId,
+            kustomReturn.checkoutId,
           )
           this.verifyingReturn = null
           if (order?.status === 'checkout_complete' && order.html_snippet) {
@@ -1315,7 +1316,7 @@ export class VioCheckout extends LitElement {
         this.returningFrom = 'qliro'
         this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
-          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          const spIdToUse = this.returnSponsorOf(sponsorId, checkoutId)
           if (spIdToUse) {
             try {
               Vio.checkout.open(spIdToUse)
@@ -1392,7 +1393,7 @@ export class VioCheckout extends LitElement {
         this.returningFrom = 'walley'
         this.setOrderSponsor(sponsorId, checkoutId)
         if (!this.checkoutState) {
-          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          const spIdToUse = this.returnSponsorOf(sponsorId, checkoutId)
           if (spIdToUse) {
             try {
               Vio.checkout.open(spIdToUse)
@@ -1468,7 +1469,7 @@ export class VioCheckout extends LitElement {
         this.adyenSettled = true
         this.autoSelectAttempted = true
         if (!this.checkoutState) {
-          const spIdToUse = sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          const spIdToUse = this.returnSponsorOf(sponsorId, checkoutId)
           if (spIdToUse) {
             try {
               Vio.checkout.open(spIdToUse)
@@ -2726,6 +2727,21 @@ export class VioCheckout extends LitElement {
    * else the open state's — a return without `vio_sponsor` (Qliro, Walley)
    * re-opens the state with whichever cart comes first, which is a guess.
    */
+  /**
+   * The sponsor to reopen the checkout with on a provider's return: the one
+   * the URL names, else the one this tab remembered for that checkout (a
+   * return URL need not name it — Kustom's never does), else the first cart.
+   * The first cart alone is a guess: with two brands' carts on the page it is
+   * the wrong one, and with the cart already completed by the order there is
+   * none — every read after it then goes out with the wrong key.
+   */
+  private returnSponsorOf(sponsorId: number, checkoutId?: string | null): number {
+    if (sponsorId > 0) return sponsorId
+    const remembered = rememberedCheckoutSponsor(checkoutId || undefined)?.sponsorId
+    if (remembered) return remembered
+    return [...Vio.cart.getAllCarts().keys()][0] || 0
+  }
+
   private setOrderSponsor(sponsorId: number | undefined, checkoutId: string | undefined): void {
     try {
       const checkout = checkoutId || undefined

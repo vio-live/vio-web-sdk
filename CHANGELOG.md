@@ -14,7 +14,7 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
-## Unreleased
+## 0.36.0 — 2026-10-29
 
 ### Changed
 - **The cart says where shipping is chosen.** Under «Frakt» / «Totalt» a note: «Frakt velger du i Vipps eller i

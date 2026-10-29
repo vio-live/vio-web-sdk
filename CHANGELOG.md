@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Changed
+- **The cart says where shipping is chosen.** Under «Frakt» / «Totalt» a note: «Frakt velger du i Vipps eller i
+  neste steg.» (`part="cart-shipping-hint"`). While no rate is chosen and the brand offers several, the shipping and
+  the total read «fra …» (the cheapest).
+
 ### Added
 - **The heading of the description fold is configurable**: `Vio.configureDetail({ descriptionLabel: 'Produktbeskrivelse' })`
   for the page, or `description-label` on `<vio-product-detail>` (wins). Default «Beskrivelse». Feedback from Aller

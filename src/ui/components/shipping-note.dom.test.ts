@@ -103,10 +103,17 @@ describe('the cart drawer', () => {
     expect(row(el, '.total-row')).toBe('Totalt 1 477 Kr')
   })
 
-  it('no rate chosen yet: the cheapest offered', async () => {
+  it('no rate chosen yet among several: «fra» the cheapest, and the total «fra»', async () => {
     const el = await cart({ availableShippings: [rate(99), rate(49)] })
-    expect(row(el, '.shipping-row')).toBe('Frakt 49 Kr')
-    expect(row(el, '.total-row')).toBe('Totalt 1 447 Kr')
+    expect(row(el, '.shipping-row')).toBe('Frakt fra 49 Kr')
+    expect(row(el, '.total-row')).toBe('Totalt fra 1 447 Kr')
+  })
+
+  it('a single rate offered is its price, no «fra»; the note says where shipping is chosen', async () => {
+    const el = await cart({ availableShippings: [rate(59)] })
+    expect(row(el, '.shipping-row')).toBe('Frakt 59 Kr')
+    expect(row(el, '.total-row')).toBe('Totalt 1 457 Kr')
+    expect(row(el, '.shipping-hint')).toBe('Frakt velger du i Vipps eller i neste steg.')
   })
 
   it('a free rate says «Gratis»; no rate known says it is worked out in the checkout, with no total', async () => {

@@ -16,6 +16,12 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Vipps: after a cancelled payment the delivery form comes back filled** — the page reloads on the way
+  back from Vipps and the form was empty, so «Betal … med Vipps» stayed greyed out under «Vennligst fyll
+  ut leveringsadresse» until the shopper typed it all again. The checkout now refills the empty fields
+  (name, email, mobile, address) from the checkout it left with; nothing the shopper typed is overwritten.
+
 ## 0.37.1 — 2026-10-30
 
 ### Fixed

@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.4 — 2026-10-30
+
 ### Fixed
 - **Kustom, Qliro, Walley and Adyen: the return read is tried again while the key is refused** — on a page
   that boots in steps (Vev: init, bootstrap, init again with the page's campaign) the returning checkout's

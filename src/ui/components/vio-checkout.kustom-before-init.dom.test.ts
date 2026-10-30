@@ -103,3 +103,53 @@ describe('a Kustom return read before Vio.init()', () => {
     expect(manager.mountKustomCheckout).not.toHaveBeenCalled()
   })
 })
+
+describe('a Kustom return whose read is refused while the page settles', () => {
+  const realDelays = (VioCheckout as any).RETURN_KEY_RETRY_DELAYS_MS
+  beforeEach(() => {
+    ;(VioCheckout as any).RETURN_KEY_RETRY_DELAYS_MS = [1, 1, 1, 1]
+  })
+  afterEach(() => {
+    ;(VioCheckout as any).RETURN_KEY_RETRY_DELAYS_MS = realDelays
+  })
+
+  // Alan, QA 2026-10-30, Vev 0.341: on the page just back from Kustom, every
+  // commerce call of the first second went out with the platform key (the
+  // returning channel's key was not known yet) and GetKustomOrder got a 401;
+  // 45 s later the same page read with the right key.
+  it('tries again while the key is refused, and shows the receipt once it is accepted', async () => {
+    seedConnectionCart()
+    Vio.init({ apiKey: KEY, environment: 'production' } as any)
+    rememberCheckoutSponsor('CHK-K2', { sponsorId: SPONSOR, channelId: '77' })
+    const read = vi
+      .spyOn(manager, 'getKustomOrder')
+      .mockRejectedValueOnce(new Error('GraphQL request failed (HTTP 401)'))
+      .mockRejectedValueOnce(new Error('Authentication failed'))
+      .mockResolvedValue({ order_id: 'KCO-2', status: 'checkout_complete', html_snippet: '<p>Takk</p>' })
+    window.history.replaceState({}, '', '/?order_id=KCO-2&payment_processor=KUSTOM&checkout_id=CHK-K2')
+
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    for (let i = 0; i < 6; i++) {
+      await renderCycles(el, 2)
+      await new Promise((r) => setTimeout(r, 5))
+    }
+
+    expect(read).toHaveBeenCalledTimes(3)
+    expect(shadowText(el)).not.toContain('Vi kunne ikke bekrefte betalingen')
+    expect(manager.mountKustomCheckout).not.toHaveBeenCalled()
+  })
+
+  it('any other failure is not retried: one read, and the shopper is told at once', async () => {
+    seedConnectionCart()
+    Vio.init({ apiKey: KEY, environment: 'production' } as any)
+    rememberCheckoutSponsor('CHK-K3', { sponsorId: SPONSOR, channelId: '77' })
+    const read = vi.spyOn(manager, 'getKustomOrder').mockRejectedValue(new Error('network down'))
+    window.history.replaceState({}, '', '/?order_id=KCO-3&payment_processor=KUSTOM&checkout_id=CHK-K3')
+
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    await renderCycles(el, 6)
+
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(shadowText(el)).toContain('Vi kunne ikke bekrefte betalingen')
+  })
+})

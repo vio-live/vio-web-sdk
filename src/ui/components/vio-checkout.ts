@@ -80,6 +80,12 @@ const STRIPE_LOGO_SRC =
 
 /** Said when a pay button is pressed on a cart with nothing to pay for. */
 const EMPTY_CART_MESSAGE = 'Handlekurven er tom.'
+
+/** The commerce API refused the key (401, «Authentication failed»), not the request itself. */
+function isKeyRefused(err: unknown): boolean {
+  const message = String((err as { message?: unknown } | null)?.message ?? err ?? '')
+  return /authenticat|unauthori[sz]ed|\b401\b/i.test(message)
+}
 /** Said when the chosen delivery could not be saved on the cart before a hosted payment. */
 const SHIPPING_NOT_SAVED_MESSAGE = 'Kunne ikke lagre fraktmetoden. Prøv igjen.'
 
@@ -1275,10 +1281,12 @@ export class VioCheckout extends LitElement {
         // A reload must not read a used return twice.
         this.cleanReturnQueryParams([...KUSTOM_RETURN_QUERY_KEYS])
         try {
-          const order = await Vio.checkout.getKustomOrder(
-            kustomOrderId,
-            this.checkoutState?.sponsorId,
-            kustomReturn.checkoutId,
+          const order = await this.readOnReturn(() =>
+            Vio.checkout.getKustomOrder(
+              kustomOrderId,
+              this.checkoutState?.sponsorId,
+              kustomReturn.checkoutId,
+            ),
           )
           this.verifyingReturn = null
           if (order?.status === 'checkout_complete' && order.html_snippet) {
@@ -1343,9 +1351,8 @@ export class VioCheckout extends LitElement {
         // there and the read has no key: reopen on it once init lands.
         if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, checkoutId, 'qliro')
         try {
-          const order = await Vio.checkout.getQliroOrder(
-            checkoutId,
-            this.checkoutState?.sponsorId,
+          const order = await this.readOnReturn(() =>
+            Vio.checkout.getQliroOrder(checkoutId, this.checkoutState?.sponsorId),
           )
           this.verifyingReturn = null
           if (order?.status === 'Completed') {
@@ -1420,9 +1427,8 @@ export class VioCheckout extends LitElement {
         // there and the read has no key: reopen on it once init lands.
         if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, checkoutId, 'walley')
         try {
-          const order = await Vio.checkout.getWalleyOrder(
-            checkoutId,
-            this.checkoutState?.sponsorId,
+          const order = await this.readOnReturn(() =>
+            Vio.checkout.getWalleyOrder(checkoutId, this.checkoutState?.sponsorId),
           )
           this.verifyingReturn = null
           if (order?.html_snippet) {
@@ -1497,10 +1503,12 @@ export class VioCheckout extends LitElement {
         let payment: AdyenPayment | null = null
         let sawStatus = false
         try {
-          payment = await Vio.checkout.getAdyenPayment(
-            checkoutId,
-            { redirectResult: adyenReturn.redirectResult },
-            sponsorId || undefined,
+          payment = await this.readOnReturn(() =>
+            Vio.checkout.getAdyenPayment(
+              checkoutId,
+              { redirectResult: adyenReturn.redirectResult },
+              sponsorId || undefined,
+            ),
           )
           sawStatus = !!payment
         } catch (err) {
@@ -2792,6 +2800,31 @@ export class VioCheckout extends LitElement {
    * the wrong one, and with the cart already completed by the order there is
    * none — every read after it then goes out with the wrong key.
    */
+  /** Waits between tries of a provider's read on the way back while its key is refused (see readOnReturn). */
+  private static readonly RETURN_KEY_RETRY_DELAYS_MS = [1500, 3000, 5000, 8000]
+
+  /**
+   * A provider's read on the way back, tried again while the commerce API
+   * refuses the key. A page that boots in steps (Vev: init, bootstrap, then
+   * init again with the page's campaign) cannot yet name the key of the
+   * returning checkout's channel for its first seconds, so the read goes out
+   * with the platform key and gets a 401. A paid Kustom order came back to
+   * «Vi kunne ikke bekrefte betalingen» (Alan, QA 2026-10-30, Vev 0.341); 45 s
+   * later the same page read with the right key. Any other error is thrown at
+   * once, as before.
+   */
+  private async readOnReturn<T>(read: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await read()
+      } catch (err) {
+        const delayMs = VioCheckout.RETURN_KEY_RETRY_DELAYS_MS[attempt]
+        if (delayMs === undefined || !isKeyRefused(err)) throw err
+        await new Promise((r) => setTimeout(r, delayMs))
+      }
+    }
+  }
+
   /** How long a return waits for `Vio.init()` to reopen the checkout on its cart. */
   private static readonly RETURN_INIT_WAIT_MS = 10_000
 

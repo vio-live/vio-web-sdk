@@ -104,6 +104,76 @@ describe('a return read before Vio.init()', () => {
   })
 })
 
+describe('the delivery form after a cancelled Vipps payment', () => {
+  it('comes back filled from the checkout it left with, so «Betal … med Vipps» can be pressed again', async () => {
+    // Alan, QA 2026-10-30 (0.37.1): the page reloaded on the way back from
+    // Vipps and the form was empty — the button greyed out under «Vennligst
+    // fyll ut leveringsadresse».
+    seedConnectionCart()
+    Vio.init({ apiKey: KEY, environment: 'production' } as any)
+    vi.spyOn(manager, 'getVippsStatus').mockResolvedValue({ state: 'ABORTED', duplicate_of: null })
+    vi.spyOn(manager, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Vipps' }])
+    vi.spyOn(manager, 'getStripeMode').mockResolvedValue('link')
+    const read = vi.spyOn(manager, 'getCheckout').mockResolvedValue({
+      email: 'kari@example.no',
+      shipping_address: {
+        first_name: 'Kari',
+        last_name: 'Nordmann',
+        phone_code: '+47',
+        phone: '91234567',
+        address1: 'Storgata 12B',
+        address2: '',
+        city: 'Oslo',
+        zip: '0194',
+        country_code: 'NO',
+      },
+    })
+    window.history.replaceState(
+      {},
+      '',
+      `/?vio_payment=success&vio_method=vipps&vio_sponsor=${SPONSOR}&checkout_id=${CHECKOUT}`,
+    )
+
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    await renderCycles(el, 8)
+
+    expect(read).toHaveBeenCalledWith(CHECKOUT, SPONSOR)
+    expect(el.form).toMatchObject({
+      firstName: 'Kari',
+      lastName: 'Nordmann',
+      email: 'kari@example.no',
+      address: 'Storgata 12B',
+      postalCode: '0194',
+      city: 'Oslo',
+      phone: '+47 91234567',
+    })
+    expect(el.isAddressValid).toBe(true)
+    const text = shadowText(el)
+    expect(text).toContain('Betalingen ble avbrutt eller feilet')
+    expect(text).not.toContain('Vennligst fyll ut leveringsadresse')
+  })
+
+  it('never overwrites what the shopper already typed, and an unreadable checkout leaves the form as it is', async () => {
+    seedConnectionCart()
+    Vio.init({ apiKey: KEY, environment: 'production' } as any)
+    vi.spyOn(manager, 'getVippsStatus').mockResolvedValue({ state: 'ABORTED', duplicate_of: null })
+    vi.spyOn(manager, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Vipps' }])
+    vi.spyOn(manager, 'getStripeMode').mockResolvedValue('link')
+    vi.spyOn(manager, 'getCheckout').mockRejectedValue(new Error('401'))
+    window.history.replaceState(
+      {},
+      '',
+      `/?vio_payment=success&vio_method=vipps&vio_sponsor=${SPONSOR}&checkout_id=${CHECKOUT}`,
+    )
+
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    await renderCycles(el, 8)
+
+    expect(el.form.firstName).toBe('')
+    expect(shadowText(el)).toContain('Betalingen ble avbrutt eller feilet')
+  })
+})
+
 describe('the payment step with no checkout to ask about', () => {
   it('says the cart is empty instead of loading forever', async () => {
     const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')

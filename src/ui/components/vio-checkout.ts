@@ -1550,6 +1550,10 @@ export class VioCheckout extends LitElement {
         this.verifyingReturn = null
         this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
+        // Not paid: the shopper pays again here, with the address they typed.
+        if (outcome !== 'paid' && outcome !== 'duplicate') {
+          await this.prefillFormFromCheckout(checkoutId, sponsorId)
+        }
       } else if (vioPayment === 'success') {
         // The URL is forgeable (and some PSPs reuse one return URL for
         // cancellations) — the BACKEND decides whether this checkout is paid.
@@ -2134,6 +2138,42 @@ export class VioCheckout extends LitElement {
   private onFieldChange<K extends keyof CheckoutAddress>(field: K, value: string): void {
     this.form = { ...this.form, [field]: value }
     Vio.checkout.setAddress(this.form)
+  }
+
+  /**
+   * The delivery form after a provider's return, from the checkout it left
+   * with. The page reloads on the way back and the form came back empty,
+   * though the shopper typed it before leaving — and the backend checkout has
+   * it: the standard Vipps payment puts the form's address on the checkout
+   * before the payment is created. A cancelled Vipps payment came back with
+   * «Betal … med Vipps» greyed out under «Vennligst fyll ut leveringsadresse»
+   * (Alan, QA 2026-10-30, SDK 0.37.1). Only empty fields are filled, through
+   * the same path as typing; never throws.
+   */
+  private async prefillFormFromCheckout(checkoutId: string, sponsorId: number): Promise<void> {
+    try {
+      if (!checkoutId || !this.checkoutState) return
+      const checkout = await Vio.checkout.getCheckout(checkoutId, sponsorId || undefined)
+      const address = checkout?.shipping_address ?? checkout?.billing_address
+      if (!address) return
+      const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
+      const code = text(address.phone_code).replace(/^\+/, '')
+      const phone = text(address.phone)
+      const found: Partial<CheckoutAddress> = {
+        firstName: text(address.first_name),
+        lastName: text(address.last_name),
+        email: text(checkout?.email),
+        address: [text(address.address1), text(address.address2)].filter(Boolean).join(', '),
+        postalCode: text(address.zip),
+        city: text(address.city),
+        phone: phone ? (code ? `+${code} ${phone}` : phone) : '',
+      }
+      for (const [field, value] of Object.entries(found) as Array<[keyof CheckoutAddress, string]>) {
+        if (value && !text(this.form[field])) this.onFieldChange(field, value)
+      }
+    } catch {
+      /* the shopper types it again, as before */
+    }
   }
 
   /** After choosing a method that needs our form, bring the form into view. */

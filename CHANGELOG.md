@@ -16,6 +16,13 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Kustom, Qliro, Walley and Adyen: the return confirms the order on a page that calls `Vio.init()` after
+  mounting the checkout (Vev)** — the return read the order at once, before init: no cart yet and no key,
+  so a paid Kustom order came back to «Handlekurven er tom.» over «Vi kunne ikke bekrefte betalingen», and
+  the cart stayed full (a second purchase paid again). Like the Vipps return since 0.37.1, they now wait for
+  init (up to 10 s), reopen on the cart and then read.
+
 ## 0.37.2 — 2026-10-30
 
 ### Fixed

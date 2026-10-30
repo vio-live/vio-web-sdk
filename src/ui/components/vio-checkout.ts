@@ -1269,6 +1269,9 @@ export class VioCheckout extends LitElement {
         }
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen…'
+        // Before `Vio.init()` (Vev mounts the checkout first) the cart is not
+        // there and the read has no key: reopen on it once init lands.
+        if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, kustomReturn.checkoutId ?? '', 'kustom')
         // A reload must not read a used return twice.
         this.cleanReturnQueryParams([...KUSTOM_RETURN_QUERY_KEYS])
         try {
@@ -1336,6 +1339,9 @@ export class VioCheckout extends LitElement {
         this.autoSelectAttempted = true
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen…'
+        // Before `Vio.init()` (Vev mounts the checkout first) the cart is not
+        // there and the read has no key: reopen on it once init lands.
+        if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, checkoutId, 'qliro')
         try {
           const order = await Vio.checkout.getQliroOrder(
             checkoutId,
@@ -1410,6 +1416,9 @@ export class VioCheckout extends LitElement {
         }
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen…'
+        // Before `Vio.init()` (Vev mounts the checkout first) the cart is not
+        // there and the read has no key: reopen on it once init lands.
+        if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, checkoutId, 'walley')
         try {
           const order = await Vio.checkout.getWalleyOrder(
             checkoutId,
@@ -1482,6 +1491,9 @@ export class VioCheckout extends LitElement {
         }
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen…'
+        // Before `Vio.init()` (Vev mounts the checkout first) the cart is not
+        // there and the read has no key: reopen on it once init lands.
+        if (!this.checkoutState) await this.reopenOnceInitialized(sponsorId, checkoutId, 'adyen')
         let payment: AdyenPayment | null = null
         let sawStatus = false
         try {

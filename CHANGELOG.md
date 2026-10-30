@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.1 — 2026-10-30
+
 ### Fixed
 - **Kustom: the return confirms the order again on a page with two brands' carts** — the return read
   the order with the platform key when its own cart was already closed, and said «Vi kunne ikke

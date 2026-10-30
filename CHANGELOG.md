@@ -14,6 +14,21 @@ How to keep this file: see [CONTRIBUTING → Changelog](CONTRIBUTING.md#changelo
 The details of each feature live in the [README](README.md); this file says *what*
 and *when*, and links there.
 
+## Unreleased
+
+### Fixed
+- **Kustom: the return confirms the order again on a page with two brands' carts** — the return read
+  the order with the platform key when its own cart was already closed, and said «Vi kunne ikke
+  bekrefte betalingen» for a paid order. It now reads with the returning checkout's sponsor and
+  channel, as Qliro and Walley do; Kustom, Qliro, Walley and Adyen reopen on that sponsor
+  ([#123](https://github.com/vio-live/vio-web-sdk/pull/123)).
+- **Vipps: coming back from a cancelled payment no longer leaves «Henter betalingsmåter…» for good** —
+  on a page that mounts the checkout before it calls `Vio.init()` (Vev), the return found no cart
+  (each connection keeps its own), so nothing asked for the payment methods. The checkout now reopens
+  on the cart once `Vio.init()` lands (up to 10 s) and lists the methods; a paid return also clears the
+  connection's cart. With no checkout at all, the payment step says «Handlekurven er tom.» instead of
+  loading.
+
 ## 0.37.0 — 2026-10-29
 
 > **Deploy the collector `89f2766` (vio-analytics#38) before using this version:** an older collector rejects

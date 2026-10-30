@@ -13,6 +13,7 @@ import { property, state } from 'lit/decorators.js'
 import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
+import { Configuration } from '../../core/configuration.js'
 import { formatPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
 import {
   buyerRefOf,
@@ -1525,8 +1526,7 @@ export class VioCheckout extends LitElement {
         // populate it before showing the notice so the overlay has a
         // coherent state to render instead of a blank/broken shell.
         if (!this.checkoutState) {
-          const spIdToUse =
-            sponsorId || [...Vio.cart.getAllCarts().keys()][0] || 0
+          const spIdToUse = this.returnSponsorOf(sponsorId, checkoutId)
           if (spIdToUse) {
             try {
               Vio.checkout.open(spIdToUse)
@@ -1536,12 +1536,17 @@ export class VioCheckout extends LitElement {
             }
           }
         }
+        // Before `Vio.init()` the cart is not there yet: open again once it is.
+        const reopening = this.checkoutState ? null : this.reopenOnceInitialized(sponsorId, checkoutId, 'vipps')
         // Whose checkout this is: the return URL's sponsor and checkout — not
         // the page's, and not whichever cart happens to be first here.
         this.setOrderSponsor(sponsorId, checkoutId)
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen med Vipps…'
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
+        // The outcome acts on the cart (a paid one is cleared, a cancelled one
+        // is paid again): the connection's, not the empty one before init.
+        if (reopening) await reopening
         this.verifyingReturn = null
         this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
@@ -2735,6 +2740,34 @@ export class VioCheckout extends LitElement {
    * the wrong one, and with the cart already completed by the order there is
    * none — every read after it then goes out with the wrong key.
    */
+  /** How long a return waits for `Vio.init()` to reopen the checkout on its cart. */
+  private static readonly RETURN_INIT_WAIT_MS = 10_000
+
+  /**
+   * Reopen the checkout of a provider's return once `Vio.init()` is there.
+   * A page may mount the checkout before it calls `Vio.init()` — Vev does:
+   * the overlay renders with the page, the key comes from its config block a
+   * moment later — and then the checkout reads the return first. Each
+   * connection keeps its own carts (0.33), so before the init the cart is not
+   * there: `open()` throws, the checkout has no state, and nothing asks for
+   * the payment methods. A Vipps payment cancelled on Alan's Vev page
+   * (2026-10-29) came back to «Betalingen ble avbrutt…» over a
+   * «Henter betalingsmåter…» that never ended, with no cart to pay again.
+   * Never throws; does nothing when a state is already there.
+   */
+  private async reopenOnceInitialized(sponsorId: number, checkoutId: string, method: PaymentMethod): Promise<void> {
+    try {
+      if (!Configuration.isInitialized && !(await Configuration.whenReady(VioCheckout.RETURN_INIT_WAIT_MS))) return
+      if (this.checkoutState) return
+      const spId = this.returnSponsorOf(sponsorId, checkoutId)
+      if (!spId) return
+      Vio.checkout.open(spId)
+      Vio.checkout.selectPaymentMethod(method)
+    } catch {
+      /* no cart to reopen: the outcome is shown all the same */
+    }
+  }
+
   private returnSponsorOf(sponsorId: number, checkoutId?: string | null): number {
     if (sponsorId > 0) return sponsorId
     const remembered = rememberedCheckoutSponsor(checkoutId || undefined)?.sponsorId
@@ -4321,6 +4354,13 @@ export class VioCheckout extends LitElement {
                         `
                       : ''}
                 `
+              : !this.checkoutState
+                ? // Nothing to ask the methods for (loadAvailablePaymentMethods
+                  // needs a checkout): the spinner would never end.
+                  html`
+                    <h3 class="section-heading">Velg betalingsmåte</h3>
+                    <p class="payment-loading">${EMPTY_CART_MESSAGE}</p>
+                  `
               : !this.paymentMethodsResolved
                 ? html`
                     <h3 class="section-heading">Velg betalingsmåte</h3>

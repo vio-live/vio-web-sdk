@@ -16,6 +16,13 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Kustom, Qliro, Walley and Adyen: the return read is tried again while the key is refused** — on a page
+  that boots in steps (Vev: init, bootstrap, init again with the page's campaign) the returning checkout's
+  channel key is not known for the first seconds, the read went out with the platform key and got a 401,
+  and a paid order still came back to «Vi kunne ikke bekrefte betalingen». A refused key is now retried
+  (after 1.5, 3, 5 and 8 s); any other error is shown at once, as before.
+
 ## 0.37.3 — 2026-10-30
 
 ### Fixed

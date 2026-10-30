@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.3 — 2026-10-30
+
 ### Fixed
 - **Kustom, Qliro, Walley and Adyen: the return confirms the order on a page that calls `Vio.init()` after
   mounting the checkout (Vev)** — the return read the order at once, before init: no cart yet and no key,

@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.5 — 2026-11-02
+
 ### Fixed
 - **Prices show no decimals or two, never one** — 30 % off 499 is 349.3, and the product sheet showed
   «349,3 Kr». A whole amount still reads «499 Kr»; any other now reads «349,30 Kr». Display only: no amount

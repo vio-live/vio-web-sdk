@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Prices show no decimals or two, never one** — 30 % off 499 is 349.3, and the product sheet showed
+  «349,3 Kr». A whole amount still reads «499 Kr»; any other now reads «349,30 Kr». Display only: no amount
+  sent to a payment provider goes through this formatter.
+
 ## 0.37.4 — 2026-10-30
 
 ### Fixed

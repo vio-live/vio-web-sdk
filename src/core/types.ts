@@ -374,13 +374,19 @@ function safeLocale(locale: string): string {
   return resolved
 }
 
-/** Format a numeric amount + currency using the page locale and symbol map. */
+/**
+ * Format a numeric amount + currency using the page locale and symbol map.
+ * A whole amount has no decimals (499 Kr); any other has two (349,30 Kr).
+ * QA 2026-11-02, QKC product sheet: 30 % off 499 showed «349,3 Kr».
+ */
 export function formatPrice(amount: number, currency?: string): string {
   const activeCurrency = currency || getGlobalCurrency()
   const activeLocale = safeLocale(getGlobalLocale())
   const activeSymbol = getGlobalSymbol(activeCurrency)
+  // Decide on the amount rounded to cents, so 349.999 reads 350, not 350,00.
+  const decimals = Math.round(amount * 100) % 100 === 0 ? 0 : 2
   const formatted = amount
-    .toLocaleString(activeLocale, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+    .toLocaleString(activeLocale, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
     // Normalize non-breaking space to regular space for predictable rendering.
     .replace(/ /g, ' ')
   return `${formatted} ${activeSymbol}`

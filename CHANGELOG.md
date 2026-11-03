@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.7 — 2026-11-03
+
 ### Fixed
 - **«Avbryt» on the «Åpner Vipps …» overlay** — on an iPhone the Vipps app can open without the page leaving; closing
   the app brought the shopper back under the full-screen «Åpner Vipps …», which took every tap, with no way out until

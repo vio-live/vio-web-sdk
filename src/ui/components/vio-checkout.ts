@@ -78,6 +78,13 @@ const STRIPE_LOGO_SRC =
     '<svg width="360" height="150" viewBox="0 0 360 150" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M360 77.4001C360 51.8001 347.6 31.6001 323.9 31.6001C300.1 31.6001 285.7 51.8001 285.7 77.2001C285.7 107.3 302.7 122.5 327.1 122.5C339 122.5 348 119.8 354.8 116V96.0001C348 99.4001 340.2 101.5 330.3 101.5C320.6 101.5 312 98.1001 310.9 86.3001H359.8C359.8 85.0001 360 79.8001 360 77.4001ZM310.6 67.9001C310.6 56.6001 317.5 51.9001 323.8 51.9001C329.9 51.9001 336.4 56.6001 336.4 67.9001H310.6Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M247.1 31.6001C237.3 31.6001 231 36.2001 227.5 39.4001L226.2 33.2001H204.2V149.8L229.2 144.5L229.3 116.2C232.9 118.8 238.2 122.5 247 122.5C264.9 122.5 281.2 108.1 281.2 76.4001C281.1 47.4001 264.6 31.6001 247.1 31.6001ZM241.1 100.5C235.2 100.5 231.7 98.4001 229.3 95.8001L229.2 58.7001C231.8 55.8001 235.4 53.8001 241.1 53.8001C250.2 53.8001 256.5 64.0001 256.5 77.1001C256.5 90.5001 250.3 100.5 241.1 100.5Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M169.8 25.7L194.9 20.3V0L169.8 5.3V25.7Z" fill="#533AFD"/><path d="M194.9 33.3H169.8V120.8H194.9V33.3Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M142.9 40.7L141.3 33.3H119.7V120.8H144.7V61.5C150.6 53.8 160.6 55.2 163.7 56.3V33.3C160.5 32.1 148.8 29.9 142.9 40.7Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M92.8999 11.6001L68.4999 16.8001L68.3999 96.9001C68.3999 111.7 79.4999 122.6 94.2999 122.6C102.5 122.6 108.5 121.1 111.8 119.3V99.0001C108.6 100.3 92.7999 104.9 92.7999 90.1001V54.6001H111.8V33.3001H92.7999L92.8999 11.6001Z" fill="#533AFD"/><path fill-rule="evenodd" clip-rule="evenodd" d="M25.3 58.7001C25.3 54.8001 28.5 53.3001 33.8 53.3001C41.4 53.3001 51 55.6001 58.6 59.7001V36.2001C50.3 32.9001 42.1 31.6001 33.8 31.6001C13.5 31.6001 0 42.2001 0 59.9001C0 87.5001 38 83.1001 38 95.0001C38 99.6001 34 101.1 28.4 101.1C20.1 101.1 9.5 97.7001 1.1 93.1001V116.9C10.4 120.9 19.8 122.6 28.4 122.6C49.2 122.6 63.5 112.3 63.5 94.4001C63.4 64.6001 25.3 69.9001 25.3 58.7001Z" fill="#533AFD"/></svg>',
   )
 
+/**
+ * The shopper gave up waiting for Vipps. Honest about the one case left: a
+ * payment approved in Vipps afterwards still becomes an order.
+ */
+const VIPPS_WAIT_CANCELLED_MESSAGE =
+  'Betalingen ble ikke fullført. Handlekurven er uendret, så du kan prøve igjen. Godkjenner du betalingen i Vipps likevel, får du ordrebekreftelse på e-post.'
+
 /** Said when a pay button is pressed on a cart with nothing to pay for. */
 const EMPTY_CART_MESSAGE = 'Handlekurven er tom.'
 
@@ -121,6 +128,15 @@ export class VioCheckout extends LitElement {
    * be paid (Angelo, 2026-10-08; Vipps can take two minutes to answer).
    */
   @state() private verifyingReturn: string | null = null
+  /**
+   * The wait for Vipps can be given up (2026-11-03, Angelo): a shopper who
+   * closed the Vipps app without approving or cancelling left the payment
+   * CREATED, and the screen kept loading until our polling ran out. «Avbryt»
+   * ends the wait and brings the checkout back, cart untouched.
+   */
+  @state() private vippsWaitCancellable = false
+  private vippsWaitCancelled = false
+  private wakeVippsPoll: (() => void) | null = null
   /** The checkout whose confirmation is on screen — see fillOrderNumber. */
   private confirmedCheckoutId: string | null = null
   /**
@@ -744,6 +760,18 @@ export class VioCheckout extends LitElement {
       font-size: 13px;
       color: var(--vio-color-text-secondary, #666);
     }
+    .verifying-cancel {
+      margin-top: 6px;
+      padding: 10px 22px;
+      border-radius: 999px;
+      border: 1px solid var(--vio-color-border, #e5e5e5);
+      background: #fff;
+      color: var(--vio-color-text, #1a1a1a);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
     @media (prefers-reduced-motion: reduce) {
       .verifying-spinner { animation: none; }
     }
@@ -1130,14 +1158,25 @@ export class VioCheckout extends LitElement {
   private async pollVippsStatus(
     checkoutId: string,
     sponsorId: number,
-  ): Promise<{ outcome: 'paid' | 'failed' | 'pending' | 'duplicate'; sawStatus: boolean }> {
+  ): Promise<{ outcome: 'paid' | 'failed' | 'pending' | 'duplicate' | 'cancelled'; sawStatus: boolean }> {
     let sawStatus = false
     for (let attempt = 0; attempt < VioCheckout.VIPPS_STATUS_MAX_ATTEMPTS; attempt++) {
       if (attempt > 0) {
-        await new Promise((r) => setTimeout(r, VioCheckout.VIPPS_STATUS_DELAY_MS))
+        // «Avbryt» wakes this sleep at once.
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, VioCheckout.VIPPS_STATUS_DELAY_MS)
+          this.wakeVippsPoll = () => {
+            clearTimeout(timer)
+            resolve()
+          }
+        })
+        this.wakeVippsPoll = null
       }
+      if (this.vippsWaitCancelled) return { outcome: 'cancelled', sawStatus }
       try {
         const vippsStatus = await Vio.checkout.getVippsStatus(checkoutId, sponsorId || undefined)
+        // Given up while the read was out: what it says no longer matters.
+        if (this.vippsWaitCancelled) return { outcome: 'cancelled', sawStatus }
         const state = String(vippsStatus?.state ?? '').toUpperCase()
         sawStatus = true
         // The cart was paid through another checkout (another tab): not a failure.
@@ -1563,12 +1602,21 @@ export class VioCheckout extends LitElement {
         this.setOrderSponsor(sponsorId, checkoutId)
         this.open = true
         this.verifyingReturn = 'Bekrefter betalingen med Vipps…'
+        this.vippsWaitCancelled = false
+        this.vippsWaitCancellable = true
         const { outcome, sawStatus } = await this.pollVippsStatus(checkoutId, sponsorId)
+        this.vippsWaitCancellable = false
         // The outcome acts on the cart (a paid one is cleared, a cancelled one
         // is paid again): the connection's, not the empty one before init.
         if (reopening) await reopening
         this.verifyingReturn = null
-        this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
+        if (outcome === 'cancelled') {
+          // The shopper stopped waiting: back to the checkout, cart untouched.
+          this.paymentNotice = VIPPS_WAIT_CANCELLED_MESSAGE
+          this.open = true
+        } else {
+          this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
+        }
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
         // Not paid: the shopper pays again here, with the address they typed.
         if (outcome !== 'paid' && outcome !== 'duplicate') {
@@ -2998,6 +3046,12 @@ export class VioCheckout extends LitElement {
     )
   }
 
+  /** «Avbryt» on the Vipps wait: stop asking Vipps and show the checkout again. */
+  private cancelVippsWait = (): void => {
+    this.vippsWaitCancelled = true
+    this.wakeVippsPoll?.()
+  }
+
   /** Back from the payment page, asking whether it was paid — and nothing
    * else on screen while we do. */
   private renderVerifying() {
@@ -3006,6 +3060,19 @@ export class VioCheckout extends LitElement {
         <span class="verifying-spinner" aria-hidden="true"></span>
         <p class="verifying-text">${this.verifyingReturn}</p>
         <p class="verifying-hint">Dette kan ta litt tid. Ikke lukk siden.</p>
+        ${this.vippsWaitCancellable
+          ? html`
+              <p class="verifying-hint">Lukket du Vipps uten å betale? Gå tilbake til kassen.</p>
+              <button
+                type="button"
+                class="verifying-cancel"
+                data-vio-cta="vipps_cancel_wait"
+                @click=${this.cancelVippsWait}
+              >
+                Avbryt
+              </button>
+            `
+          : nothing}
       </section>
     `
   }

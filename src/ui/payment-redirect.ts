@@ -25,8 +25,15 @@
  *    for that seller, so the checkout opens instead), or the shopper came
  *    back from the provider with the browser's back button (`'back'`; the
  *    page is restored from the back-forward cache with the overlay still
- *    on). A return through the provider's own cancel is the checkout's
- *    (`returnCancelled`, below).
+ *    on), or the shopper tapped «Avbryt» on the overlay (`'user'`). A return
+ *    through the provider's own cancel is the checkout's (`returnCancelled`,
+ *    below).
+ *
+ * «Avbryt» (Angelo, 2026-11-03): on an iPhone the Vipps app can open without
+ * the page ever leaving. Closing the app brought the shopper back to the same
+ * page under «Åpner Vipps …», with no way out until the payment expired. The
+ * button shows after a few seconds, or as soon as the page is visible again
+ * after the app had it hidden.
  */
 
 export type PaymentRedirectSource = 'detail' | 'cart' | 'checkout'
@@ -45,6 +52,8 @@ export interface PaymentRedirectHandle {
 }
 
 const OVERLAY_CLASS = 'vio-redirect-overlay'
+/** When «Avbryt» shows if the page never left (and was never hidden). */
+const CANCEL_AFTER_MS = 4000
 const STYLE_ID = 'vio-redirect-overlay-style'
 
 const LABEL: Record<string, string> = { vipps: 'Vipps', stripe: 'Stripe', klarna: 'Klarna' }
@@ -68,6 +77,18 @@ function injectStyle(): void {
   opacity: 0; transition: opacity 0.18s ease; cursor: progress;
 }
 .${OVERLAY_CLASS}.is-shown { opacity: 1; }
+.${OVERLAY_CLASS} .vio-redirect-hint,
+.${OVERLAY_CLASS} .vio-redirect-cancel { display: none; }
+.${OVERLAY_CLASS}.is-cancellable .vio-redirect-hint { display: block; }
+.${OVERLAY_CLASS}.is-cancellable .vio-redirect-cancel { display: inline-block; }
+.${OVERLAY_CLASS} .vio-redirect-hint {
+  max-width: 280px; text-align: center; font-weight: 400; font-size: 14px; opacity: 0.75;
+}
+.${OVERLAY_CLASS} .vio-redirect-cancel {
+  padding: 10px 24px; border-radius: 999px; cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.15); background: #fff;
+  color: var(--vio-redirect-color, var(--vio-color-text, #0a0a0a)); font: inherit; font-size: 15px;
+}
 .${OVERLAY_CLASS} .vio-redirect-spinner {
   width: 36px; height: 36px; border-radius: 50%;
   border: 3px solid rgba(0, 0, 0, 0.1); border-top-color: var(--vio-redirect-spinner, #ff5b24);
@@ -81,9 +102,15 @@ function injectStyle(): void {
   document.head.appendChild(style)
 }
 
-let current: { el: HTMLElement | null; detail: PaymentRedirectDetail; settled: boolean } | null = null
+let current: {
+  el: HTMLElement | null
+  detail: PaymentRedirectDetail
+  settled: boolean
+  cleanup?: () => void
+} | null = null
 
 function removeOverlay(): void {
+  current?.cleanup?.()
   const el = current?.el
   if (!el) return
   el.classList.remove('is-shown')
@@ -112,7 +139,7 @@ export function beginPaymentRedirect(detail: PaymentRedirectDetail): PaymentRedi
     removeOverlay()
   }
   const hostTookOver = !emit('vio:payment-redirect-start', detail, true)
-  const state = { el: null as HTMLElement | null, detail, settled: false }
+  const state: NonNullable<typeof current> = { el: null, detail, settled: false }
   current = state
   if (!hostTookOver && typeof document !== 'undefined' && document.body) {
     injectStyle()
@@ -123,15 +150,42 @@ export function beginPaymentRedirect(detail: PaymentRedirectDetail): PaymentRedi
     const spinner = document.createElement('div')
     spinner.className = 'vio-redirect-spinner'
     spinner.setAttribute('aria-hidden', 'true')
+    const label = LABEL[detail.method] ?? detail.method
     const text = document.createElement('div')
     text.className = 'vio-redirect-text'
-    text.textContent = `Åpner ${LABEL[detail.method] ?? detail.method} …`
-    el.append(spinner, text)
+    text.textContent = `Åpner ${label} …`
+    const hint = document.createElement('div')
+    hint.className = 'vio-redirect-hint'
+    hint.textContent = `Kom du tilbake fra ${label} uten å betale?`
+    const cancel = document.createElement('button')
+    cancel.type = 'button'
+    cancel.className = 'vio-redirect-cancel'
+    cancel.setAttribute('data-vio-cta', 'redirect_cancel')
+    cancel.textContent = 'Avbryt'
+    cancel.addEventListener('click', (e) => {
+      e.stopPropagation()
+      settle('vio:payment-redirect-cancel', 'user')
+    })
+    el.append(spinner, text, hint, cancel)
     // Every tap lands here and goes nowhere: no second payment.
     el.addEventListener('click', (e) => e.stopPropagation())
     document.body.appendChild(el)
     requestAnimationFrame(() => el.classList.add('is-shown'))
     state.el = el
+
+    // «Avbryt» after a while, or at once when the shopper is back from the app.
+    const showCancel = () => el.classList.add('is-cancellable')
+    const timer = setTimeout(showCancel, CANCEL_AFTER_MS)
+    let wasHidden = false
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') wasHidden = true
+      else if (wasHidden) showCancel()
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    state.cleanup = () => {
+      clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }
   if (typeof window !== 'undefined') window.addEventListener('pageshow', onPageShow)
   const settle = (event: string, reason: string) => {
@@ -140,8 +194,9 @@ export function beginPaymentRedirect(detail: PaymentRedirectDetail): PaymentRedi
     if (current === state) {
       removeOverlay()
       current = null
-    } else if (state.el) {
-      state.el.remove()
+    } else {
+      state.cleanup?.()
+      state.el?.remove()
     }
     emit(event, { ...detail, reason })
   }

@@ -92,3 +92,62 @@ describe('returnCancelled', () => {
     expect(events.at(-1)).toEqual(['vio:payment-redirect-cancel', { method: 'vipps', sponsorId: 4, source: 'checkout', checkoutId: 'c1', reason: 'cancelled' }])
   })
 })
+
+/**
+ * «Avbryt» (Angelo, 2026-11-03): the Vipps app opened on the iPhone without
+ * the page leaving; closing the app left the shopper under «Åpner Vipps …»
+ * with no way out until the payment expired.
+ */
+describe('«Avbryt» on the «Åpner Vipps …» overlay', () => {
+  const cancelButton = () => overlay()?.querySelector<HTMLButtonElement>('.vio-redirect-cancel') ?? null
+  const cancellable = () => overlay()?.classList.contains('is-cancellable') ?? false
+  const setVisibility = (state: 'visible' | 'hidden') => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }
+
+  afterEach(() => setVisibility('visible'))
+
+  it('is not offered at the tap: only after a few seconds on the same page', () => {
+    vi.useFakeTimers()
+    beginPaymentRedirect({ method: 'vipps', source: 'checkout' })
+    expect(cancelButton()?.textContent).toBe('Avbryt')
+    expect(cancellable()).toBe(false)
+    vi.advanceTimersByTime(3999)
+    expect(cancellable()).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(cancellable()).toBe(true)
+    expect(overlay()?.textContent).toContain('Kom du tilbake fra Vipps uten å betale?')
+  })
+
+  it('back on the page from the Vipps app (hidden, then visible): offered at once', () => {
+    vi.useFakeTimers()
+    beginPaymentRedirect({ method: 'vipps', source: 'detail' })
+    setVisibility('hidden')
+    expect(cancellable()).toBe(false)
+    setVisibility('visible')
+    expect(cancellable()).toBe(true)
+  })
+
+  it('«Avbryt» takes the overlay away and is a cancel with reason user', () => {
+    vi.useFakeTimers()
+    watch()
+    beginPaymentRedirect({ method: 'vipps', sponsorId: 7, source: 'cart' })
+    vi.advanceTimersByTime(4000)
+    cancelButton()!.click()
+    vi.advanceTimersByTime(250)
+    expect(overlay()).toBeNull()
+    expect(events.at(-1)).toEqual(['vio:payment-redirect-cancel', { method: 'vipps', sponsorId: 7, source: 'cart', reason: 'user' }])
+  })
+
+  it('a settled hand-over arms nothing: no «Avbryt» on a later overlay from the old timer', () => {
+    vi.useFakeTimers()
+    const h = beginPaymentRedirect({ method: 'vipps', source: 'checkout' })
+    h.abort('not-started')
+    vi.advanceTimersByTime(250)
+    beginPaymentRedirect({ method: 'vipps', source: 'checkout' })
+    vi.advanceTimersByTime(3000)
+    // The first overlay's timer is gone; the new one has not reached 4 s.
+    expect(cancellable()).toBe(false)
+  })
+})

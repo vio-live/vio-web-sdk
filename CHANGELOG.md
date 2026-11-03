@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.6 — 2026-11-03
+
 ### Fixed
 - **Free shipping reads «Gratis» in the checkout** — a rate at 0 showed «0 Kr» in the shipping picker, «Beregnes ved
   kasse» in the summary, and no shipping row on the receipt. Now the picker and the express summary say «Gratis», the

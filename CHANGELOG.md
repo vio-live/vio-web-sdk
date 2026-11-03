@@ -16,6 +16,13 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **«Avbryt» on the «Åpner Vipps …» overlay** — on an iPhone the Vipps app can open without the page leaving; closing
+  the app brought the shopper back under the full-screen «Åpner Vipps …», which took every tap, with no way out until
+  the payment expired. After 4 s, or as soon as the page is visible again after the app hid it, the overlay offers
+  «Kom du tilbake fra Vipps uten å betale?» and an «Avbryt» button: it removes the overlay and emits
+  `vio:payment-redirect-cancel` with `reason: 'user'`.
+
 ### Added
 - **«Avbryt» on the Vipps wait** — back from Vipps, the checkout asks Vipps for the payment every 5 s (up to about two
   minutes) under «Bekrefter betalingen med Vipps…». A shopper who closed the Vipps app without approving or cancelling

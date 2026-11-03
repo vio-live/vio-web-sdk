@@ -393,6 +393,15 @@ export function formatPrice(amount: number, currency?: string): string {
 }
 
 /**
+ * A shipping price for the shopper: «Gratis» when it costs nothing, the price
+ * otherwise. The product sheet and the cart already said «Gratis»; the checkout
+ * showed «0 Kr» (2026-11-03, free shipping for Vipps).
+ */
+export function formatShippingPrice(amount: number, currency?: string): string {
+  return Number.isFinite(amount) && amount <= 0 ? 'Gratis' : formatPrice(amount, currency)
+}
+
+/**
  * Helper: pick the first image URL (variant first, then product). Defensive:
  * accepts loose shapes (backend cart rows, catalog rows) where images may be
  * plain strings or live under image / imageUrl / image_url / primaryImage.

@@ -38,3 +38,13 @@ describe('formatPrice', () => {
     expect(formatPrice(499, 'GBP')).toBe('499 £')
   })
 })
+
+describe('formatShippingPrice', () => {
+  it('a free rate reads «Gratis»; a paid one, the price', async () => {
+    const { formatShippingPrice } = await import('./types.js')
+    expect(formatShippingPrice(0, 'NOK')).toBe('Gratis')
+    expect(formatShippingPrice(-1, 'NOK')).toBe('Gratis')
+    expect(plain(formatShippingPrice(49, 'NOK'))).toBe('49 Kr')
+    expect(plain(formatShippingPrice(59.5, 'NOK'))).toBe('59,50 Kr')
+  })
+})

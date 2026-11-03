@@ -16,6 +16,12 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Free shipping reads «Gratis» in the checkout** — a rate at 0 showed «0 Kr» in the shipping picker, «Beregnes ved
+  kasse» in the summary, and no shipping row on the receipt. Now the picker and the express summary say «Gratis», the
+  summary says «Frakt – <rate> · Gratis», and the receipt keeps the row («Gratis»). With no rate yet, the summary still
+  says «Beregnes ved kasse». The amount charged is unchanged: items + 0.
+
 ## 0.37.5 — 2026-11-02
 
 ### Fixed

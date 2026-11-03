@@ -14,7 +14,7 @@ import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, returnCancelled } from '../payment-redirect.js'
 import { Vio } from '../../core/client.js'
 import { Configuration } from '../../core/configuration.js'
-import { formatPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
+import { formatPrice, formatShippingPrice, getGlobalCountryCode, getGlobalCurrency } from '../../core/types.js'
 import {
   buyerRefOf,
   type PaymentSuccessDetail,
@@ -2440,7 +2440,7 @@ export class VioCheckout extends LitElement {
   ): void {
     // Snapshot the order BEFORE clearing the cart — the confirmation needs it.
     const r = (result ?? {}) as { order?: { orderId?: string }; chargedTotal?: number }
-    const shippingPrice = this.shippingMajor()
+    const shippingPrice = this.shippingInEffect()
     const email = String(this.form.email ?? '').trim()
     // Before the cart is cleared: the checkout id goes with it. Back from a
     // redirect the state was re-opened without one, so the return URL's id
@@ -2459,7 +2459,8 @@ export class VioCheckout extends LitElement {
       ...(providerOrderId
         ? { providerRef: { label: `Ordre hos ${this.methodLabel(method)}`, value: providerOrderId } }
         : {}),
-      ...(shippingPrice > 0
+      // A free rate is shown too («Gratis»): the shopper sees what was chosen.
+      ...(shippingPrice !== null
         ? { shipping: { name: this.summaryShippingName() || 'Frakt', price: shippingPrice } }
         : {}),
       ...(email ? { email } : {}),
@@ -2713,6 +2714,13 @@ export class VioCheckout extends LitElement {
    * express always has one; the normal flow has one once the backend
    * shippings loaded (the choice IS persisted on the cart and charged). */
   private shippingMajor(): number {
+    return this.shippingInEffect() ?? 0
+  }
+
+  /** The shipping price in effect, or null when there is none yet. A free rate
+   * is 0, not «none»: the summary and the receipt say «Gratis» for it instead
+   * of «Beregnes ved kasse» or nothing (2026-11-03). */
+  private shippingInEffect(): number | null {
     if (this.checkoutState?.paymentMethod === 'qliro' && typeof this.qliroShipping?.price === 'number') {
       return this.qliroShipping.price
     }
@@ -2722,9 +2730,9 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState?.paymentMethod === 'kustom' && typeof this.kustomShipping?.price === 'number') {
       return this.kustomShipping.price
     }
-    if (!this.express && this.availableShippingsList.length === 0) return 0
+    if (!this.express && this.availableShippingsList.length === 0) return null
     const o = this.shippingOption
-    if (!o) return 0
+    if (!o) return null
     return o.priceMajor ?? o.price / 100
   }
 
@@ -3066,7 +3074,7 @@ export class VioCheckout extends LitElement {
                   ? html`
                       <div class="order-row">
                         <span>Frakt – ${o.shipping.name}</span>
-                        <span>${formatPrice(o.shipping.price, o.currency)}</span>
+                        <span>${formatShippingPrice(o.shipping.price, o.currency)}</span>
                       </div>
                     `
                   : ''}
@@ -3579,7 +3587,7 @@ export class VioCheckout extends LitElement {
               @click=${() => void this.onPickNexiShipping(o.id)}
             >
               <span class="ship-meta"><b>${o.name}</b></span>
-              <span class="ship-price">${formatPrice(o.price, currency)}</span>
+              <span class="ship-price">${formatShippingPrice(o.price, currency)}</span>
             </button>
           `,
         )}
@@ -4060,7 +4068,7 @@ export class VioCheckout extends LitElement {
                         <b>${o.method || o.name}</b><span>${o.description}</span>
                       </span>
                       <span class="ship-price">
-                        ${formatPrice(o.priceMajor ?? o.price / 100, o.currency || currency)}
+                        ${formatShippingPrice(o.priceMajor ?? o.price / 100, o.currency || currency)}
                       </span>
                     </button>
                   `,
@@ -4150,7 +4158,7 @@ export class VioCheckout extends LitElement {
                 )}
                 <div class="order-row">
                   <span>Frakt${this.shippingOption ? ` – ${this.shippingOption.method}` : ''}</span>
-                  <span>${formatPrice(this.shippingMajor(), currency)}</span>
+                  <span>${formatShippingPrice(this.shippingMajor(), currency)}</span>
                 </div>
                 <div class="order-row total">
                   <span>Totalt</span><span>${this.payTotalLabel()}</span>
@@ -4293,7 +4301,7 @@ export class VioCheckout extends LitElement {
                               ${o.description ? html`<span>${o.description}</span>` : ''}
                             </span>
                             <span class="ship-price">
-                              ${formatPrice(
+                              ${formatShippingPrice(
                                 o.priceMajor ?? o.price / 100,
                                 o.currency || this.checkoutState?.currency || 'NOK',
                               )}
@@ -4580,9 +4588,9 @@ export class VioCheckout extends LitElement {
                     <span>Sum</span><span>${this.orderTotal()}</span>
                   </div>
                   <div class="order-row">
-                    <span>Frakt${this.shippingMajor() > 0 && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
-                    <span>${this.shippingMajor() > 0
-                        ? formatPrice(this.shippingMajor(), this.checkoutState?.currency)
+                    <span>Frakt${this.shippingInEffect() !== null && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
+                    <span>${this.shippingInEffect() !== null
+                        ? formatShippingPrice(this.shippingMajor(), this.checkoutState?.currency)
                         : this.shippingLabel}</span>
                   </div>
                   <div class="order-row total">

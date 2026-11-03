@@ -16,6 +16,13 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **«Avbryt» on the Vipps wait** — back from Vipps, the checkout asks Vipps for the payment every 5 s (up to about two
+  minutes) under «Bekrefter betalingen med Vipps…». A shopper who closed the Vipps app without approving or cancelling
+  left the payment CREATED and could only wait. An «Avbryt» button now ends the wait at once and brings the checkout
+  back with the cart and the address as they were, saying the payment was not completed. A payment approved in Vipps
+  afterwards still becomes an order, and the notice says so.
+
 ## 0.37.6 — 2026-11-03
 
 ### Fixed

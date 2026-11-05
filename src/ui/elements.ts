@@ -18,8 +18,9 @@ import { VioProductCarousel } from './components/vio-product-carousel.js'
 import { VioProductDetail } from './components/vio-product-detail.js'
 import { VioCart } from './components/vio-cart.js'
 import { VioCheckout } from './components/vio-checkout.js'
+import { VioReel } from './components/vio-reel.js'
 
-export { VioProduct, VioProductCarousel, VioProductDetail, VioCart, VioCheckout }
+export { VioProduct, VioProductCarousel, VioProductDetail, VioCart, VioCheckout, VioReel }
 
 /**
  * Register every `<vio-*>` custom element. Idempotent (skips already-defined
@@ -39,6 +40,7 @@ export function registerVioElements(): void {
     ['vio-product-detail', VioProductDetail],
     ['vio-cart', VioCart],
     ['vio-checkout', VioCheckout],
+    ['vio-reel', VioReel],
   ]
   for (const [tag, ctor] of defs) {
     if (!customElements.get(tag)) customElements.define(tag, ctor)

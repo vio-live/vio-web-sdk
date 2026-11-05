@@ -569,6 +569,8 @@ export class AnalyticsManager extends EventTarget {
        *  per-product impression from them, ADR-0041). Nothing when it
        *  answers no items. */
       commerce?: () => AnalyticsCommerce | null | undefined
+      /** Free-form `props` of the impression (e.g. `<vio-reel>`'s `experience_id`, `revision`). */
+      props?: Record<string, unknown>
     } = {},
   ): () => void {
     if (!hasDom() || typeof IntersectionObserver === 'undefined') return () => {}
@@ -593,7 +595,7 @@ export class AnalyticsManager extends EventTarget {
               this.ensureSession()
               if (this.impressedComponents.has(key)) return
               this.impressedComponents.add(key)
-              this.track(name, { context, commerce: impressionCommerce(opts.commerce) })
+              this.track(name, { context, commerce: impressionCommerce(opts.commerce), props: opts.props })
               opts.onImpression?.()
               observer.disconnect()
             }, IMPRESSION_DWELL_MS)

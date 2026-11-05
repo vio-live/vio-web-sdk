@@ -16,6 +16,24 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **`<vio-reel experience-id>` — shoppable video managed from Vio** ([ADR-0042](https://github.com/vio-live/vio-handbook/blob/main/docs/decisions/0042-vio-reel-experiencias-gestionadas-desde-commerce.md)).
+  Ordered videos with the products on screen and their cues, edited in Vio's dashboard or in the publisher's CMS
+  and published in revisions; the page only names the experience. Vertical feed with snap, loop, muted autoplay,
+  the next video preloaded, product cards that open the detail without stopping the video, a cue badge
+  («I videoen nå»), mute, fullscreen, progress. HLS through `hls.js` loaded from the CDN only when a reel is on
+  the page. Keeps the revision it mounted with (a newer one applies on the next open), keeps the last good one for
+  when the network fails, and renders nothing for an experience of another campaign than the page's
+  (`sdk_error` `reel_incompatible`). React wrapper `VioReel`. README «Shoppable video».
+- `Vio.api.experience(id, { ifNoneMatch })` and the pure helpers in `core/experience` (`parseExperience`,
+  `experienceCompatible`, `cueProductAt`, the cache).
+- `Vio.analytics.observeImpression(…, { props })`: free-form props on an impression (the reel's `experience_id`).
+
+### ⚠️ Upgrade notes
+- Nothing changes for pages without a `<vio-reel>`. A page with one loads `hls.js` from `cdn.jsdelivr.net` on
+  browsers without native HLS (everything but Safari): allow that host in a CSP.
+- Slot kinds gain `reel` (`componentKindOf`, auto ids `reel-N`).
+
 ## 0.37.8 — 2026-11-05
 
 ### Fixed

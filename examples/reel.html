@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="no">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vio Web SDK — Reel demo</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { font-family: -apple-system, Inter, sans-serif; margin: 0; background: #fff; color: #0a0a0a; }
+      .article { max-width: 720px; margin: 0 auto; padding: 48px 24px 120px; }
+      h1 { font-family: Georgia, serif; font-weight: 400; font-size: 36px; line-height: 1.1; margin: 0 0 16px; }
+      p { font-size: 17px; line-height: 1.6; color: #333; }
+      .reel-wrap { max-width: 420px; margin: 32px auto; }
+      .hint { font-size: 12px; color: #777; }
+      code { background: #f2f2f2; padding: 1px 4px; border-radius: 3px; }
+    </style>
+  </head>
+  <body data-vio-scope="reel-demo" data-vio-scope-name="Reel demo">
+    <main class="article">
+      <h1>Sesongens mest behagelige favoritter</h1>
+      <p class="hint">
+        Demo de <code>&lt;vio-reel&gt;</code> contra <code>api-staging.vio.live</code>. Key y experiencia por query:
+        <code>?apiKey=…&amp;experience=1&amp;campaign=12</code>. Sin <code>campaign</code> la página no declara campaña.
+      </p>
+      <div class="reel-wrap">
+        <vio-reel id="reel" vio-slot-name="Reel demo"></vio-reel>
+      </div>
+      <p>Norske Careless har tatt landet med storm med plagg som kombinerer kompromissløs komfort med flatterende passformer.</p>
+      <vio-product-detail></vio-product-detail>
+      <vio-cart></vio-cart>
+      <vio-checkout></vio-checkout>
+    </main>
+    <script type="module" src="./reel.ts"></script>
+  </body>
+</html>

@@ -84,6 +84,25 @@ export {
 
 // API
 export { VioApi, VioApiError, createVioApi } from './api/vio.js'
+export {
+  parseExperience,
+  experienceCompatible,
+  cueProductAt,
+  safeThemeEntries,
+  experienceCacheKey,
+  readCachedExperience,
+  writeCachedExperience,
+  experienceProductRefs,
+  EXPERIENCE_SCHEMA_VERSION,
+  EXPERIENCE_CACHE_PREFIX,
+  EXPERIENCE_CACHE_TTL_MS,
+  type Experience,
+  type ExperienceVideo,
+  type ExperienceProduct,
+  type ExperienceCue,
+  type ExperienceMedia,
+  type CachedExperience,
+} from './experience.js'
 export { CommerceClient, createCommerceClient } from './api/commerce.js'
 
 // Server-side cart / checkout GraphQL (Vio Commerce)

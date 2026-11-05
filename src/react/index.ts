@@ -35,6 +35,7 @@ import {
   VioProductDetail as VioProductDetailEl,
   VioCart as VioCartEl,
   VioCheckout as VioCheckoutEl,
+  VioReel as VioReelEl,
 } from '../ui/elements.js'
 // Not just for the re-export below — the import itself injects the default
 // design tokens as CSS custom properties on `:root` (see tokens.ts). Without
@@ -93,6 +94,16 @@ export const VioCheckout = createComponent({
   events: {
     onPaymentSuccess: 'vio:payment-success',
     onCtaClick: 'vio:cta-click',
+  },
+})
+
+/** `<vio-reel experience-id>`: a managed shoppable-video experience (ADR-0042). `experience` is a property: pass the JSON for a preview. */
+export const VioReel = createComponent({
+  react: React,
+  tagName: 'vio-reel',
+  elementClass: VioReelEl,
+  events: {
+    onProductClick: 'vio:product-click',
   },
 })
 

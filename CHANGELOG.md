@@ -16,6 +16,19 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **The receipt after Vipps lists the order** — after paying with Stripe on the page the «Takk!» showed the lines,
+  «Frakt – … · Gratis» (or the price) and the total; after Vipps it showed none of them. Vipps comes back through a
+  payment page, to a page that reloaded or to another tab, so the cart the receipt printed was not there. The receipt
+  now reads the checkout of the return URL: each line (title — variant, quantity, price), the shipping row («Gratis»
+  for a free rate) and the total charged, plus where the receipt goes. The same for a Stripe link return (from the
+  read that found it paid, no second ask) and an Adyen redirect (Adyen's own total stays). A checkout that cannot be
+  read leaves the receipt as before. ([#139](https://github.com/vio-live/vio-web-sdk/pull/139))
+
+### ⚠️ Upgrade notes
+- Nothing to do. A paid Vipps or Adyen return now makes one more `GetCheckout` read, with the same key as the
+  payment check; the lines appear on the «Takk!» a moment after it, like the order number.
+
 ## 0.37.7 — 2026-11-03
 
 ### Fixed

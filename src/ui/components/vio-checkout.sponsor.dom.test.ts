@@ -217,6 +217,8 @@ describe('the confirmation: «Takk for bestillingen! Du har handlet hos …»', 
 describe('back from Vipps (vio_sponsor + checkout_id in the return URL)', () => {
   beforeEach(() => {
     vi.spyOn(manager, 'getVippsStatus').mockResolvedValue({ state: 'AUTHORIZED' })
+    // The receipt's lines are read from the checkout (vio-checkout.vipps-receipt): none here.
+    vi.spyOn(manager, 'getCheckout').mockResolvedValue(null)
   })
 
   it('with the bootstrap there: the URL\'s sponsor while verifying and on the confirmation — not the page\'s', async () => {

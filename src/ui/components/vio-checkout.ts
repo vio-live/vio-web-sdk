@@ -61,6 +61,7 @@ import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { receiptFromCheckout } from '../checkout-receipt.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
 import {
   renderSponsorMark,
@@ -1197,13 +1198,16 @@ export class VioCheckout extends LitElement {
   }
 
   /** Shared outcome handler for both the generic (GetCheckout) and the
-   * Vipps-specific (GetVippsStatus) return-verification paths. */
+   * Vipps-specific (GetVippsStatus) return-verification paths. `paidCheckout`
+   * is the GetCheckout answer that said "paid", when there was one: the
+   * receipt is read from it instead of asking again. */
   private applyReturnOutcome(
     outcome: 'paid' | 'failed' | 'pending' | 'duplicate',
     sawStatus: boolean,
     vioMethod: string,
     sponsorId: number,
     checkoutId: string,
+    paidCheckout?: unknown,
   ): void {
     if (outcome === 'paid') {
       // Named while the cart still can: clearing it takes its sponsorName.
@@ -1218,6 +1222,9 @@ export class VioCheckout extends LitElement {
       this.orderConfirmed = true
       this.open = true
       void this.fillOrderNumber(checkoutId, sponsorId)
+      // The cart is gone (cleared just above, or never in this tab): the
+      // lines, the shipping and the total come from the checkout.
+      void this.fillReceiptFromCheckout(checkoutId, sponsorId, paidCheckout)
       void this.emitPaymentSuccess({ method: vioMethod, sponsorId, orderId: checkoutId }, checkoutId, sponsorId)
     } else if (outcome === 'duplicate') {
       this.paymentError = CART_PAID_MESSAGE
@@ -1630,6 +1637,7 @@ export class VioCheckout extends LitElement {
         // a fabricated success.
         let outcome: 'paid' | 'failed' | 'pending' | 'duplicate' = 'pending'
         let sawStatus = false
+        let paidCheckout: unknown
         if (checkoutId) {
           this.setOrderSponsor(sponsorId, checkoutId)
           this.open = true
@@ -1657,6 +1665,7 @@ export class VioCheckout extends LitElement {
                 (vioMethod !== 'stripe' && Boolean(checkout?.origin_payment_id))
               ) {
                 outcome = 'paid'
+                paidCheckout = checkout
                 break
               }
             } catch (err) {
@@ -1668,7 +1677,7 @@ export class VioCheckout extends LitElement {
           this.verifyingReturn = null
         }
 
-        this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId)
+        this.applyReturnOutcome(outcome, sawStatus, vioMethod, sponsorId, checkoutId, paidCheckout)
         this.cleanReturnQueryParams(['vio_payment', 'vio_method', 'vio_sponsor', 'checkout_id'])
       } else if (vioPayment === 'cancel' || vioPayment === 'error') {
         this.paymentError = 'Betalingen ble avbrutt eller feilet. Vennligst prøv igjen.'
@@ -2697,6 +2706,49 @@ export class VioCheckout extends LitElement {
       if (n && this.confirmedOrder) {
         this.confirmedOrder = { ...this.confirmedOrder, orderId: String(n) }
         return
+      }
+    }
+  }
+
+  /**
+   * The lines, the shipping row and the total of a receipt reached through a
+   * payment page (Vipps, a Stripe link, an Adyen redirect), from the checkout
+   * that was paid — see checkout-receipt.ts. Back from the provider the cart
+   * is not there to print (the page reloaded, or the Vipps app brought the
+   * shopper back in another tab; a paid cart is cleared anyway), and the
+   * «Takk!» after Vipps had no lines and no «Frakt» (Alan, QA, 2026-11-04).
+   * The checkout id of the return URL is the one thing every return has, so
+   * the receipt never shows another checkout's purchase, and nothing has to
+   * be kept in the browser. `known` is a GetCheckout answer already in hand.
+   *
+   * Fills only what the receipt does not know yet: a total the provider
+   * reported (Adyen) stays. Stops if the shopper closed the drawer or another
+   * confirmation took its place; a checkout that cannot be read leaves the
+   * receipt as it is.
+   */
+  private async fillReceiptFromCheckout(checkoutId: string, sponsorId: number, known?: unknown): Promise<void> {
+    if (!checkoutId) return
+    const stillShowing = () => this.orderConfirmed && this.confirmedCheckoutId === checkoutId
+    try {
+      const checkout =
+        known !== undefined
+          ? known
+          : await this.readOnReturn(() => Vio.checkout.getCheckout(checkoutId, sponsorId || undefined))
+      const o = this.confirmedOrder
+      if (!stillShowing() || !o || o.items.length > 0) return
+      const read = receiptFromCheckout(checkout, sponsorId)
+      if (!read) return
+      const providerSaidTotal = o.total > 0
+      this.confirmedOrder = {
+        ...o,
+        items: read.items,
+        ...(providerSaidTotal ? {} : { total: read.total, currency: read.currency || o.currency }),
+        ...(!o.shipping && read.shipping ? { shipping: read.shipping } : {}),
+        ...(!o.email && read.email ? { email: read.email } : {}),
+      }
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('[VioCheckout] the receipt could not be read from the checkout:', err)
       }
     }
   }

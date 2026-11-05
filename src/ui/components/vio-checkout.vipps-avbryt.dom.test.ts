@@ -34,6 +34,8 @@ beforeEach(() => {
   vi.spyOn(manager, 'resumeKlarnaReturn').mockResolvedValue(undefined)
   vi.spyOn(manager, 'getOrderReference').mockResolvedValue(null)
   vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(null)
+  // The receipt's lines are read from the checkout (vio-checkout.vipps-receipt): none here.
+  vi.spyOn(manager, 'getCheckout').mockResolvedValue(null)
   vi.spyOn(Vio.cart, 'refreshFromServer').mockResolvedValue(undefined as any)
   window.history.replaceState(
     {},

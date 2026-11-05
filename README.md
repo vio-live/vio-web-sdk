@@ -674,6 +674,62 @@ Name the button option you are testing with `variant` (`bar-kjop` vs
 `outline-velg`) and keep `cta` the same for buttons that do the same thing: the
 dashboard groups by `cta` and splits by `cta_variant` / `cta_label`.
 
+## Shoppable video — `<vio-reel>` (unreleased)
+
+A **managed shoppable-video experience**: ordered videos with the products on
+screen and when they appear, edited in Vio (dashboard) or in the publisher's
+CMS, published in revisions. The page only names it
+([ADR-0042](https://github.com/vio-live/vio-handbook/blob/main/docs/decisions/0042-vio-reel-experiencias-gestionadas-desde-commerce.md)):
+
+```html
+<vio-reel experience-id="7"></vio-reel>
+```
+
+What it does: vertical feed with snap and the neighbour visible during the
+swipe, loop, muted autoplay (tap for sound), only the next video preloaded,
+skeleton while it loads, a brand chip and title, mute and fullscreen, a
+progress bar, up/down arrows on desktop. Under each video, compact product
+cards; the one the current second names carries the badge **«I videoen nå»**
+(`cue-label`) and scrolls into view. A card emits `vio:product-click` with the
+same detail as a `<vio-product>` (plus `experienceId`, `videoId`, `revision`),
+so `<vio-product-detail>` opens, the cart and the checkout are the usual ones —
+and the video keeps playing.
+
+Attributes: `experience-id`; the slot set every element has (`vio-slot`,
+`vio-scope`, `vio-campaign`, `vio-content-id`, `vio-content-title`; its kind is
+`reel`); `currency` (NOK); `no-autoplay`; `cue-label`. The `experience`
+**property** takes the API's JSON directly (an editor's preview) and skips the
+fetch.
+
+Rules it keeps, so a page published once never needs republishing:
+
+- **Revisions.** `GET /v2/experiences/:id` with the surface key, `ETag` and
+  `If-None-Match`. The revision the reel mounted with stays until the next
+  mount; a newer one is stored (`localStorage`, `vio.reel.*`, one week) and
+  shown on the next open. Network down: the stored one.
+- **The page's campaign decides.** An experience of another campaign than the
+  page's (`vio-campaign` / `data-vio-campaign` / `Vio.init({ campaignId })`)
+  renders **nothing**: a console warning and an `sdk_error` with
+  `error_code: reel_incompatible`. Never products of another campaign, never a
+  default sponsor. A page without a campaign accepts any experience of its
+  surface.
+- **Declarative only.** The experience's `theme` tokens are applied as
+  `--vio-*` custom properties on the element (names and values checked);
+  nothing else runs. Reel-only knobs: `--vio-reel-height` (default
+  `min(85vh, 100vw·16/9)`), `--vio-reel-radius`, `--vio-reel-video-fit`
+  (`cover`), `--vio-reel-card-width` (`232px`).
+- **Video.** Cloudflare Stream serves HLS: Safari plays it natively; elsewhere
+  `hls.js` (pinned, `HLS_JS_URL`) is loaded once from the CDN, **only when a
+  reel is on the page** — the bundle does not grow without one. A plain file
+  (`url` media) goes straight into `<video src>`.
+- **Analytics.** `component_impression` (products shown as `commerce.items`,
+  `props.experience_id` / `revision`), `view_item_list` per video when it
+  becomes the one on screen (`props.video_id`), and the usual `select_item`,
+  `add_to_cart`… from the detail. `Vio.analytics.setInternal(true)` applies as
+  everywhere.
+
+React: `import { VioReel } from '@vio-live/web-sdk/react'`.
+
 ## Sponsor identity — name and logo
 
 The elements say **who sells**: the sponsor's (brand's) display name and logo.

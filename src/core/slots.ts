@@ -60,7 +60,7 @@ export function componentKindOf(templateId: unknown, slot?: unknown): string | u
   const hint = typeof templateId === 'string' ? templateId.trim().toLowerCase() : ''
   if (hint) return hint.replace(/^(product|vev)-/, '').slice(0, SLOT_KIND_MAX_LENGTH) || undefined
   const id = typeof slot === 'string' ? slot.toLowerCase() : ''
-  const m = id.match(/(?:^|-)(card|carousel|grid|detail|banner|list|hero|stepper)(?:-|$)/)
+  const m = id.match(/(?:^|-)(card|carousel|grid|detail|banner|list|hero|stepper|reel)(?:-|$)/)
   return m?.[1]
 }
 
@@ -377,7 +377,7 @@ export function normalizeSlotLocations(slots: ReadonlyArray<SlotInput> | null | 
 // ── Auto identity (ADR-0034 refinement: the editor types nothing) ───────────
 
 /** The kinds of Vio element that register themselves. */
-export type SlotKind = 'card' | 'carousel' | 'detail'
+export type SlotKind = 'card' | 'carousel' | 'detail' | 'reel'
 
 /**
  * The id an element gets when the host set no `vio-slot`:

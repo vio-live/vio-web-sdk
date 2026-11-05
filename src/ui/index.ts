@@ -27,6 +27,8 @@ export {
   VioProductDetail,
   VioCart,
   VioCheckout,
+  VioReel,
 } from './elements.js'
+export { HLS_JS_URL } from './hls.js'
 
 export const VIO_UI_VERSION = '0.3.0'

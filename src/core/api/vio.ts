@@ -79,6 +79,28 @@ export class VioApi {
     return Array.isArray(res) ? res : (res?.components ?? [])
   }
 
+  /**
+   * A managed shoppable-video experience (`GET /v2/experiences/:id`,
+   * ADR-0042): the published revision for the key of the surface. Sends
+   * `If-None-Match` with the ETag the page last saw and answers `304` when
+   * nothing changed, so a reel re-opened with its cached revision costs no
+   * body. A 404 (unknown, unpublished or another surface's) throws a
+   * `VioApiError` like every other error.
+   */
+  async experience(
+    experienceId: number | string,
+    opts: { ifNoneMatch?: string | null } = {},
+  ): Promise<{ status: 200; body: unknown; etag: string | null } | { status: 304; etag: string | null }> {
+    const path = `/v2/experiences/${encodeURIComponent(String(experienceId))}`
+    const headers: Record<string, string> = { 'X-API-Key': this.apiKey, Accept: 'application/json' }
+    if (opts.ifNoneMatch) headers['If-None-Match'] = opts.ifNoneMatch
+    const res = await fetch(`${this.apiBase}${path}`, { method: 'GET', headers })
+    const etag = res.headers?.get?.('ETag') ?? null
+    if (res.status === 304) return { status: 304, etag }
+    if (!res.ok) throw new VioApiError(res.status, await safeText(res), `GET ${path}`)
+    return { status: 200, body: await res.json(), etag }
+  }
+
   // MARK: - HTTP plumbing
 
   private async get<T>(path: string): Promise<T> {

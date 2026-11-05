@@ -16,6 +16,13 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.38.0-beta.1 — 2026-11-05 (beta)
+
+Published under the npm dist-tag **`beta`**, not `latest`: `npm install @vio-live/web-sdk@beta` (or the exact
+version) gets it; a plain `npm install @vio-live/web-sdk` keeps 0.37.8. Only `<vio-reel>` and what it needs are
+new; nothing else changed since 0.37.8. The reel is the Vio-managed shoppable video of ADR-0042 and its backend is
+in staging only, so this is for Replit QA and the editor's preview until it is released as 0.38.0.
+
 ### Added
 - **`<vio-reel experience-id>` — shoppable video managed from Vio** ([ADR-0042](https://github.com/vio-live/vio-handbook/blob/main/docs/decisions/0042-vio-reel-experiencias-gestionadas-desde-commerce.md)).
   Ordered videos with the products on screen and their cues, edited in Vio's dashboard or in the publisher's CMS

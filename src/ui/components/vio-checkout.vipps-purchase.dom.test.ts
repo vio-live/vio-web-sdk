@@ -85,6 +85,15 @@ beforeEach(() => {
   vi.spyOn(manager, 'getOrderReference').mockResolvedValue({ orderNumber: 4128, buyerRef: null })
   vi.spyOn(manager, 'getOrderNumber').mockResolvedValue(4128)
   vi.spyOn(manager, 'getVippsStatus').mockResolvedValue({ state: 'AUTHORIZED', duplicate_of: null })
+  // The checkout that was paid: the purchase says what was bought from it (the cart was emptied in between).
+  vi.spyOn(manager, 'getCheckout').mockResolvedValue({
+    id: CHECKOUT,
+    cart: {
+      currency: 'NOK',
+      line_items: [{ id: 'li-1', product_id: 101, title: 'Genser', quantity: 1, price: { amount_incl_taxes: 1298, currency_code: 'NOK' } }],
+    },
+    totals: { currency_code: 'NOK' },
+  })
   vi.spyOn(Vio.cart, 'refreshFromServer').mockResolvedValue(undefined as any)
   setVisibility('visible')
   Vio.analytics.start({ host: 'replit' })

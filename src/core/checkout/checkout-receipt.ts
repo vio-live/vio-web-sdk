@@ -10,9 +10,13 @@
  * 2026-11-04). What every return does have is the checkout id, and the
  * checkout keeps the cart it was paid with: its lines, the shipping each line
  * was sent with, and the totals that were charged.
+ *
+ * Analytics reads a return's `purchase` lines the same way (Faves 4136/4139/
+ * 4142: the cart of the tab was empty, or already the next purchase) — hence
+ * it lives in core, not next to the receipt that first needed it.
  */
 
-import type { CartLineItem } from '../core/cart/types.js'
+import type { CartLineItem } from '../cart/types.js'
 
 /** What the receipt prints, as the checkout says it. */
 export interface CheckoutReceipt {

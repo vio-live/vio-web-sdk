@@ -506,6 +506,19 @@ could never be netted.
   sent as soon as it is built, and when the page hides (`visibilitychange`, the
   last thing a phone is sure to say before it discards a tab) whatever is still
   queued leaves by beacon (0.29.0; order 4128 had been recorded and never sent).
+- **What was bought: the paid cart, never a guess.** `items`, `value` and
+  `currency` are the lines that were paid (sum of the items, no shipping). Paid on
+  the page (Stripe's Element, Klarna, Apple Pay…) that is the cart in memory. Back
+  from a payment page (Vipps, a Stripe link, an Adyen redirect, a provider's
+  receipt — `detail.returned: true`), or with an empty cart, this tab's cart is
+  not the paid one — another return may have emptied it, or it already holds the
+  next purchase — so the lines are read from the checkout that was paid
+  (`Vio.checkout.getCheckout`, as the receipt does); the cart's own lines are kept
+  only when they hold exactly the checkout's products and quantities (they carry
+  the slot and campaign). When the checkout cannot be read, has no lines, or the
+  page hides first, **no `purchase` is sent** — never one with `value: 0` and no
+  items (0.38; Faves 4136/4139/4142): `order_paid` says the sale, and the
+  checkout's `add_payment_info` ties it to the session.
 - **A host with its own sink** (Vev) reads the same ids from the detail with
   `purchaseIdsOf(detail)` → `{ orderId, checkoutId, orderIdKind }` (or
   `purchaseFromPaymentSuccess(detail)`, exported from `/core`), and waits for the

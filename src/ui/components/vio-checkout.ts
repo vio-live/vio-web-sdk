@@ -61,7 +61,7 @@ import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
-import { receiptFromCheckout } from '../checkout-receipt.js'
+import { receiptFromCheckout } from '../../core/checkout/checkout-receipt.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
 import {
   renderSponsorMark,
@@ -1225,7 +1225,12 @@ export class VioCheckout extends LitElement {
       // The cart is gone (cleared just above, or never in this tab): the
       // lines, the shipping and the total come from the checkout.
       void this.fillReceiptFromCheckout(checkoutId, sponsorId, paidCheckout)
-      void this.emitPaymentSuccess({ method: vioMethod, sponsorId, orderId: checkoutId }, checkoutId, sponsorId)
+      // `returned`: the cart of this tab is not the paid one — analytics reads it from the checkout.
+      void this.emitPaymentSuccess(
+        { method: vioMethod, sponsorId, orderId: checkoutId, returned: true },
+        checkoutId,
+        sponsorId,
+      )
     } else if (outcome === 'duplicate') {
       this.paymentError = CART_PAID_MESSAGE
       this.open = true
@@ -2533,7 +2538,14 @@ export class VioCheckout extends LitElement {
     // when the provider's result carries no order id. The cart is cleared
     // after the event, as always (analytics reads it from the event).
     void this.emitPaymentSuccess(
-      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      {
+        method,
+        sponsorId,
+        result: result as PaymentSuccessResult | null | undefined,
+        checkoutId,
+        // Back from the provider's page: the cart of this tab need not be the paid one.
+        ...(returnCheckoutId ? { returned: true } : {}),
+      },
       checkoutId,
       sponsorId,
       () => Vio.cart.clearSponsorCart(sponsorId),
@@ -3089,7 +3101,14 @@ export class VioCheckout extends LitElement {
     const checkoutId = returnCheckoutId || this.checkoutState?.checkoutId
     this.setOrderSponsor(sponsorId, checkoutId)
     void this.emitPaymentSuccess(
-      { method, sponsorId, result: result as PaymentSuccessResult | null | undefined, checkoutId },
+      {
+        method,
+        sponsorId,
+        result: result as PaymentSuccessResult | null | undefined,
+        checkoutId,
+        // Back from the provider's page: the cart of this tab need not be the paid one.
+        ...(returnCheckoutId ? { returned: true } : {}),
+      },
       checkoutId,
       sponsorId,
       () => {

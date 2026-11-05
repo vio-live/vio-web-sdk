@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.37.8 — 2026-11-05
+
 ### Fixed
 - **The receipt after Vipps lists the order** — after paying with Stripe on the page the «Takk!» showed the lines,
   «Frakt – … · Gratis» (or the price) and the total; after Vipps it showed none of them. Vipps comes back through a

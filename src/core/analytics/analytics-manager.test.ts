@@ -125,6 +125,27 @@ describe('wire format (contract v1)', () => {
     expect(item.product_id).toBe('408948')
     expect(item.variant_id).toBe('100')
   })
+
+  it('an item says its sponsor as sponsor_id only when it is a positive integer', async () => {
+    initVio()
+    const m = new AnalyticsManager()
+    m.track('component_impression', {
+      commerce: {
+        items: [
+          { productId: 1, sponsorId: 1301 },
+          { productId: 2, sponsorId: 0 },
+          { productId: 3 },
+          { productId: 4, sponsorId: 1.5 },
+        ],
+      },
+    })
+    await m.flush()
+    const items = (flushedBatches[0]!.events[1]!.commerce as { items: Array<Record<string, unknown>> }).items
+    expect(items[0]!.sponsor_id).toBe(1301)
+    expect(items[1]).not.toHaveProperty('sponsor_id')
+    expect(items[2]).not.toHaveProperty('sponsor_id')
+    expect(items[3]).not.toHaveProperty('sponsor_id')
+  })
 })
 
 describe('pre-init queue', () => {

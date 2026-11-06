@@ -159,6 +159,12 @@ export interface AnalyticsItemInput {
   price?: number
   quantity?: number
   /**
+   * The sponsor (brand) selling this item — `sponsor_id` on the wire, only when
+   * positive. A carousel showing several brands' products says each item's
+   * sponsor here while `context.sponsor_id` names no single one.
+   */
+  sponsorId?: number
+  /**
    * The `<vio-product-detail>` layout these units were added from (0.34), from
    * the cart line's origin: `layout_id`, `layout_revision`, `experiment_id`,
    * `experiment_variant_id` on the wire. When any of them is given, all four
@@ -739,6 +745,7 @@ export class AnalyticsManager extends EventTarget {
               variant_id: i.variantId !== undefined ? String(i.variantId) : undefined,
               price: i.price,
               quantity: i.quantity,
+              sponsor_id: positiveInt(i.sponsorId),
             }),
             ...itemLayoutWire(i),
           })),
@@ -1524,6 +1531,12 @@ function withLineLayouts(items: AnalyticsItemInput[] | undefined): AnalyticsItem
     experimentId: i.experimentId ?? '',
     experimentVariantId: i.experimentVariantId ?? '',
   }))
+}
+
+/** A positive integer id as the collector accepts it; anything else (0, NaN, a string, absent) is left out. */
+function positiveInt(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : v
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : undefined
 }
 
 function compact<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {

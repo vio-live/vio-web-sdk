@@ -17,6 +17,14 @@ and *when*, and links there.
 ## Unreleased
 
 ### Fixed
+- **The carousel's impression says its sponsor.** Without a `sponsor-id` on `<vio-product-carousel>` (Replit
+  sets none) its `component_impression` and `view_item_list` reached the collector with no `sponsor_id`, while
+  the clicks, carts and purchases of the same products carried the brand's: in the dashboard, filtered by brand,
+  impressions read 0 and conversion 0 % (prod, 2026-11-06: `sponsor_id: 0, product_ids: ["421319"]`). The
+  context now names the sponsor the carousel buys with — the host's `sponsor-id`, else the one sponsor of the
+  products shown, else the primary sponsor of the campaign the slot shows — and every `commerce.items[]` line
+  says its own product's **`sponsor_id`**. A carousel mixing brands (`product-refs` of several sponsors) names
+  no single sponsor in the context; its items still do.
 - **The `purchase` after Vipps (or any payment page) says what was paid.** Back from a payment page the
   purchase was built from this tab's cart, which by then may be empty (another return cleared it) or hold the
   next purchase: Faves orders 4136, 4139 and 4142 (prod, 2026-11-05) reached the collector with `value: 0`,

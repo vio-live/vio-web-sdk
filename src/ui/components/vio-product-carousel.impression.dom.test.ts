@@ -80,8 +80,8 @@ describe('vio-product-carousel — component_impression with commerce.items', ()
     expect(ev.context).toMatchObject({ sponsor_id: 4, location_id: 'imp-a' })
     expect(ev.commerce).toEqual({
       items: [
-        { product_id: '9', name: 'Sindig Morris bordlampe', price: 1699 },
-        { product_id: '10', name: 'Sindig pendel', price: 2499 },
+        { product_id: '9', name: 'Sindig Morris bordlampe', price: 1699, sponsor_id: 4 },
+        { product_id: '10', name: 'Sindig pendel', price: 2499, sponsor_id: 4 },
       ],
       currency: 'NOK',
     })

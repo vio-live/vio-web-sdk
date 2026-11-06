@@ -24,6 +24,7 @@ import type { AnalyticsCommerce } from '../../core/analytics/analytics-manager.j
 import {
   displayPrice,
   primaryImageUrl,
+  type Attribution,
   type Product,
 } from '../../core/types.js'
 import { SlotRegistration } from '../slot-registration.js'
@@ -134,13 +135,17 @@ export class VioProductCarousel extends LitElement {
 
   /** Attribution every analytics event of this carousel carries (`Vio.attribution` + the content overrides). */
   private attribution() {
-    const base =
+    const sponsorId = this.contextSponsorId()
+    const base: Attribution =
       typeof Vio.attribution === 'function'
         ? Vio.attribution(this.effectiveSlot, {
-            sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+            sponsorId,
             campaignId: this.slotRegistration.campaignHint,
           })
         : { slot: this.effectiveSlot || undefined }
+    // Products of several brands: no single sponsor credits the carousel (each
+    // item says its own), so the slot's campaign does not lend it one either.
+    if (sponsorId === undefined && this.showsSeveralSponsors()) delete base.sponsorId
     return {
       ...base,
       componentTemplateId: 'product-carousel',
@@ -403,6 +408,31 @@ export class VioProductCarousel extends LitElement {
     return Number.isFinite(fromSlot) && fromSlot > 0 ? fromSlot : 0
   }
 
+  /** The distinct sponsors of the products on show (multi-sponsor refs may mix brands). */
+  private shownSponsorIds(): number[] {
+    return [...new Set((this.fetched ?? []).map((e) => e.sponsorId).filter((id) => id > 0))]
+  }
+
+  private showsSeveralSponsors(): boolean {
+    return this.shownSponsorIds().length > 1
+  }
+
+  /**
+   * The sponsor the carousel's analytics events carry in `context`: the host's
+   * `sponsor-id`, else the one sponsor of the products shown, else the primary
+   * sponsor of the campaign the slot shows (what the carousel buys with).
+   * `undefined` when the products shown belong to different sponsors — each
+   * `commerce.items[]` line says its own — or when none is known.
+   */
+  private contextSponsorId(): number | undefined {
+    if (this.sponsorId > 0) return this.sponsorId
+    const shown = this.shownSponsorIds()
+    if (shown.length > 1) return undefined
+    if (shown.length === 1) return shown[0]
+    const fromSlot = this.effectiveSponsorId()
+    return fromSlot > 0 ? fromSlot : undefined
+  }
+
   private async autoFetch(): Promise<void> {
     if (!Vio.isInitialized) {
       this.fetchError = 'Vio not initialized — call Vio.init({ apiKey }) first'
@@ -502,7 +532,7 @@ export class VioProductCarousel extends LitElement {
       this.unobserveImpression = Vio.analytics.observeImpression(
         this,
         {
-          sponsorId: this.sponsorId > 0 ? this.sponsorId : undefined,
+          sponsorId: this.contextSponsorId(),
           // The slot is the real location id; the label only stands in for it.
           locationId: this.effectiveSlot || this.label || undefined,
           ...this.attribution(),
@@ -529,10 +559,9 @@ export class VioProductCarousel extends LitElement {
     if (entries.length === 0) return
     this.listTracked = true
     try {
-      const sponsorId = this.effectiveSponsorId()
       Vio.analytics.track('view_item_list', {
         context: {
-          sponsorId: sponsorId > 0 ? sponsorId : undefined,
+          sponsorId: this.contextSponsorId(),
           locationId: this.effectiveSlot || this.label || undefined,
           ...this.attribution(),
         },
@@ -544,15 +573,16 @@ export class VioProductCarousel extends LitElement {
     }
   }
 
-  /** The products on show as analytics lines (impression and view_item_list); null before they load. */
+  /** The products on show as analytics lines (impression and view_item_list), each with its sponsor; null before they load. */
   private listCommerce(): AnalyticsCommerce | null {
     const entries = this.fetched ?? []
     if (entries.length === 0) return null
     return {
-      items: entries.map(({ product }) => ({
+      items: entries.map(({ product, sponsorId }) => ({
         productId: product.id,
         name: product.title,
         price: Number(product.price?.amount_incl_taxes ?? product.price?.amount) || undefined,
+        sponsorId: sponsorId > 0 ? sponsorId : undefined,
       })),
       currency: entries[0]?.product.price?.currency_code,
     }

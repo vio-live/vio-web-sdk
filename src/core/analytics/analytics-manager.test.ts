@@ -597,7 +597,7 @@ describe('order_id coherente en purchase (cuatro emisores de vio:payment-success
   })
 
   it('retorno de redirect (Vipps/Klarna/Stripe): orderId = checkout id de Vio', async () => {
-    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1' })
+    const ev = await purchaseAfter({ method: 'vipps', sponsorId: 4, orderId: 'CHK-1' }, fakeCart({ 4: [line()] }))
     expect(ev.commerce.order_id).toBe('CHK-1')
     expect(ev.commerce.payment_method).toBe('vipps')
     expect(ev.context.sponsor_id).toBe(4)
@@ -619,12 +619,15 @@ describe('order_id coherente en purchase (cuatro emisores de vio:payment-success
   })
 
   it('recibo del proveedor (Walley): su orderId no cuenta, order_id es el checkout de Vio', async () => {
-    const ev = await purchaseAfter({
-      method: 'walley',
-      sponsorId: 4,
-      result: { orderId: 'W-9' },
-      checkoutId: 'CHK-3',
-    })
+    const ev = await purchaseAfter(
+      {
+        method: 'walley',
+        sponsorId: 4,
+        result: { orderId: 'W-9' },
+        checkoutId: 'CHK-3',
+      },
+      fakeCart({ 4: [line()] }),
+    )
     expect(ev.commerce.order_id).toBe('CHK-3')
   })
 
@@ -644,11 +647,16 @@ describe('order_id coherente en purchase (cuatro emisores de vio:payment-success
     expect(ev.commerce.items[0].product_id).toBe('408948')
   })
 
-  it('sin carrito ni snapshot, purchase sale sin value ni currency (nunca inventados)', async () => {
-    const ev = await purchaseAfter({ method: 'nexi', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-5' })
-    expect(ev.commerce.order_id).toBe('CHK-5')
-    expect(ev.commerce.value).toBeUndefined()
-    expect(ev.commerce.currency).toBeUndefined()
+  it('sin carrito, ni snapshot, ni checkout que leer: no sale purchase (nunca uno con value 0 y sin líneas)', async () => {
+    initVio()
+    installFacade(BOOT, fakeCart())
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    fire({ method: 'nexi', sponsorId: 4, result: { chargedTotal: 350 }, checkoutId: 'CHK-5' })
+    fire({ method: 'vipps', sponsorId: 4, orderId: 'CHK-6', returned: true })
+    await m.flush()
+    m.stop()
+    expect(flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase')).toHaveLength(0)
   })
 
   it('Apple Pay express desde el carrito: order_id es el de la confirmación del backend', async () => {
@@ -981,6 +989,168 @@ describe('purchase: order_id es el número de orden de Vio, checkout_id siempre 
     })
     // Los ids del proveedor nunca: ni result.orderId ni result.order.orderId.
     expect(purchaseIdsOf({ result: { orderId: 'W-9', order: { orderId: 3361254 } } })).toEqual({})
+  })
+})
+
+describe('purchase de una vuelta: las líneas salen del checkout pagado, no del carrito (Faves 4136/4139/4142)', () => {
+  const CHK = '23e75f5e-1c2d-4e3f-8a9b-0c1d2e3f4a5b'
+  afterEach(removeFacade)
+
+  /** GetCheckout de un checkout pagado: los productos y cantidades dados (precio con IVA). */
+  const checkoutOf = (lines: Array<{ productId: number; quantity: number; price: number; variantId?: number }>) => ({
+    id: CHK,
+    cart: {
+      currency: 'NOK',
+      line_items: lines.map((l, i) => ({
+        id: `li-${i}`,
+        product_id: l.productId,
+        variant_id: l.variantId ?? null,
+        title: `P${l.productId}`,
+        quantity: l.quantity,
+        price: { amount: l.price * 0.8, amount_incl_taxes: l.price, currency_code: 'NOK' },
+      })),
+    },
+    totals: { currency_code: 'NOK' },
+  })
+
+  type Read = unknown | 'hang' | 'fail'
+
+  /** Página con el gestor de checkout: `getCheckout` responde `reads` por turno; el número de orden ya existe. */
+  const page = (reads: Read[], cart = fakeCart()) => {
+    vi.useFakeTimers()
+    initVio()
+    let call = 0
+    const getCheckout = vi.fn((_id: string, _sponsorId?: number) => {
+      const r = reads[Math.min(call++, reads.length - 1)]
+      if (r === 'hang') return new Promise<never>(() => {})
+      if (r === 'fail') return Promise.reject(new Error('503'))
+      return Promise.resolve(r)
+    })
+    const getOrderReference = vi.fn(async () => ({ orderNumber: 4136, buyerRef: null }))
+    ;(globalThis as Record<string, unknown>).__VIO_FACADE__ = {
+      bootstrapCache: BOOT,
+      cart,
+      checkout: { getCheckout, getOrderReference },
+    }
+    const m = new AnalyticsManager()
+    m.start({ host: 'custom' })
+    return { m, getCheckout }
+  }
+
+  const fire = (detail: unknown) =>
+    (globalThis as Record<string, any>).window.dispatchEvent(
+      new CustomEvent('vio:payment-success', { detail }) as unknown as Event,
+    )
+  const purchases = async (m: AnalyticsManager) => {
+    await m.flush()
+    return flushedBatches.flatMap((b) => b.events).filter((e) => e.name === 'purchase') as Array<Record<string, any>>
+  }
+  const vippsReturn = { method: 'vipps', sponsorId: 4, orderId: CHK, returned: true }
+  const cartLine = (over: Record<string, unknown> = {}) =>
+    ({ id: 'c', productId: 101, name: 'P101', unitPrice: 1298, quantity: 1, currency: 'NOK', sponsorId: 4, ...over }) as unknown as FakeLine
+
+  it('carrito ya vaciado (otra vuelta lo limpió): items y value del checkout', async () => {
+    const { m, getCheckout } = page([checkoutOf([{ productId: 101, quantity: 1, price: 1298 }, { productId: 102, quantity: 2, price: 249.5 }])])
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev, ...rest] = await purchases(m)
+    expect(rest).toHaveLength(0)
+    expect(getCheckout).toHaveBeenCalledWith(CHK, 4)
+    expect(ev!.commerce).toMatchObject({ order_id: '4136', checkout_id: CHK, value: 1797, currency: 'NOK', payment_method: 'vipps' })
+    expect(ev!.commerce.items).toEqual([
+      expect.objectContaining({ product_id: '101', price: 1298, quantity: 1 }),
+      expect.objectContaining({ product_id: '102', price: 249.5, quantity: 2 }),
+    ])
+    m.stop()
+  })
+
+  it('carrito reemplazado por la compra SIGUIENTE: no se reporta como esta', async () => {
+    const { m } = page(
+      [checkoutOf([{ productId: 101, quantity: 1, price: 1298 }])],
+      fakeCart({ 4: [cartLine({ productId: 999, unitPrice: 499 })] }),
+    )
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.value).toBe(1298)
+    expect(ev!.commerce.items.map((i: { product_id: string }) => i.product_id)).toEqual(['101'])
+    m.stop()
+  })
+
+  it('el carrito ES el pagado (mismos productos y cantidades): se usan sus líneas, con su slot y su campaña', async () => {
+    const { m } = page(
+      [checkoutOf([{ productId: 101, quantity: 2, price: 1298 }])],
+      fakeCart({ 4: [cartLine({ quantity: 2, origins: [{ campaignId: 12, slot: 'hero', contentId: 'art-9', quantity: 2 }] })] }),
+    )
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.value).toBe(2596)
+    expect(ev!.context).toMatchObject({ campaign_id: 12, location_id: 'hero', content_id: 'art-9' })
+    m.stop()
+  })
+
+  it('una lectura que falla se repite (1 s después) y la compra sale con lo que dice el checkout', async () => {
+    const { m, getCheckout } = page(['fail', checkoutOf([{ productId: 101, quantity: 1, price: 1298 }])])
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(await purchases(m)).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(1)
+    const [ev] = await purchases(m)
+    expect(getCheckout).toHaveBeenCalledTimes(2)
+    expect(ev!.commerce.value).toBe(1298)
+    m.stop()
+  })
+
+  it('el checkout no se puede leer (o no tiene líneas): ningún purchase, nunca uno vacío', async () => {
+    const failing = page(['fail'])
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(failing.m)).toHaveLength(0)
+    expect(failing.getCheckout).toHaveBeenCalledTimes(3) // 0 / 1 / 3 s
+    failing.m.stop()
+
+    const empty = page([checkoutOf([])])
+    fire({ ...vippsReturn, orderId: `${CHK.slice(0, -1)}0` })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(empty.m)).toHaveLength(0)
+    expect(empty.getCheckout).toHaveBeenCalledTimes(1) // una respuesta es la respuesta
+    empty.m.stop()
+  })
+
+  it('la página se oculta (o stop()) mientras lee: no sale nada, ni tarde', async () => {
+    const hidden = page(['hang'])
+    fire(vippsReturn)
+    ;(globalThis as Record<string, any>).window.dispatchEvent(new Event('pagehide'))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(hidden.m)).toHaveLength(0)
+    hidden.m.stop()
+
+    const stopped = page([checkoutOf([{ productId: 101, quantity: 1, price: 1298 }])])
+    fire({ ...vippsReturn, orderId: `${CHK.slice(0, -1)}1` })
+    stopped.m.stop()
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(await purchases(stopped.m)).toHaveLength(0)
+  })
+
+  it('sin `returned` y con carrito (pago en esta página): el carrito, sin leer el checkout', async () => {
+    const { m, getCheckout } = page([checkoutOf([{ productId: 777, quantity: 9, price: 1 }])], fakeCart({ 4: [cartLine()] }))
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.items.map((i: { product_id: string }) => i.product_id)).toEqual(['101'])
+    expect(getCheckout).not.toHaveBeenCalled()
+    m.stop()
+  })
+
+  it('sin `returned` pero con el carrito vacío: también se lee el checkout', async () => {
+    const { m, getCheckout } = page([checkoutOf([{ productId: 101, quantity: 1, price: 1298 }])])
+    fire({ method: 'stripe', sponsorId: 4, checkoutId: CHK })
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(getCheckout).toHaveBeenCalledTimes(1)
+    expect(ev!.commerce.value).toBe(1298)
+    m.stop()
   })
 })
 

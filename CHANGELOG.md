@@ -16,6 +16,29 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **The `purchase` after Vipps (or any payment page) says what was paid.** Back from a payment page the
+  purchase was built from this tab's cart, which by then may be empty (another return cleared it) or hold the
+  next purchase: Faves orders 4136, 4139 and 4142 (prod, 2026-11-05) reached the collector with `value: 0`,
+  `items: []` and no `location_id`, and a cart holding the next product would have been reported as this order.
+  The lines now come from the checkout that was paid (`GetCheckout`, as the receipt reads them); the cart's own
+  lines are kept only when they hold exactly the checkout's products and quantities. See
+  [README → The purchase](README.md#the-purchase--order_id-is-vios-order-number-checkout_id-beside-it).
+
+### Changed
+- **No `purchase` without lines.** When the checkout cannot be read, has no lines, or the page hides while it
+  is read, no `purchase` is sent at all (before: one with no value and no items). Commerce's `order_paid` still
+  says the sale, and the checkout's `add_payment_info` ties it to the session.
+- `vio:payment-success` from a return carries **`returned: true`** (redirect returns, and a provider's receipt
+  reached after one).
+
+### ⚠️ Upgrade notes
+- A return's `purchase` now waits for one `GetCheckout` (one request, besides the receipt's) before it is
+  built; if the page hides in that moment there is no `purchase` for that order, only its `order_paid`.
+- A host that emits `vio:payment-success` itself is read as before (its cart is the paid one) unless it sets
+  `returned: true`; with an empty cart the SDK now reads the checkout named by the detail, and sends nothing
+  when it cannot.
+
 ## 0.38.0-beta.1 — 2026-11-05 (beta)
 
 Published under the npm dist-tag **`beta`**, not `latest`: `npm install @vio-live/web-sdk@beta` (or the exact

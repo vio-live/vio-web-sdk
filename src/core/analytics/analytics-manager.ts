@@ -56,6 +56,7 @@ import { cartSlicesFrom, hasExplicitCampaign, itemLayoutOf, lineItemsByLayout, t
 import { layoutToken, normalizeLayoutOrigin } from '../detail-layout.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CheckoutReference } from '../api/cart-queries.js'
+import { receiptFromCheckout } from '../checkout/checkout-receipt.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 import type { CheckoutSponsor } from '../sponsor-identity.js'
 
@@ -1098,29 +1099,99 @@ export class AnalyticsManager extends EventTarget {
       if (!this.claimPurchase(ids)) return
       const sponsorId = d.sponsorId !== undefined ? Number(d.sponsorId) : undefined
       const base: AnalyticsContext = { sponsorId, campaignId: campaignOf(d), slot: slotOf(d), ...contentOf(d) }
+      const buyerId = buyerRefOf(d)
       // Read NOW, whenever the event leaves: the cart is cleared right after
       // this event (the pre-clear snapshot covers the paths that clear first).
-      const { slices, explicit } = this.cartSlices(sponsorId)
-      const parts: TrackOptions[] =
-        slices.length > 1
-          ? // Several campaigns paid in one go: one purchase per campaign — its
-            // items and value, the SAME order_id — so each campaign's revenue is
-            // its own and the order still adds up. `props.slice/slices` lets the
-            // collector count the order once.
-            slices.map((slice) => ({
-              context: this.sliceContext(slice, base),
-              commerce: { ...sliceCommerce(slice), paymentMethod: d.method },
-              props: { slice: slice.slice, slices: slice.slices },
-            }))
-          : [
-              {
-                context: this.singleSliceContext(slices[0], explicit, base),
-                // value / currency / items: the cart snapshot, on every path.
-                commerce: { ...(this.cartCommerce(sponsorId) ?? {}), paymentMethod: d.method },
-              },
-            ]
-      this.reportPurchase(parts, ids, buyerRefOf(d), sponsorId)
+      const cart = this.cartLines(sponsorId)
+      // Paid on this page, with its cart in memory: the cart IS what was paid.
+      if (!isPaymentReturn(d) && cart.length > 0) {
+        this.reportPurchase(this.purchaseParts(cart, base, d.method), ids, buyerId, sponsorId)
+        return
+      }
+      // Back from a payment page (Vipps, a Stripe link, an Adyen redirect…),
+      // or nothing in the cart: this tab's cart is not the one that was paid.
+      // Another return may have emptied it, or it already holds the NEXT
+      // purchase (Faves, 2026-11-05: orders 4136/4139/4142 reached the
+      // collector with `value: 0` and no items). What was bought is read from
+      // the checkout that was paid; without it there is no purchase at all —
+      // Commerce's `order_paid` says the sale, and `add_payment_info` already
+      // tied the checkout to this session.
+      this.reportReturnPurchase(cart, base, d.method, ids, buyerId, sponsorId)
     })
+  }
+
+  /**
+   * The `purchase` event(s) of the lines that were paid: one per campaign
+   * when the lines' origins name several — its items and value, the SAME
+   * order_id — so each campaign's revenue is its own and the order still adds
+   * up (`props.slice/slices` lets the collector count the order once); else
+   * one. Value / currency / items: the lines (sum of the items, no shipping),
+   * on every path. No lines, no event: a purchase never goes out empty.
+   */
+  private purchaseParts(lines: CartLineItem[], base: AnalyticsContext, method: string | undefined): TrackOptions[] {
+    const { slices, explicit } = this.slicesOf(lines)
+    if (slices.length > 1) {
+      return slices.map((slice) => ({
+        context: this.sliceContext(slice, base),
+        commerce: { ...sliceCommerce(slice), paymentMethod: method },
+        props: { slice: slice.slice, slices: slice.slices },
+      }))
+    }
+    const commerce = this.commerceOf(lines)
+    if (!commerce) return []
+    return [{ context: this.singleSliceContext(slices[0], explicit, base), commerce: { ...commerce, paymentMethod: method } }]
+  }
+
+  /**
+   * The `purchase` of a payment this tab's cart cannot vouch for (a return
+   * from a payment page, or an empty cart): its lines are read from the
+   * checkout that was paid — at once and again after 1 / 2 s on a failed
+   * read, within the purchase's 10 s. When the cart in memory has exactly the
+   * checkout's products and quantities it is the paid cart, and its lines are
+   * used (they carry the slot and campaign each unit came from); otherwise the
+   * checkout's. Nothing goes out when there is no checkout to read, it cannot
+   * be read, it has no lines, or the page hides (or `stop()` comes) first.
+   */
+  private reportReturnPurchase(
+    cart: CartLineItem[],
+    base: AnalyticsContext,
+    method: string | undefined,
+    ids: PurchaseIds,
+    buyerId: string | undefined,
+    sponsorId: number | undefined,
+  ): void {
+    const read = this.checkoutReader(ids.checkoutId, sponsorId)
+    if (!read || this.isPageHidden()) return
+    let done = false
+    const drop = () => {
+      done = true
+      this.pendingPurchases.delete(drop)
+    }
+    this.pendingPurchases.add(drop)
+    void readPaidLines(read, sponsorId ?? 0, () => done).then((paid) => {
+      if (done) return
+      drop()
+      if (paid.length === 0) return
+      const lines = sameProducts(cart, paid) ? cart : paid
+      const parts = this.purchaseParts(lines, base, method)
+      if (parts.length > 0) this.reportPurchase(parts, ids, buyerId, sponsorId)
+    })
+  }
+
+  /**
+   * How a purchase reads the checkout it paid: through the SDK's checkout
+   * manager (`getCheckout`, the `GetCheckout` the receipt reads). `null` when
+   * there is nothing to read — no checkout id, or no checkout manager.
+   */
+  private checkoutReader(checkoutId: string | undefined, sponsorId: number | undefined): (() => Promise<unknown>) | null {
+    if (!checkoutId) return null
+    try {
+      const checkout = vioFacade()?.checkout
+      if (!checkout || typeof checkout.getCheckout !== 'function') return null
+      return () => checkout.getCheckout!(checkoutId, sponsorId || undefined)
+    } catch {
+      return null
+    }
   }
 
   /**
@@ -1156,6 +1227,9 @@ export class AnalyticsManager extends EventTarget {
     buyerId: string | undefined,
     sponsorId: number | undefined,
   ): void {
+    // A purchase that cannot say what was bought is not sent (never `value: 0`, `items: []`).
+    parts = parts.filter((part) => (part.commerce?.items?.length ?? 0) > 0)
+    if (parts.length === 0) return
     const events = parts.map((part) =>
       this.buildEvent('purchase', {
         ...part,
@@ -1277,7 +1351,11 @@ export class AnalyticsManager extends EventTarget {
    * its campaign itself (a cart without origins is reported as before).
    */
   private cartSlices(sponsorId?: number): { slices: CartSlice[]; explicit: boolean } {
-    const lines = this.cartLines(sponsorId)
+    return this.slicesOf(this.cartLines(sponsorId))
+  }
+
+  /** `lines` split per campaign (cart/slices.ts), plus whether any unit named its campaign itself. */
+  private slicesOf(lines: CartLineItem[]): { slices: CartSlice[]; explicit: boolean } {
     if (lines.length === 0) return { slices: [], explicit: false }
     const boot = vioBootstrapCache()
     const slices = cartSlicesFrom(
@@ -1328,18 +1406,11 @@ export class AnalyticsManager extends EventTarget {
 
   /** Current cart → commerce payload; falls back to the pre-clear snapshot. */
   private cartCommerce(sponsorId?: number): AnalyticsCommerce | null {
-    let items: CartLineItem[] = []
-    const cart = vioCart()
-    if (cart) {
-      cart.getAllCarts().forEach((state, id) => {
-        if (sponsorId === undefined || id === sponsorId) items.push(...state.items)
-      })
-    }
-    if (items.length === 0 && this.lastCartSnapshot) {
-      items = this.lastCartSnapshot.items.filter(
-        (i) => sponsorId === undefined || i.sponsorId === sponsorId,
-      )
-    }
+    return this.commerceOf(this.cartLines(sponsorId))
+  }
+
+  /** Lines → commerce payload (items, value = sum of the items, currency); `null` without lines. */
+  private commerceOf(items: CartLineItem[]): AnalyticsCommerce | null {
     if (items.length === 0) return null
     return {
       // One item per line and detail layout (0.34), each saying its layout.
@@ -1477,6 +1548,8 @@ interface FacadeLike {
   /** The checkout manager: a purchase asks it for Vio's order number, as the receipt does. */
   checkout?: {
     getOrderReference?: (checkoutId: string, sponsorId?: number) => Promise<CheckoutReference>
+    /** The checkout as `GetCheckout` answers it: a return's purchase reads what was paid from it. */
+    getCheckout?: (checkoutId: string, sponsorId?: number) => Promise<unknown>
   }
 }
 function vioFacade(): FacadeLike | null {
@@ -1626,6 +1699,12 @@ export interface PaymentSuccessDetail {
   orderId?: string | number
   /** Vio's checkout id — from the checkout state or the return URL. */
   checkoutId?: string | number
+  /**
+   * The payment came back from a provider's page (a redirect return, a
+   * provider's receipt after one): the cart in this tab need not be the one
+   * that was paid, so the `purchase` reads its lines from the checkout.
+   */
+  returned?: boolean
   /**
    * Vio's order number (`4415`), when the emitter knows it: the SDK's checkout
    * adds it when its ask for the buyer reference already found the order.
@@ -1785,6 +1864,75 @@ export function purchaseFromPaymentSuccess(
 /** Vio's order numbers are whole numbers (`4415`); its checkout ids are uuids. */
 function isOrderNumber(value: string): boolean {
   return /^[1-9][0-9]*$/.test(value)
+}
+
+/**
+ * Whether a `vio:payment-success` came back from a provider's page: the
+ * emitter says so (`returned`; the SDK's checkout does on every return). An
+ * event without it — a host's own checkout, say — is read as before: its cart
+ * is the one that was paid.
+ */
+function isPaymentReturn(d: PaymentSuccessDetail): boolean {
+  return d.returned === true
+}
+
+/** Waits before reading the paid checkout again after a failed read. */
+const PAID_LINES_RETRY_MS = [1_000, 2_000] as const
+
+/**
+ * The lines a checkout was paid with (`receiptFromCheckout`, as the receipt
+ * reads them), only those with a quantity. Read at once and again after each
+ * of `PAID_LINES_RETRY_MS` on a failed read, within `ORDER_NUMBER_MAX_WAIT_MS`;
+ * `[]` when it never answers with lines or `stopped()`. Never rejects.
+ */
+async function readPaidLines(
+  read: () => Promise<unknown>,
+  sponsorId: number,
+  stopped: () => boolean,
+): Promise<CartLineItem[]> {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  const timeUp = new Promise<null>((resolve) => {
+    deadline = setTimeout(() => resolve(null), ORDER_NUMBER_MAX_WAIT_MS)
+  })
+  try {
+    for (let attempt = 0; attempt <= PAID_LINES_RETRY_MS.length; attempt++) {
+      if (attempt > 0) {
+        const wait = PAID_LINES_RETRY_MS[attempt - 1]!
+        const slept = await Promise.race([new Promise<true>((resolve) => setTimeout(() => resolve(true), wait)), timeUp])
+        if (slept === null) break
+      }
+      if (stopped()) break
+      try {
+        const checkout = await Promise.race([read(), timeUp])
+        if (checkout === null) break // time is up
+        // An answer is the answer: a checkout without lines is not read again.
+        return (receiptFromCheckout(checkout, sponsorId)?.items ?? []).filter((line) => line.quantity > 0)
+      } catch {
+        /* read again, or give up */
+      }
+    }
+    return []
+  } finally {
+    clearTimeout(deadline)
+  }
+}
+
+/** Whether two sets of lines hold the same products in the same quantities. */
+function sameProducts(a: CartLineItem[], b: CartLineItem[]): boolean {
+  if (a.length === 0 || b.length === 0) return false
+  const units = (lines: CartLineItem[]) => {
+    const out = new Map<string, number>()
+    for (const line of lines) {
+      const key = String(line.productId)
+      out.set(key, (out.get(key) ?? 0) + (line.quantity ?? 1))
+    }
+    return out
+  }
+  const x = units(a)
+  const y = units(b)
+  if (x.size !== y.size) return false
+  for (const [key, qty] of x) if (y.get(key) !== qty) return false
+  return true
 }
 
 /** What asking the checkout found: the order number once the order exists, and the buyer reference. */

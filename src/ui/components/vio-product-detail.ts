@@ -2405,8 +2405,13 @@ export class VioProductDetail extends LitElement {
       this.openCheckoutWithVipps()
       return
     }
-    // The overlay first, then the close: no empty moment, no second tap.
-    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.sponsorId, source: 'detail' })
+    // The overlay first, then the close: no empty moment, no second tap. When
+    // the page's code brings a gift, the SDK adds it before Vipps opens (the
+    // payment waits for it): the overlay says «Legger til gave …» meanwhile.
+    const redirect = beginPaymentRedirect(
+      { method: 'vipps', sponsorId: this.sponsorId, source: 'detail' },
+      { status: Vio.cart.discountGiftExpected(this.sponsorId) ? DISCOUNT_TEXT.preparingGift : undefined },
+    )
     this.addCurrentToCart()
     this.close()
     void this.startVippsExpressOrCheckout(redirect)

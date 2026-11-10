@@ -596,6 +596,29 @@ describe('Vio.init({ discountCode }) — the page\'s code, without the shopper t
     expect(charged).toEqual([349])
   })
 
+  it('discountGiftExpected: a configured gift code promises a gift before it is settled, then stops once the gift is in', async () => {
+    await ready({ discountCode: GIFT_CODE })
+    // No cart yet (an empty-cart Express is about to create one): the gift is coming.
+    expect(Vio.cart.discountGiftExpected(FAVES)).toBe(true)
+    add(CREAM)
+    await idle()
+    // The gift is in the cart now: nothing more to add, nothing to announce.
+    expect(linesNow()).toContain(`${MASK}×1`)
+    expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
+  })
+
+  it('discountGiftExpected: a plain percentage code, or no code at all, never promises a gift', async () => {
+    await ready({ discountCode: 'TI' })
+    add(CREAM)
+    await idle()
+    expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
+
+    await ready()
+    add(CREAM)
+    await idle()
+    expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
+  })
+
   it('the carts the page opens with are asked at init, without a tap', async () => {
     const key = `surface-key-${++keySeq}`
     Vio.init({ apiKey: key, environment: 'testing' } as never)
@@ -653,55 +676,53 @@ describe('paying with a discount code on the cart', () => {
     expect(linesNow()).toEqual([`${CREAM}×1`])
   })
 
-  it(`the brand's shop is slow: the payment waits ${DISCOUNT_SETTLE_BUDGET_MS} ms for the page's code, then goes on without the gift — which stays out while it is being started`, async () => {
+  it('the brand\'s shop is slow: the payment waits for the page\'s code and its gift — past the old budget — then pays discounted', async () => {
     await ready({ discountCode: GIFT_CODE })
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     let open!: () => void
     gateway.applyGate = new Promise<void>((resolve) => (open = resolve))
     add(CREAM)
-    const starting = Vio.checkout.startVippsExpress(FAVES)
     let started: unknown
-    void starting.then((res) => (started = res))
+    const starting = Vio.checkout.startVippsExpress(FAVES).then((res) => (started = res))
 
-    await vi.advanceTimersByTimeAsync(DISCOUNT_SETTLE_BUDGET_MS - 50)
-    expect(count('ApplyDiscount')).toBe(1)
-    expect(count('CreateCheckout')).toBe(0)
+    // The brand's shop has not answered: nothing is built on the cart yet — the gift is still coming.
+    await flush()
+    await flush()
     expect(started).toBeUndefined()
-
-    await vi.advanceTimersByTimeAsync(100)
-    await vi.advanceTimersByTimeAsync(0)
-    expect(started).toMatchObject({ payment_url: 'https://vipps.test/pay' })
-    expect(charged).toEqual([349])
-
-    // The brand's shop answers when the shopper is already on their way to Vipps: no line is added to a cart being paid.
-    open()
-    await vi.advanceTimersByTimeAsync(50)
+    expect(count('CreateCheckout')).toBe(0)
     expect(serverLines()).toEqual([`${CREAM}×1`])
+
+    // It answers: the code and its gift go on the cart, then the discounted payment — the gift is never lost.
+    open()
+    gateway.applyGate = null
+    await starting
+    expect(started).toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(serverLines()).toEqual([`${CREAM}×1`, `${MASK}×1`])
     expect(cartCodes.get(cartIdNow())).toBe(GIFT_CODE)
+    // What Vipps charges: the cream — the mask is the gift.
+    expect(charged).toEqual([349])
   })
 
-  it('…and when that payment does not start after all, the gift it held back goes in the cart', async () => {
+  it('the gift is in the cart before the payment is attempted: a payment that fails for another reason leaves it there', async () => {
     await ready({ discountCode: GIFT_CODE })
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    let open!: () => void
-    gateway.applyGate = new Promise<void>((resolve) => (open = resolve))
     gateway.vippsDown = true
     add(CREAM)
-    const starting = Vio.checkout.startVippsExpress(FAVES)
-    const failed = starting.then(
-      () => null,
-      (err: Error) => err.message,
-    )
-    await vi.advanceTimersByTimeAsync(DISCOUNT_SETTLE_BUDGET_MS + 50)
-    await expect(failed).resolves.toMatch(/503/)
-    expect(serverLines()).toEqual([`${CREAM}×1`])
-
-    open()
-    await vi.advanceTimersByTimeAsync(50)
-    vi.useRealTimers()
+    await expect(Vio.checkout.startVippsExpress(FAVES)).rejects.toThrow(/503/)
     await idle()
+
+    // The gift went in while the payment was being prepared; the 503 does not take it out.
     expect(linesNow()).toEqual([`${CREAM}×1`, `${MASK}×1`])
+    expect(serverLines()).toEqual([`${CREAM}×1`, `${MASK}×1`])
     expect(Vio.cart.getCart(FAVES)?.discountCode).toBe(GIFT_CODE)
+  })
+
+  it('a page with no discount code waits for nothing: the payment starts at once, no ApplyDiscount', async () => {
+    await ready()
+    add(CREAM)
+    await idle()
+    calls = []
+    await expect(Vio.checkout.startVippsExpress(FAVES)).resolves.toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(ops()).not.toContain('ApplyDiscount')
+    expect(charged).toEqual([349])
   })
 
   it('a code the shopper typed is waited for, however long the brand\'s shop takes', async () => {

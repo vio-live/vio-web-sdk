@@ -126,6 +126,33 @@ describe('vio-product-detail — «Kjøp nå med Vipps» and a cart that already
     expect(opened.calls).toHaveLength(0)
   })
 
+  it('the overlay says «Legger til gave …» when the page\'s code is going to add a gift', async () => {
+    const el = await openDetail()
+    vi.spyOn(Vio.cart, 'discountGiftExpected').mockReturnValue(true)
+    // Never resolves: the overlay stays while the gift is readied.
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockReturnValue(new Promise(() => {}) as never)
+
+    el.buyWithVipps()
+    await settle(el)
+
+    const overlay = document.querySelector('.vio-redirect-overlay')
+    expect(overlay?.textContent).toContain('Legger til gave')
+    expect(overlay?.textContent).not.toContain('Åpner Vipps')
+  })
+
+  it('an ordinary purchase (no gift) keeps the plain «Åpner Vipps …» overlay', async () => {
+    const el = await openDetail()
+    vi.spyOn(Vio.cart, 'discountGiftExpected').mockReturnValue(false)
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockReturnValue(new Promise(() => {}) as never)
+
+    el.buyWithVipps()
+    await settle(el)
+
+    const overlay = document.querySelector('.vio-redirect-overlay')
+    expect(overlay?.textContent).toContain('Åpner Vipps')
+    expect(overlay?.textContent).not.toContain('Legger til gave')
+  })
+
   it('a line already in the cart: the product is added and the WHOLE cart goes to Vipps Express', async () => {
     // The jumper, added earlier and left in the cart.
     Vio.cart.addManual({ productId: 146, sponsorId: SPONSOR, brand: 'Careless', name: 'Sofie genser XL', unitPrice: 1299, currency: 'NOK', imageUrl: '' })

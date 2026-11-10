@@ -600,11 +600,12 @@ export function usesStripe(methods: unknown): boolean {
 }
 
 /**
- * How long the page's own discount code may hold a payment back: Commerce
- * asks the brand's shop about it (one to three seconds) and its gift is one
- * more AddItem — Vipps Express from the product leaves right after the add,
- * so both are still on their way then. Past this the payment is started on
- * the cart as it is, without the gift.
+ * The budget passed to `settleDiscountCode` before a payment. The page's own
+ * code (a campaign's gift) is waited for in full regardless — the gift is the
+ * point of the article, so «Kjøp nå med Vipps» never leaves without it, the
+ * request timeout the only cap — which leaves this as the bound for any other
+ * pending settle work; a page with no code of its own has none, so it never
+ * bites. Kept as the contract of the call (and what the stub tests assert).
  */
 export const DISCOUNT_SETTLE_BUDGET_MS = 1200
 

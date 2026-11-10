@@ -313,6 +313,12 @@ export class CartManager extends EventTarget {
   private giftHolds = new Set<number>()
   /** The gifts of a sponsor's cart being settled (`reconcileGifts`): one at a time. */
   private giftWork = new Map<number, Promise<boolean>>()
+  /**
+   * Codes an `ApplyDiscount` took this page load WITHOUT a gift: so the
+   * overlay that says «Legger til gave …» (`discountGiftExpected`) stops
+   * promising one for a code that is a plain percentage.
+   */
+  private giftlessCodes = new Set<string>()
 
   /** The storage key of this connection's carts. */
   private readonly storageKey: string
@@ -1533,6 +1539,26 @@ export class CartManager extends EventTarget {
   }
 
   /**
+   * The SDK is about to add (or is adding) the page code's gift to a cart —
+   * for the overlay that says «Legger til gave …» while Vipps is prepared.
+   * True when a gift is pending on the cart, or when the page's own code is
+   * one that brings a gift (a code the SDK has not learned is giftless) and
+   * the cart does not carry it yet (an empty-cart Express: the gift is about
+   * to be added). `sponsorId` omitted: any of the carts. False on a page with
+   * no code of its own, so an ordinary purchase shows the plain overlay.
+   */
+  discountGiftExpected(sponsorId?: number): boolean {
+    const wanted = this.wantedDiscountCode()
+    const promising = !!wanted && !this.giftlessCodes.has(wanted)
+    for (const id of this.discountTargets(sponsorId)) {
+      const cart = this.cartsBySponsor.get(id)
+      if ((cart?.gifts ?? []).some((g) => !g.added && !g.declined)) return true
+      if (promising && cart?.discountCode !== wanted) return true
+    }
+    return false
+  }
+
+  /**
    * A discount code is being put on a cart (`applying`) or taken off it
    * (`removing`) right now — `sponsorId`'s cart, or any. `change` is said
    * when it starts and when it ends. `asked`: someone asked for it by name —
@@ -1560,20 +1586,22 @@ export class CartManager extends EventTarget {
    * answered for it (`shouldAskDiscount`), and its gifts are put in the cart.
    * Resolves once the cart is as discounted as it is going to be.
    *
-   * `budgetMs`: how long the page's OWN code may hold a payment back —
-   * Commerce asks the brand's shop, which takes seconds. Past it this
-   * resolves anyway and the cart is paid for as it is: the gifts are no
-   * longer put in it (`releaseGiftHold` when the payment did not start after
-   * all).
+   * The page's OWN code (a campaign's gift) is waited for in full, past the
+   * `budgetMs`: its apply — one to three seconds, the brand's shop asked live
+   * — and the gift it adds are on the cart before the payment, so «Kjøp nå
+   * med Vipps» never leaves without the gift. The request timeout (15 s) is
+   * the hard cap; if the apply or the gift's AddItem fails, the purchase goes
+   * on without it. A code someone typed (`applyDiscountCode`: the field's
+   * «Bruk») is waited for the same way, and when Commerce does not take it
+   * this says so (`notTaken`) instead of going on — whoever typed it is
+   * reading why at this very moment, and a payment that leaves for its
+   * provider would take the answer away with the page.
    *
-   * A code someone asked for (`applyDiscountCode`: the field's «Bruk») that
-   * is still being checked is always waited for, with its gift. When
-   * Commerce does not take it, this says so (`notTaken`) instead of going on:
-   * whoever typed it is reading why at this very moment, and a payment that
-   * leaves for its provider would take the answer away with the page.
+   * `budgetMs` is the cap only when there is no code of the page's own to
+   * settle — and then there is nothing to settle, so it never bites: a page
+   * without a code waits for nothing and asks nothing more than before.
    *
-   * Never throws, and asks nothing on a page without a code: when Commerce
-   * does not take the page's own code, the purchase goes on without it.
+   * Never throws.
    */
   async settleDiscountCode(sponsorId: number, opts: { budgetMs?: number } = {}): Promise<DiscountSettlement> {
     // A new attempt to pay: whatever an earlier one held back may go in now.
@@ -1591,7 +1619,9 @@ export class CartManager extends EventTarget {
     }
     const work = this.settleDiscount(sponsorId, false)
     const budget = opts.budgetMs
-    if (!(typeof budget === 'number' && budget >= 0)) {
+    // A page code of its own is waited for in full (its gift is the point of
+    // the article); without one `work` is already done, so the budget is moot.
+    if (!(typeof budget === 'number' && budget >= 0) || this.wantedDiscountCode() !== undefined) {
       await work
       return {}
     }
@@ -1872,6 +1902,11 @@ export class CartManager extends EventTarget {
       const known = this.discountAnswers.get(sponsorId)
       const again = !!known && known.cartId === cartId && known.code === code && known.lines === lines
       this.discountAnswers.set(sponsorId, { cartId, code, outcome, lines, attempts: (again ? known.attempts : 0) + 1 })
+      // Learned what kind of code this is, for the «Legger til gave …» overlay.
+      if (outcome.status === 'applied') {
+        if (discountGiftsOf(outcome.answer).length > 0) this.giftlessCodes.delete(code)
+        else this.giftlessCodes.add(code)
+      }
       const cart = this.cartsBySponsor.get(sponsorId)
       // Still the same backend cart (it may have moved while Commerce answered).
       if (cart && cart.cartId === cartId) {

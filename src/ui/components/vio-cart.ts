@@ -875,7 +875,12 @@ export class VioCart extends LitElement {
     const sponsorId = this.vippsSponsorId()
     if (sponsorId === undefined) return
     this.vippsStarting = true
-    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId, source: 'cart' })
+    // «Legger til gave …» while the SDK readies the page code's gift, when one
+    // is still to be added (the cart usually shows it already).
+    const redirect = beginPaymentRedirect(
+      { method: 'vipps', sponsorId, source: 'cart' },
+      { status: Vio.cart.discountGiftExpected(sponsorId) ? DISCOUNT_TEXT.preparingGift : undefined },
+    )
     void this.startVippsExpressOrCheckout(sponsorId, redirect).finally(() => {
       this.vippsStarting = false
     })

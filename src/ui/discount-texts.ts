@@ -20,6 +20,8 @@ export const DISCOUNT_TEXT = {
   totalBeforeShipping: 'Totalt uten frakt',
 
   // ── A gift ────────────────────────────────────────────────────────────────
+  /** The redirect overlay while the campaign's gift is being put in the cart, right before Vipps opens. */
+  preparingGift: 'Legger til gave …',
   /** A cart that holds only the gift: nothing to pay for. */
   giftOnly: 'Legg til et produkt for å få med gaven.',
   /** A gift line with more than one unit (also when Commerce refuses the payment for it). */

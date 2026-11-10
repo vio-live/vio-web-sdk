@@ -1,22 +1,28 @@
 /**
  * The «Rabattkode» field of the cart and of the checkout's summary: where the
- * shopper types the brand's discount code, sees it applied, and takes it off.
+ * shopper types the brand's discount code, sees what came of it — before
+ * paying — and takes it off. This is how a code normally reaches a cart: it
+ * is validated here, the total changes here, and a code that is no good is
+ * refused here. (The check at a payment's start is only a safety net.)
+ *
  * Shown wherever discount codes are on for the page (`discountFieldEnabled`);
  * `Vio.init({ discountField: false })` hides it.
- *
- * One state for whoever puts a code on the cart: the field's own «Bruk» and
- * the page's own code (`discountCode`, `?vio_discount=`) go through the same
- * call, so a code being applied by the page shows as being checked here too.
  *
  * - empty: an input and «Bruk»;
  * - checking: Commerce asks the brand's shop, one to three seconds — the
  *   field waits («Sjekker…»), nothing else in the cart does, and a second
  *   tap sends nothing;
  * - applied: the code, and «Fjern»;
- * - refused: the field again, with why (`couponReasonText`).
+ * - refused: the field again, with why (`couponReasonText`) — the cart and
+ *   its total as they were.
  *
- * A code the PAGE asked for and Commerce refused says nothing here: the
- * shopper typed nothing.
+ * What is said depends on who asked for the code:
+ * - TYPED here (or asked for by name: the other field, the host's own call):
+ *   always — being checked, taken, or refused with why. Never in silence.
+ * - The PAGE's own (`discountCode`, `?vio_discount=`), which the shopper did
+ *   not type: only once it is taken (the code and «Fjern»). While it is asked
+ *   the field stays as it is, and when it is refused nothing is said — a
+ *   visitor who typed nothing never reads «invalid code».
  */
 import { css, html, nothing } from 'lit'
 import { Vio } from '../core/client.js'
@@ -54,8 +60,12 @@ export interface DiscountFieldOptions {
 export class DiscountField {
   /** What the shopper has typed. */
   private value = ''
-  /** Why the last code was refused (or could not be taken off), until the next keystroke or attempt. */
-  private error: string | null = null
+  /**
+   * Why the code typed here was not taken (`apply`, with that code), or that
+   * the code on the cart could not be taken off (`remove`) — until the next
+   * keystroke or attempt, and for as long as it is true (`render`).
+   */
+  private error: { about: 'apply'; code: string; text: string } | { about: 'remove'; text: string } | null = null
   /** This field's own call is in flight (before the cart says so). */
   private working: 'applying' | 'removing' | null = null
 
@@ -84,11 +94,16 @@ export class DiscountField {
     return undefined
   }
 
-  /** A code is being put on one of these carts, or taken off it, right now — by this field or by anyone else. */
+  /**
+   * A code is being put on one of these carts, or taken off it, right now —
+   * by this field or by whoever else asked for it by name. The page's own
+   * code going on by itself is not one of them: it shows once it is taken,
+   * and never when it is not.
+   */
   private busy(sponsorIds: number[]): { kind: 'applying' | 'removing'; code?: string } | undefined {
     for (const id of sponsorIds) {
       const call = Vio.cart.discountBusy(id)
-      if (call) return call
+      if (call && (call.asked || call.kind === 'removing')) return call
     }
     return this.working ? { kind: this.working } : undefined
   }
@@ -122,9 +137,9 @@ export class DiscountField {
         else refusal ??= DISCOUNT_TEXT.couponUnavailable
       }
       if (applied) this.value = ''
-      else this.error = refusal ?? DISCOUNT_TEXT.couponRefused
+      else this.error = { about: 'apply', code, text: refusal ?? DISCOUNT_TEXT.couponRefused }
     } catch {
-      this.error = DISCOUNT_TEXT.couponUnavailable
+      this.error = { about: 'apply', code, text: DISCOUNT_TEXT.couponUnavailable }
     } finally {
       this.working = null
       this.redraw()
@@ -144,9 +159,9 @@ export class DiscountField {
         const result = await Vio.cart.removeDiscountCode(id)
         if (!result.removed && result.carts.length > 0) failed = true
       }
-      if (failed) this.error = DISCOUNT_TEXT.fieldRemoveFailed
+      if (failed) this.error = { about: 'remove', text: DISCOUNT_TEXT.fieldRemoveFailed }
     } catch {
-      this.error = DISCOUNT_TEXT.fieldRemoveFailed
+      this.error = { about: 'remove', text: DISCOUNT_TEXT.fieldRemoveFailed }
     } finally {
       this.working = null
       this.redraw()
@@ -160,9 +175,15 @@ export class DiscountField {
     if (sponsorIds.length === 0) return nothing
     const busy = this.busy(sponsorIds)
     const applied = this.appliedCode(sponsorIds)
-    const error = this.error ? html`<p class="discount-error" part="discount-error" role="alert">${this.error}</p>` : nothing
+    const showsCode = !!applied && busy?.kind !== 'applying'
+    // No longer true: «could not be taken off» once the code is off, and «not
+    // taken» once that very code is on the cart after all.
+    const stale =
+      this.error?.about === 'remove' ? !showsCode : this.error?.about === 'apply' && showsCode && this.error.code === applied
+    const said = this.error && !stale ? this.error.text : null
+    const error = said ? html`<p class="discount-error" part="discount-error" role="alert">${said}</p>` : nothing
 
-    if (applied && busy?.kind !== 'applying') {
+    if (showsCode) {
       const removing = busy?.kind === 'removing'
       return html`
         <div class="discount-field is-applied" part="discount-field">
@@ -188,7 +209,7 @@ export class DiscountField {
     }
 
     const applying = busy?.kind === 'applying'
-    // A code the page itself is putting on the cart shows as the one being checked.
+    // A code asked for elsewhere (the other field, the host's own call) shows as the one being checked.
     const shown = applying && !this.value ? (busy?.code ?? '') : this.value
     return html`
       <form class="discount-field" part="discount-field" novalidate @submit=${this.onSubmit}>
@@ -207,7 +228,7 @@ export class DiscountField {
           maxlength=${DISCOUNT_CODE_MAX_LENGTH}
           .value=${shown}
           ?disabled=${applying}
-          aria-invalid=${this.error ? 'true' : 'false'}
+          aria-invalid=${said ? 'true' : 'false'}
           @input=${this.onInput}
         />
         <button

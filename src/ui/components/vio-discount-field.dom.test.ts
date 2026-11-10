@@ -1,15 +1,19 @@
 // @vitest-environment jsdom
 /**
  * The «Rabattkode» field of the cart and of the checkout's summary: the
- * shopper types the brand's code, sees it applied, takes it off. Commerce
- * asks the brand's shop about a code — one to three seconds — so the field
- * waits while the rest of the cart does not, and a second tap sends nothing.
- * A refusal says why in the shopper's words; a code the PAGE asked for is
- * refused in silence.
+ * shopper types the brand's code and sees what came of it BEFORE paying —
+ * taken (the code, «Fjern», the discount and the new total) or not (why, and
+ * the cart as it was) — and takes it off. Commerce asks the brand's shop
+ * about a code — one to three seconds — so the field waits while the rest of
+ * the cart does not, and a second tap sends nothing.
  *
  * It shows wherever discount codes are on for the page (a `discountCode`, a
  * `?vio_discount=` link, or `discountField: true`); `discountField: false`
  * hides it; a page that says nothing about codes has none.
+ *
+ * Who is told: a code TYPED here always has its answer said. The PAGE's own
+ * code, which nobody typed, shows only once it is taken — refused, the field
+ * says nothing at all.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, unmountAll, settle } from '../test-harness.js'
@@ -36,7 +40,8 @@ function deferred<T>() {
 
 /** What the cart manager says about the code of the sponsor's cart, as the test sets it. */
 let cartCode: string | undefined
-let busy: { kind: 'applying' | 'removing'; code: string; sponsorId: number } | undefined
+/** The discount call in flight; `asked`: by name (a field, the host's call) — `false`: the page's own code, by itself. */
+let busy: { kind: 'applying' | 'removing'; code: string; sponsorId: number; asked: boolean } | undefined
 let apply: ReturnType<typeof vi.fn>
 let remove: ReturnType<typeof vi.fn>
 
@@ -239,6 +244,21 @@ describe('typing a code', () => {
     }
   })
 
+  it('refused: nothing is applied — the lines, «Sum» and the buttons that pay are as they were', async () => {
+    const el = await cart()
+    const before = text(el.shadowRoot!.querySelector('.subtotal-row'))
+    apply.mockResolvedValueOnce(refusedWith('FEIL', 'COUPON_EXPIRED'))
+    await type(el, 'FEIL')
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(errorText(el)).toBe('Rabattkoden er ikke lenger gyldig.')
+    expect(field(el)?.classList.contains('is-applied')).toBe(false)
+    expect(text(el.shadowRoot!.querySelector('.subtotal-row'))).toBe(before)
+    expect(el.shadowRoot!.querySelector('.discount-row, .cart-notice, .line-list-price')).toBeNull()
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.checkout-btn')!.disabled).toBe(false)
+  })
+
   it('a refusal in words the SDK does not know, or something that is not a code: the generic sentence', async () => {
     const el = await cart()
     apply.mockResolvedValueOnce(refusedWith('FEIL'))
@@ -307,43 +327,130 @@ describe('a code on the cart', () => {
   })
 })
 
-describe('the page\'s own code (discountCode) and the field', () => {
-  it('while the page\'s code is being put on the cart, the field shows it as being checked', async () => {
-    page({ discountField: true, discountCode: 'gratis_face_mask' })
-    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+describe('the page\'s own code (discountCode) — nobody typed it', () => {
+  const pageCode = { kind: 'applying' as const, code: 'gratis_face_mask', sponsorId: SPONSOR, asked: false }
+
+  it('while it is being put on the cart the field stays as it is: empty, ready for a code, no «Sjekker…»', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    busy = pageCode
     const el = await cart()
-    expect(input(el).value).toBe('gratis_face_mask')
-    expect(input(el).disabled).toBe(true)
-    expect(text(applyButton(el))).toBe('Sjekker…')
+    expect(field(el)?.tagName).toBe('FORM')
+    expect(input(el).value).toBe('')
+    expect(input(el).disabled).toBe(false)
+    expect(text(applyButton(el))).toBe('Bruk')
+    expect(applyButton(el).getAttribute('aria-busy')).toBe('false')
 
     // Taken: the code and «Fjern», as if it had been typed.
     busy = undefined
     cartCode = 'gratis_face_mask'
     await cartChanged(el)
+    expect(field(el)?.classList.contains('is-applied')).toBe(true)
     expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('gratis_face_mask')
+    expect(text(removeButton(el))).toBe('Fjern')
+    expect(errorText(el)).toBeUndefined()
   })
 
-  it('refused (the coupon is over): the field is simply empty — the shopper typed nothing, so nothing is said', async () => {
-    page({ discountField: true, discountCode: 'gratis_face_mask' })
-    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+  it('refused (the coupon is over): nothing was shown and nothing is said — the code never appears, the cart sells at its prices', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    busy = pageCode
     const el = await cart()
+    const seen = () => el.shadowRoot!.querySelector('.footer')!.textContent ?? ''
+    expect(seen()).not.toContain('gratis_face_mask')
     busy = undefined
     await cartChanged(el)
     expect(field(el)?.tagName).toBe('FORM')
     expect(input(el).value).toBe('')
+    expect(input(el).getAttribute('aria-invalid')).toBe('false')
     expect(errorText(el)).toBeUndefined()
-    expect(el.shadowRoot!.querySelector('.cart-notice')).toBeNull()
+    expect(seen()).not.toContain('gratis_face_mask')
+    expect(el.shadowRoot!.querySelector('.cart-notice, .discount-row')).toBeNull()
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.checkout-btn')!.disabled).toBe(false)
+  })
+
+  it('a code typed while the page\'s own is being asked is sent — and what comes of it is said', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    busy = pageCode
+    apply.mockResolvedValueOnce(refusedWith('MIN-KODE', 'COUPON_NOT_FOUND'))
+    const el = await cart()
+    await type(el, 'MIN-KODE')
+    expect(applyButton(el).disabled).toBe(false)
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(apply).toHaveBeenCalledWith('MIN-KODE', SPONSOR)
+    expect(errorText(el)).toBe('Rabattkoden finnes ikke.')
+  })
+
+  it('typed while the page\'s own went on the cart: «remove it first» stays said, under the code that is on', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    busy = pageCode
+    const answer = deferred<DiscountCodeResult>()
+    apply.mockImplementation(() => answer.promise)
+    const el = await cart()
+    await type(el, 'MIN-KODE')
+    applyButton(el).click()
+    await settle(el)
+    // The shopper's own code is being checked: that one is shown.
+    expect(text(applyButton(el))).toBe('Sjekker…')
+    expect(input(el).value).toBe('MIN-KODE')
+
+    busy = undefined
+    cartCode = 'gratis_face_mask'
+    answer.resolve(refusedWith('MIN-KODE', 'COUPON_OTHER_APPLIED'))
+    await settle(el)
+    await settle(el)
+    expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('gratis_face_mask')
+    expect(errorText(el)).toBe('Du har allerede en rabattkode. Fjern den først.')
   })
 
   it('with discountField: false nothing of it is on screen, taken or refused', async () => {
     page({ discountCode: 'gratis_face_mask', discountField: false })
-    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+    busy = pageCode
     const el = await cart()
     expect(field(el)).toBeNull()
     busy = undefined
     await cartChanged(el)
     expect(field(el)).toBeNull()
     expect(el.shadowRoot!.querySelector('.discount-error, .cart-notice, .discount-row')).toBeNull()
+  })
+})
+
+describe('a code asked for elsewhere (the other field, the host\'s own call)', () => {
+  it('shows here as the one being checked', async () => {
+    page()
+    busy = { kind: 'applying', code: 'SOMMER10', sponsorId: SPONSOR, asked: true }
+    const el = await cart()
+    expect(input(el).value).toBe('SOMMER10')
+    expect(input(el).disabled).toBe(true)
+    expect(text(applyButton(el))).toBe('Sjekker…')
+    // …and a tap here sends nothing meanwhile.
+    field(el)!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle(el)
+    expect(apply).not.toHaveBeenCalled()
+  })
+
+  it('a code coming off the cart by itself (refused at a payment) shows as being taken off', async () => {
+    page()
+    cartCode = 'SOMMER10'
+    busy = { kind: 'removing', code: 'SOMMER10', sponsorId: SPONSOR, asked: false }
+    const el = await cart()
+    expect(text(removeButton(el))).toBe('Fjerner…')
+    expect(removeButton(el).disabled).toBe(true)
+  })
+
+  it('«not taken» is no longer said once that very code is on the cart after all', async () => {
+    page()
+    apply.mockResolvedValueOnce({ status: 'failed', code: 'KODE', carts: [{ sponsorId: SPONSOR, status: 'failed' }] })
+    const el = await cart()
+    await type(el, 'KODE')
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(errorText(el)).toBe('Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.')
+    cartCode = 'KODE'
+    await cartChanged(el)
+    expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('KODE')
+    expect(errorText(el)).toBeUndefined()
   })
 })
 

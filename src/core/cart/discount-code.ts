@@ -12,6 +12,22 @@
  * `message`; a payment Commerce would not start because of the discount
  * names one in its error. `discountReasonOf` reads it out of either.
  *
+ * A code is put on the cart — and so validated — BEFORE paying, in the cart
+ * or the checkout: Commerce answers there and then, the total changes there
+ * and then, and a code that is no good is refused there. The check at a
+ * payment's start is a safety net (a coupon that ended between applying and
+ * paying), never where a shopper first hears about their code.
+ *
+ * Who is told what came of a code depends on who asked for it:
+ * - a code someone ASKED for — typed in the «Rabattkode» field, or
+ *   `Vio.applyDiscountCode()` from a host's own field — always has its answer
+ *   said, taken or not, with why;
+ * - the PAGE's own code (`discountCode`, `?vio_discount=`), which nobody
+ *   typed, shows only once it is taken: refused, nothing is said and the
+ *   purchase goes on at its prices (a visitor who typed nothing never reads
+ *   «invalid code»).
+ * A payment Commerce refuses because of the discount says why either way.
+ *
  * A page can name the code for its carts without the shopper typing it:
  * `Vio.init({ discountCode })`, or `?vio_discount=CODE` in its URL — kept for
  * the tab (`sessionStorage`), so it survives the pages of the visit and the
@@ -224,6 +240,19 @@ export interface DiscountCodeRemoval {
     message?: string
     answer?: DiscountAnswer
   }>
+}
+
+/**
+ * What `CartManager.settleDiscountCode` found before a payment is built on a
+ * cart. `notTaken`: a code someone asked for (`applyDiscountCode` — the
+ * field's «Bruk») was still being checked when the payment was started, and
+ * Commerce did not take it (`reason` when it gave a known one; none when it
+ * could not be asked). Whoever typed it is being told why right now: a
+ * payment that takes the page away to its provider must not start before
+ * they have read it.
+ */
+export interface DiscountSettlement {
+  notTaken?: { code: string; reason?: DiscountReason }
 }
 
 /** `applied` if any cart took it, else `failed` if none could be asked, else `refused`; `pending` without carts. */

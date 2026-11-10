@@ -212,6 +212,26 @@ describe('Vipps refuses the payment because of the discount code', () => {
     expect(express).toHaveBeenCalledTimes(2)
   })
 
+  it('held back because the code the shopper had just typed was not taken: said the same way, and the cart stays where it is', async () => {
+    vi.spyOn(Vio.checkout, 'getVippsExpressEnabled').mockResolvedValue(true)
+    // What CheckoutManager throws when the typed code is refused while the payment waits for it.
+    const heldBack = Object.assign(new Error('[CheckoutManager] the discount code was not taken — no payment started [COUPON_NOT_FOUND]'), {
+      discountCodeNotTaken: true,
+    })
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockRejectedValue(heldBack)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const el = await cart([CREAM])
+    const opened = vi.fn()
+    document.addEventListener('vio:checkout-open', opened)
+
+    tapVipps(el)
+    for (let i = 0; i < 5; i++) await settle(el)
+    document.removeEventListener('vio:checkout-open', opened)
+
+    expect(row(el, '.cart-notice')).toBe('Rabattkoden finnes ikke. Handlekurven er oppdatert – prøv igjen.')
+    expect(opened).not.toHaveBeenCalled()
+  })
+
   it('any other failure opens the checkout with Vipps, as before — nothing about a discount is said', async () => {
     vi.spyOn(Vio.checkout, 'getVippsExpressEnabled').mockResolvedValue(true)
     vi.spyOn(Vio.checkout, 'startVippsExpress').mockRejectedValue(new Error('Payment Vipps not initialize: 503'))

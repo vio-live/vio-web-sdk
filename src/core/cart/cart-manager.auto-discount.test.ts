@@ -7,6 +7,11 @@
  * checkout or a payment does (`settleDiscountCode`). Asked once the cart has
  * lines, once per cart and code, again only when the answer could change, and
  * never at all on a page without a code.
+ *
+ * Nobody typed that code: it shows once it is taken, and is refused in
+ * silence. A code someone ASKED for (`applyDiscountCode`: the field's «Bruk»)
+ * always has its answer said — so a payment started while it is still being
+ * checked waits for it, and is told when it was not taken.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -147,7 +152,8 @@ describe('Vio.init({ discountCode }) — the code goes on the cart by itself', (
     await tick()
 
     expect(m.getCart(SPONSOR)?.items[0]?.cartItemId).toBe('srv-1')
-    expect(m.discountBusy(SPONSOR)).toEqual({ kind: 'applying', code: 'GAVE', sponsorId: SPONSOR })
+    // Nobody asked for it by name: a field does not show it being checked.
+    expect(m.discountBusy(SPONSOR)).toEqual({ kind: 'applying', code: 'GAVE', sponsorId: SPONSOR, asked: false })
     expect(m.getCart(SPONSOR)?.discountCode).toBeUndefined()
 
     serverCode = 'GAVE'
@@ -425,6 +431,102 @@ describe('where the page\'s code comes from', () => {
       Configuration.init({ apiKey: 'surface-key', discountField: notSaid as never })
       expect(Configuration.get(), String(notSaid)).not.toHaveProperty('discountField')
     }
+  })
+})
+
+describe('who asked for the code', () => {
+  /** An ApplyDiscount that answers when the test says. */
+  function pendingAnswer() {
+    let answer!: (v: { executed: boolean; message: string } | Promise<never>) => void
+    gql.applyDiscount.mockImplementation(() => {
+      order.push('ApplyDiscount')
+      return new Promise((resolve) => (answer = resolve))
+    })
+    return (v: { executed: boolean; message: string } | Error) => {
+      if (!(v instanceof Error) && v.executed) serverCode = String(gql.applyDiscount.mock.calls.at(-1)?.[1])
+      answer(v instanceof Error ? Promise.reject(v) : v)
+    }
+  }
+  /** A cart with one line, on a page with (or without) a code of its own, and nothing in flight. */
+  async function cartWithALine(config: { discountCode?: string } = {}) {
+    page(config)
+    const m = new CartManager()
+    addJumper(m)
+    await m.waitForCartMutations(SPONSOR)
+    await tick()
+    return m
+  }
+
+  it('the shopper typing the very code the page is putting on the cart: one request, theirs from then on', async () => {
+    const answer = pendingAnswer()
+    const m = await cartWithALine({ discountCode: 'GAVE' })
+    expect(m.discountBusy(SPONSOR)?.asked).toBe(false)
+
+    const typed = m.applyDiscountCode('GAVE', SPONSOR)
+    await tick()
+    expect(m.discountBusy(SPONSOR)).toEqual({ kind: 'applying', code: 'GAVE', sponsorId: SPONSOR, asked: true })
+    answer(TAKEN)
+    await expect(typed).resolves.toMatchObject({ status: 'applied', code: 'GAVE' })
+    await idle(m)
+    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
+  })
+
+  it('a payment started while a typed code is being checked waits for the answer, whatever the budget — and is told when the code was not taken', async () => {
+    const answer = pendingAnswer()
+    const m = await cartWithALine()
+    const typed = m.applyDiscountCode('FEIL', SPONSOR)
+    await tick()
+
+    let found: unknown = 'waiting'
+    const settling = m.settleDiscountCode(SPONSOR, { budgetMs: 5 }).then((r) => (found = r))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(found).toBe('waiting')
+
+    answer({ executed: false, message: 'COUPON_NOT_FOUND' })
+    await settling
+    expect(found).toEqual({ notTaken: { code: 'FEIL', reason: 'COUPON_NOT_FOUND' } })
+    // Whoever typed it gets the same answer.
+    await expect(typed).resolves.toMatchObject({ status: 'refused', reason: 'COUPON_NOT_FOUND' })
+    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
+    expect(m.getCart(SPONSOR)?.discountCode).toBeUndefined()
+
+    // Read and done: the next attempt to pay has nothing to wait for, and nothing to be told.
+    await expect(m.settleDiscountCode(SPONSOR, { budgetMs: 5 })).resolves.toEqual({})
+    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
+  })
+
+  it('a typed code that could not be asked: not taken, without a reason — and not asked again behind the shopper\'s back', async () => {
+    const answer = pendingAnswer()
+    const m = await cartWithALine()
+    const typed = m.applyDiscountCode('KODE', SPONSOR)
+    await tick()
+    const settling = m.settleDiscountCode(SPONSOR, { budgetMs: 5 })
+    answer(new Error('timed out'))
+    await expect(settling).resolves.toEqual({ notTaken: { code: 'KODE' } })
+    await expect(typed).resolves.toMatchObject({ status: 'failed' })
+    await idle(m)
+    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
+  })
+
+  it('a typed code that is taken: the payment goes on, with the code on the cart', async () => {
+    const answer = pendingAnswer()
+    const m = await cartWithALine()
+    void m.applyDiscountCode('SOMMER10', SPONSOR)
+    await tick()
+    const settling = m.settleDiscountCode(SPONSOR, { budgetMs: 5 })
+    answer(TAKEN)
+    await expect(settling).resolves.toEqual({})
+    expect(m.getCart(SPONSOR)?.discountCode).toBe('SOMMER10')
+  })
+
+  it('the page\'s own code refused while a payment waits for it: nothing is told — the purchase goes on', async () => {
+    const answer = pendingAnswer()
+    const m = await cartWithALine({ discountCode: 'GAVE' })
+    const settling = m.settleDiscountCode(SPONSOR, { budgetMs: 1000 })
+    await tick()
+    answer({ executed: false, message: 'COUPON_EXPIRED' })
+    await expect(settling).resolves.toEqual({})
+    expect(m.getCart(SPONSOR)?.discountCode).toBeUndefined()
   })
 })
 

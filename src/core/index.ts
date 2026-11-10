@@ -177,6 +177,7 @@ export {
   type CartDiscountOutcome,
   type DiscountCodeResult,
   type DiscountCodeRemoval,
+  type DiscountSettlement,
   type DiscountGift,
   type DiscountReason,
   type CouponReason,

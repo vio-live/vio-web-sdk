@@ -7,6 +7,10 @@
  * code is checked again when a payment is started. `fetch` is stubbed:
  * bootstrap, surface and the commerce GraphQL.
  *
+ * A code is validated before paying: the page's own goes on in silence (and
+ * is refused in silence), a typed one always answers whoever typed it — a
+ * payment tapped while it is still being checked does not leave without it.
+ *
  * The case it is written for (Faves): the brand's coupon `gratis_face_mask`,
  * applied by the page (`Vio.init({ discountCode })`), minimum purchase 10 kr,
  * gives one face mask (product 421306, 52 kr) away.
@@ -784,6 +788,97 @@ describe('paying with a discount code on the cart', () => {
     expect(Vio.cart.getCart(FAVES)?.discountCode).toBe(GIFT_CODE)
     expect(ops().lastIndexOf('GetCart')).toBeGreaterThan(ops().indexOf('CreatePaymentVipps'))
     expect(count('DeleteAppliedDiscount')).toBe(0)
+  })
+})
+
+describe('a code the shopper typed, still being checked when they tap to pay', () => {
+  /** The brand's shop answers when the test says. */
+  function slowShop() {
+    let open!: () => void
+    gateway.applyGate = new Promise<void>((resolve) => (open = resolve))
+    return () => {
+      gateway.applyGate = null
+      open()
+    }
+  }
+
+  it('not taken: no payment is started — the shopper reads why first — and the next tap pays for the cart as it is', async () => {
+    await ready()
+    add(CREAM)
+    await idle()
+    const answer = slowShop()
+    const typed = Vio.applyDiscountCode('FINNESIKKE', FAVES)
+    await flush()
+    let outcome: unknown = 'waiting'
+    const starting = Vio.checkout.startVippsExpress(FAVES)
+    void starting.then(
+      (res) => (outcome = res),
+      (err) => (outcome = err),
+    )
+    await flush()
+    await flush()
+    // Nothing is built on the cart while its code is being checked.
+    expect(outcome).toBe('waiting')
+    expect(count('CreateCheckout')).toBe(0)
+
+    answer()
+    await expect(typed).resolves.toMatchObject({ status: 'refused', reason: 'COUPON_NOT_FOUND' })
+    await expect(starting).rejects.toThrow(/no payment started \[COUPON_NOT_FOUND\]$/)
+    await idle()
+    expect(count('CreateCheckout')).toBe(0)
+    expect(count('CreatePaymentVipps')).toBe(0)
+    expect(charged).toEqual([])
+    expect(linesNow()).toEqual([`${CREAM}×1`])
+
+    await expect(Vio.checkout.startVippsExpress(FAVES)).resolves.toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(charged).toEqual([349])
+    // The refused code is not asked for again behind the shopper's back.
+    expect(count('ApplyDiscount')).toBe(1)
+  })
+
+  it(`taken: the payment waits for it — well past the ${DISCOUNT_SETTLE_BUDGET_MS} ms a page's own code gets — and charges what the code leaves`, async () => {
+    await ready()
+    add(CREAM)
+    await idle()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const answer = slowShop()
+    void Vio.applyDiscountCode('TI', FAVES)
+    let started: unknown
+    void Vio.checkout.startVippsExpress(FAVES).then((res) => (started = res))
+
+    await vi.advanceTimersByTimeAsync(DISCOUNT_SETTLE_BUDGET_MS * 3)
+    expect(started).toBeUndefined()
+    expect(count('CreateCheckout')).toBe(0)
+
+    answer()
+    await vi.advanceTimersByTimeAsync(50)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(started).toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(before('ApplyDiscount', 'CreateCheckout')).toBe(true)
+    expect(charged).toHaveLength(1)
+    expect(charged[0]).toBeCloseTo(314.1)
+  })
+
+  it('refused because the page\'s own code is on the cart: that code stays, and the next tap pays with it', async () => {
+    await ready({ discountCode: 'TI' })
+    add(CREAM)
+    await idle()
+    expect(Vio.cart.getCart(FAVES)?.discountCode).toBe('TI')
+    const answer = slowShop()
+    const typed = Vio.applyDiscountCode(GIFT_CODE, FAVES)
+    await flush()
+    const starting = Vio.checkout.startVippsExpress(FAVES)
+    const refusedStart = expect(starting).rejects.toThrow(/\[COUPON_OTHER_APPLIED\]$/)
+    answer()
+    await expect(typed).resolves.toMatchObject({ status: 'refused', reason: 'COUPON_OTHER_APPLIED' })
+    await refusedStart
+    await idle()
+    expect(count('DeleteAppliedDiscount')).toBe(0)
+    expect(Vio.cart.getCart(FAVES)?.discountCode).toBe('TI')
+
+    await Vio.checkout.startVippsExpress(FAVES)
+    expect(charged).toHaveLength(1)
+    expect(charged[0]).toBeCloseTo(314.1)
   })
 })
 

@@ -7,6 +7,10 @@
  * attempt (`discountRefusedAtPayment`); any payment that does not start gives
  * back the gift it held (`releaseGiftHold`). A cart manager that knows nothing
  * of discounts (a host's own, a test's stub) is asked nothing.
+ *
+ * A code is validated BEFORE paying: when the shopper's own code — typed a
+ * moment before the tap — is refused while the payment waits for it, the
+ * page does not leave for the provider (the shopper is reading why).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -41,8 +45,10 @@ function cart(extra: Record<string, unknown> = {}) {
     waitForCartMutations: vi.fn(async () => {
       calls.push('waitForCartMutations')
     }),
-    settleDiscountCode: vi.fn(async () => {
+    // What it found: nothing to tell (`{}`), or `notTaken`; a stub that says nothing at all is fine too.
+    settleDiscountCode: vi.fn(async (): Promise<unknown> => {
       calls.push('settleDiscountCode')
+      return undefined
     }),
     refreshFromServer: vi.fn(async () => {
       calls.push('refreshFromServer')
@@ -156,5 +162,70 @@ describe('a payment that does not start', () => {
       throw refused('COUPON_EXPIRED')
     }
     await expect(new CheckoutManager(c as never).startVippsExpress(5)).rejects.toThrow(/COUPON_EXPIRED/)
+  })
+})
+
+describe('the shopper\'s own code, typed a moment before the tap, was not taken', () => {
+  const notTaken = (reason?: string) =>
+    cart({
+      settleDiscountCode: vi.fn(async () => {
+        calls.push('settleDiscountCode')
+        return { notTaken: { code: 'FEIL', ...(reason ? { reason } : {}) } }
+      }),
+    })
+
+  it('no payment is started — nothing is built on the cart — and the error names why, like a payment Commerce refuses', async () => {
+    const c = notTaken('COUPON_NOT_FOUND')
+    const err = await new CheckoutManager(c as never).startVippsExpress(5).then(
+      () => undefined,
+      (e: unknown) => e as Error & { discountCodeNotTaken?: boolean },
+    )
+    expect(err?.message).toMatch(/no payment started \[COUPON_NOT_FOUND\]$/)
+    expect(err?.discountCodeNotTaken).toBe(true)
+    // The code itself is not part of what is thrown (it reaches events and logs).
+    expect(err?.message).not.toContain('FEIL')
+    expect(calls.filter((x) => x !== 'waitForCartMutations')).toEqual(['settleDiscountCode'])
+  })
+
+  it('that code never was on the cart: nothing is taken off it', async () => {
+    for (const reason of ['COUPON_NOT_FOUND', 'COUPON_EXPIRED', 'COUPON_MIN_AMOUNT']) {
+      const c = notTaken(reason)
+      await expect(new CheckoutManager(c as never).startVippsExpress(5)).rejects.toThrow(`[${reason}]`)
+      expect(c.discountRefusedAtPayment, reason).not.toHaveBeenCalled()
+      expect(c.releaseGiftHold, reason).toHaveBeenCalledWith(5)
+    }
+  })
+
+  it('it could not be asked (no reason): «could not check the code right now»', async () => {
+    const c = notTaken()
+    await expect(new CheckoutManager(c as never).startVippsExpress(5)).rejects.toThrow('[COUPON_UNAVAILABLE]')
+    expect(calls).not.toContain('CreatePaymentVipps')
+  })
+
+  it('the checkout\'s own Vipps payment is held back the same way', async () => {
+    const c = notTaken('COUPON_EXPIRED')
+    const address = { firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no', phone: '40000000', address: 'Storgata 1', zip: '0155', city: 'Oslo', country: 'NO' }
+    await expect(new CheckoutManager(c as never).startVippsPayment(5, address, { express: false })).rejects.toThrow('[COUPON_EXPIRED]')
+    expect(calls).not.toContain('CreateCheckout')
+    expect(calls).not.toContain('CreatePaymentVipps')
+  })
+
+  it('the next tap pays for the cart as it is', async () => {
+    const c = notTaken('COUPON_NOT_FOUND')
+    const manager = new CheckoutManager(c as never)
+    await expect(manager.startVippsExpress(5)).rejects.toThrow('[COUPON_NOT_FOUND]')
+    // The answer was read; nothing is being checked any more.
+    c.settleDiscountCode.mockImplementation(async () => {
+      calls.push('settleDiscountCode')
+      return {}
+    })
+    calls.length = 0
+    await expect(manager.startVippsExpress(5)).resolves.toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(calls).toContain('CreatePaymentVipps')
+  })
+
+  it('a checkout that stays on the page (createCheckout) is created all the same: the field says why right there', async () => {
+    const c = notTaken('COUPON_NOT_FOUND')
+    await expect(new CheckoutManager(c as never).createCheckout(5)).resolves.toMatchObject({ id: 'CHK-1' })
   })
 })

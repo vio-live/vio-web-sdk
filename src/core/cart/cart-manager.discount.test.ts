@@ -221,7 +221,8 @@ describe('CartManager.applyDiscountCode', () => {
     expect(m.discountBusy()).toBeUndefined()
     const applying = m.applyDiscountCode('GAVE')
     await tick()
-    expect(m.discountBusy()).toEqual({ kind: 'applying', code: 'GAVE', sponsorId: SPONSOR })
+    // Asked for by name: whoever asked is shown it being checked, and what comes of it.
+    expect(m.discountBusy()).toEqual({ kind: 'applying', code: 'GAVE', sponsorId: SPONSOR, asked: true })
     expect(m.discountBusy(SPONSOR)?.kind).toBe('applying')
     expect(m.discountBusy(99)).toBeUndefined()
     expect(busy).toContain('applying')
@@ -277,7 +278,7 @@ describe('CartManager.applyDiscountCode', () => {
     gql.getCart.mockResolvedValue(serverCart([JUMPER]))
     const removing = m.removeDiscountCode()
     await tick()
-    expect(m.discountBusy()).toEqual({ kind: 'removing', code: 'GAVE', sponsorId: SPONSOR })
+    expect(m.discountBusy()).toEqual({ kind: 'removing', code: 'GAVE', sponsorId: SPONSOR, asked: true })
     const applying = m.applyDiscountCode('NY')
     await tick()
     expect(order).toEqual(['delete:start'])

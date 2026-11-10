@@ -54,6 +54,7 @@ import {
   type DiscountCodeRemoval,
   type DiscountCodeResult,
   type DiscountReason,
+  type DiscountSettlement,
 } from './discount-code.js'
 
 import { cartDiscountTotal, cartListTotal, cartNetTotal, isGiftLine, serverLineDiscount } from './discount.js'
@@ -290,13 +291,21 @@ export class CartManager extends EventTarget {
   /**
    * The discount call in flight per sponsor (an ApplyDiscount or a
    * DeleteAppliedDiscount): one at a time, and what `discountBusy` reads.
+   * `asked`: someone asked for it by name (`applyDiscountCode`,
+   * `removeDiscountCode`) and is told what comes of it — as opposed to what
+   * the SDK does by itself with the page's own code.
    */
   private discountCalls = new Map<
     number,
-    { kind: 'applying' | 'removing'; cartId: string; code: string; promise: Promise<unknown> }
+    { kind: 'applying' | 'removing'; cartId: string; code: string; asked: boolean; promise: Promise<unknown> }
   >()
-  /** `applyDiscountCode` calls in flight per sponsor — the shopper's own code: a payment waits for its answer. */
-  private typedAsks = new Map<number, number>()
+  /**
+   * The `applyDiscountCode` in flight per sponsor — a code someone asked for,
+   * the shopper's own: a payment started meanwhile waits for its answer, and
+   * does not leave for its provider when the code was not taken
+   * (`settleDiscountCode`).
+   */
+  private typedAsks = new Map<number, Promise<DiscountCodeResult>>()
   /**
    * Sponsors whose gifts are not put in the cart for now: a payment is being
    * started on the cart as it is (`settleDiscountCode` ran out of time).
@@ -1429,7 +1438,10 @@ export class CartManager extends EventTarget {
   /**
    * Put a discount code on the carts: on every sponsor's backend cart (or only
    * `sponsorId`'s) now, and — kept for this page load — on the backend carts
-   * to come. This is what a "discount code" field calls. Commerce takes one
+   * to come. This is what a "discount code" field calls: the code is
+   * validated here, before anything is paid, and whoever asked is told what
+   * came of it — taken or not, and why (the page's own code, which nobody
+   * typed, is the one that is refused in silence). Commerce takes one
    * code per cart: the same code again is fine, another one while a code is
    * on the cart is refused (`removeDiscountCode()` first). It asks the
    * brand's shop about the code, so the answer can take a few seconds:
@@ -1445,24 +1457,28 @@ export class CartManager extends EventTarget {
   async applyDiscountCode(code: string, sponsorId?: number): Promise<DiscountCodeResult> {
     const normalized = normalizeDiscountCode(code)
     if (!normalized) return { status: 'refused', code: '', carts: [] }
+    const targets = this.discountTargets(sponsorId)
+    const asking = this.askForDiscountCode(normalized, targets)
+    // The shopper's own code: a payment started meanwhile waits for the answer.
+    for (const id of targets) this.typedAsks.set(id, asking)
+    try {
+      return await asking
+    } finally {
+      for (const id of targets) {
+        if (this.typedAsks.get(id) === asking) this.typedAsks.delete(id)
+      }
+    }
+  }
+
+  /** What `applyDiscountCode` does, for a code that is one. Never rejects. */
+  private async askForDiscountCode(normalized: string, targets: number[]): Promise<DiscountCodeResult> {
     const before = this.askedDiscountCode
     // Wanted from now on: a backend cart born while Commerce answers gets it too.
     this.askedDiscountCode = normalized
-    const targets = this.discountTargets(sponsorId)
-    // The shopper's own code: a payment started meanwhile waits for the answer.
-    for (const id of targets) this.typedAsks.set(id, (this.typedAsks.get(id) ?? 0) + 1)
     const carts: CartDiscountOutcome[] = []
-    try {
-      for (const id of targets) {
-        const outcome = await this.assertDiscountCode(id, normalized)
-        if (outcome) carts.push(outcome)
-      }
-    } finally {
-      for (const id of targets) {
-        const left = (this.typedAsks.get(id) ?? 1) - 1
-        if (left > 0) this.typedAsks.set(id, left)
-        else this.typedAsks.delete(id)
-      }
+    for (const id of targets) {
+      const outcome = await this.assertDiscountCode(id, normalized, true, true)
+      if (outcome) carts.push(outcome)
     }
     const status = summarizeDiscountOutcomes(carts)
     // A code no cart took is not kept for the carts to come.
@@ -1490,7 +1506,7 @@ export class CartManager extends EventTarget {
         const live = await this.liveCart(id)
         // The backend cart is gone (or was rebuilt without the code): nothing to take off.
         if (!live || this.cartsBySponsor.get(id)?.discountCode !== code) continue
-        const answer = await this.discountCall(id, { kind: 'removing', cartId: live.cartId, code }, () =>
+        const answer = await this.discountCall(id, { kind: 'removing', cartId: live.cartId, code, asked: true }, () =>
           gqlDeleteAppliedDiscount(live.cartId, code, live.opts),
         )
         if (!answer.executed) {
@@ -1519,11 +1535,19 @@ export class CartManager extends EventTarget {
   /**
    * A discount code is being put on a cart (`applying`) or taken off it
    * (`removing`) right now — `sponsorId`'s cart, or any. `change` is said
-   * when it starts and when it ends.
+   * when it starts and when it ends. `asked`: someone asked for it by name —
+   * the field's «Bruk» or «Fjern», `applyDiscountCode()`,
+   * `removeDiscountCode()` — and is to be shown what comes of it; `false`
+   * for what the SDK does by itself (the page's own code going on a cart, a
+   * refused code coming off at a payment), which shows only once it is done.
    */
-  discountBusy(sponsorId?: number): { kind: 'applying' | 'removing'; code: string; sponsorId: number } | undefined {
+  discountBusy(
+    sponsorId?: number,
+  ): { kind: 'applying' | 'removing'; code: string; sponsorId: number; asked: boolean } | undefined {
     for (const [id, call] of this.discountCalls) {
-      if (sponsorId === undefined || id === sponsorId) return { kind: call.kind, code: call.code, sponsorId: id }
+      if (sponsorId === undefined || id === sponsorId) {
+        return { kind: call.kind, code: call.code, sponsorId: id, asked: call.asked }
+      }
     }
     return undefined
   }
@@ -1540,17 +1564,37 @@ export class CartManager extends EventTarget {
    * Commerce asks the brand's shop, which takes seconds. Past it this
    * resolves anyway and the cart is paid for as it is: the gifts are no
    * longer put in it (`releaseGiftHold` when the payment did not start after
-   * all). A code the shopper typed is always waited for.
+   * all).
+   *
+   * A code someone asked for (`applyDiscountCode`: the field's «Bruk») that
+   * is still being checked is always waited for, with its gift. When
+   * Commerce does not take it, this says so (`notTaken`) instead of going on:
+   * whoever typed it is reading why at this very moment, and a payment that
+   * leaves for its provider would take the answer away with the page.
    *
    * Never throws, and asks nothing on a page without a code: when Commerce
-   * does not take it, the purchase goes on without it.
+   * does not take the page's own code, the purchase goes on without it.
    */
-  async settleDiscountCode(sponsorId: number, opts: { budgetMs?: number } = {}): Promise<void> {
+  async settleDiscountCode(sponsorId: number, opts: { budgetMs?: number } = {}): Promise<DiscountSettlement> {
     // A new attempt to pay: whatever an earlier one held back may go in now.
     this.giftHolds.delete(sponsorId)
+    const asking = this.typedAsks.get(sponsorId)
+    if (asking) {
+      const result = await asking.then(
+        (r) => r,
+        () => undefined,
+      )
+      const mine = result?.carts.find((c) => c.sponsorId === sponsorId)
+      if (result && mine && mine.status !== 'applied') {
+        return { notTaken: { code: result.code, ...(mine.reason ? { reason: mine.reason } : {}) } }
+      }
+    }
     const work = this.settleDiscount(sponsorId, false)
     const budget = opts.budgetMs
-    if (!(typeof budget === 'number' && budget >= 0) || this.typedAsks.has(sponsorId)) return work
+    if (!(typeof budget === 'number' && budget >= 0)) {
+      await work
+      return {}
+    }
     let timer: ReturnType<typeof setTimeout> | undefined
     const outOfTime = new Promise<'late'>((resolve) => {
       timer = setTimeout(() => resolve('late'), budget)
@@ -1566,6 +1610,7 @@ export class CartManager extends EventTarget {
         )
       }
     }
+    return {}
   }
 
   /**
@@ -1597,7 +1642,7 @@ export class CartManager extends EventTarget {
         try {
           const live = await this.liveCart(sponsorId)
           if (live && live.cartId === cartId) {
-            await this.discountCall(sponsorId, { kind: 'removing', cartId, code }, () =>
+            await this.discountCall(sponsorId, { kind: 'removing', cartId, code, asked: false }, () =>
               gqlDeleteAppliedDiscount(cartId, code, live.opts),
             )
           }
@@ -1751,15 +1796,21 @@ export class CartManager extends EventTarget {
    * settled (a cart being created has its id by then) — with the gifts it
    * brings, and its lines read again when the code or a gift is new to it
    * (unless `refresh` is false). `undefined` when the sponsor has no backend
-   * cart. Never throws.
+   * cart. `asked`: someone asked for this code by name (`applyDiscountCode`)
+   * — see `discountBusy`. Never throws.
    */
-  private async assertDiscountCode(sponsorId: number, code: string, refresh = true): Promise<CartDiscountOutcome | undefined> {
+  private async assertDiscountCode(
+    sponsorId: number,
+    code: string,
+    refresh = true,
+    asked = false,
+  ): Promise<CartDiscountOutcome | undefined> {
     try {
       await this.waitForCartMutations(sponsorId)
       const live = await this.liveCart(sponsorId)
       if (!live) return undefined
       const before = this.cartsBySponsor.get(sponsorId)?.discountCode
-      const outcome = await this.askDiscount(sponsorId, live.cartId, code, live.opts)
+      const outcome = await this.askDiscount(sponsorId, live.cartId, code, live.opts, asked)
       if (outcome.status === 'applied') {
         const gifted = await this.reconcileGifts(sponsorId)
         const cart = this.cartsBySponsor.get(sponsorId)
@@ -1788,12 +1839,18 @@ export class CartManager extends EventTarget {
     cartId: string,
     code: string,
     opts: CartQueryOptions,
+    asked = false,
   ): Promise<CartDiscountOutcome> {
     const same = this.discountCalls.get(sponsorId)
     if (same && same.kind === 'applying' && same.cartId === cartId && same.code === code) {
+      // The page's own code was being put on the cart, and now someone asks for that very code: theirs from here on.
+      if (asked && !same.asked) {
+        same.asked = true
+        this.emit()
+      }
       return same.promise as Promise<CartDiscountOutcome>
     }
-    return this.discountCall(sponsorId, { kind: 'applying', cartId, code }, async (): Promise<CartDiscountOutcome> => {
+    return this.discountCall(sponsorId, { kind: 'applying', cartId, code, asked }, async (): Promise<CartDiscountOutcome> => {
       let outcome: CartDiscountOutcome
       try {
         const answer = await gqlApplyDiscount(cartId, code, opts)
@@ -1853,7 +1910,7 @@ export class CartManager extends EventTarget {
    */
   private async discountCall<T>(
     sponsorId: number,
-    what: { kind: 'applying' | 'removing'; cartId: string; code: string },
+    what: { kind: 'applying' | 'removing'; cartId: string; code: string; asked: boolean },
     run: () => Promise<T>,
   ): Promise<T> {
     for (;;) {

@@ -23,8 +23,11 @@
  *
  * Ojo:
  *   - La vuelta de Vipps: el SDK hace https la URL de retorno
- *     (https://127.0.0.1:5173/…), que el servidor de desarrollo no sirve. Para ver el
- *     recibo, cambia https por http en la barra (o sirve la página por un túnel https).
+ *     (https://127.0.0.1:5173/…), que el servidor de desarrollo no sirve. Para probar
+ *     Vipps de verdad (y desde el móvil), sirve la página por un túnel https:
+ *       cloudflared tunnel --url http://127.0.0.1:5173
+ *     y abre la URL https://….trycloudflare.com que imprime, con los mismos parámetros.
+ *     Sin túnel: cambia https por http en la barra al volver.
  *   - CORS: si QA rechaza 127.0.0.1, pon en `.env.local`
  *     VITE_VIO_API_BASE=/proxy-vio y VITE_VIO_GRAPHQL_BASE=/proxy-graphql
  *     (vite.config.ts los manda a QA). Se ignoran con env=production.

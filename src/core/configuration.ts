@@ -54,17 +54,25 @@ export interface VioConfig {
    * SDK puts it on the cart by itself — the shopper types nothing — once the
    * cart has lines, on every new cart, and before a checkout or a payment is
    * built on it. Commerce takes one code per cart; when it does not take
-   * this one the purchase goes on without it. Wins over a `?vio_discount=`
-   * in the URL. Only for brands that are paid with Vipps (README → Discount
-   * codes).
+   * this one, nothing is said (nobody typed it) and the purchase goes on
+   * without it. Wins over a `?vio_discount=` in the URL. Naming a code turns
+   * discount codes on for the page: the «Rabattkode» field shows too (see
+   * `discountField`). Only for brands that are paid with Vipps (README →
+   * Discount codes).
    */
   discountCode?: string
   /**
-   * Show a «Rabattkode» field in the cart and in the checkout's summary, for
-   * the shopper to type the brand's code (and to take the code off again).
-   * Off by default: a page that only names its campaign's code
-   * (`discountCode`) shows no field, and says nothing when that code is not
-   * taken. Only for brands that are paid with Vipps.
+   * The «Rabattkode» field of the cart and of the checkout's summary, where
+   * the shopper types the brand's code, sees what came of it before paying
+   * (taken: the discount or the gift, and the new total; not taken: why, and
+   * the total as it was) and takes the code off again.
+   *
+   * Shown by default wherever discount codes are on for the page — it names
+   * a `discountCode`, or its link carried `?vio_discount=`. `true` shows it
+   * on a page with no code of its own (the shopper types the brand's);
+   * `false` hides it (the page's own code still goes on the cart). A page
+   * that says nothing about discount codes has no field. Only for brands
+   * that are paid with Vipps.
    */
   discountField?: boolean
   /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
@@ -116,7 +124,7 @@ export interface ResolvedConfig {
   campaignId?: number
   /** The page's discount code as it is sent (trimmed); absent when none was given or it was not a code. */
   discountCode?: string
-  /** `true` when the page asked for the «Rabattkode» field; absent otherwise. */
+  /** What the page said about the «Rabattkode» field (`true` / `false`); absent when it said nothing (`discountFieldEnabled` decides). */
   discountField?: boolean
   debug: boolean
   privacyMode?: 'standard' | 'minimal'
@@ -170,7 +178,7 @@ class ConfigurationSingleton {
       contentTitle: input.contentTitle,
       campaignId: toCampaignId(input.campaignId),
       ...(normalizeDiscountCode(input.discountCode) ? { discountCode: normalizeDiscountCode(input.discountCode) } : {}),
-      ...(input.discountField === true ? { discountField: true } : {}),
+      ...(typeof input.discountField === 'boolean' ? { discountField: input.discountField } : {}),
       debug: input.debug === true,
       // Only the two words the backend knows; anything else is "not said".
       privacyMode:

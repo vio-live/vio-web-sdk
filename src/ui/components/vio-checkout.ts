@@ -302,10 +302,10 @@ export class VioCheckout extends LitElement {
   /** In-flight guard for loadAvailablePaymentMethods. */
   private loadingPaymentMethods = false
   /**
-   * The «Rabattkode» field of the summary (`Vio.init({ discountField: true })`),
-   * about the cart this checkout pays. It follows the cart: a code that goes
-   * on or comes off — here, in the cart's own field, or by the page — draws
-   * the summary again.
+   * The «Rabattkode» field of the summary (wherever discount codes are on for
+   * the page — `discountFieldEnabled`), about the cart this checkout pays. It
+   * follows the cart: a code that goes on or comes off — here, in the cart's
+   * own field, or by the page — draws the summary again.
    */
   private readonly discountField = new DiscountField({
     host: this,

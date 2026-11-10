@@ -157,9 +157,11 @@ export class VioCart extends LitElement {
   })
 
   /**
-   * The «Rabattkode» field (`Vio.init({ discountField: true })`): one for the
-   * drawer, about every cart in it. The drawer is drawn again on every cart
-   * change, and the field with it.
+   * The «Rabattkode» field (wherever discount codes are on for the page —
+   * `discountFieldEnabled`): one for the drawer, about every cart in it, over
+   * the totals and the buttons that pay, because a code is validated before
+   * paying. The drawer is drawn again on every cart change, and the field
+   * with it.
    */
   private readonly discountField = new DiscountField({
     host: this,

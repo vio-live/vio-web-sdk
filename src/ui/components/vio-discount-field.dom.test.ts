@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
 /**
- * The «Rabattkode» field of the cart and of the checkout's summary
- * (`Vio.init({ discountField: true })`; off by default): the shopper types
- * the brand's code, sees it applied, takes it off. Commerce asks the brand's
- * shop about a code — one to three seconds — so the field waits while the
- * rest of the cart does not, and a second tap sends nothing. A refusal says
- * why in the shopper's words; a code the PAGE asked for is refused in silence.
+ * The «Rabattkode» field of the cart and of the checkout's summary: the
+ * shopper types the brand's code, sees it applied, takes it off. Commerce
+ * asks the brand's shop about a code — one to three seconds — so the field
+ * waits while the rest of the cart does not, and a second tap sends nothing.
+ * A refusal says why in the shopper's words; a code the PAGE asked for is
+ * refused in silence.
+ *
+ * It shows wherever discount codes are on for the page (a `discountCode`, a
+ * `?vio_discount=` link, or `discountField: true`); `discountField: false`
+ * hides it; a page that says nothing about codes has none.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, unmountAll, settle } from '../test-harness.js'
 import { Vio } from '../../core/client.js'
 import { Configuration } from '../../core/configuration.js'
 import { VioCheckout } from './vio-checkout.js'
-import type { DiscountCodeResult } from '../../core/cart/discount-code.js'
+import { syncDiscountParam, type DiscountCodeResult } from '../../core/cart/discount-code.js'
 
 const SPONSOR = 5
 const CREAM = { id: 'c', productId: 100, sponsorId: SPONSOR, brand: 'Faves', name: 'Krem', quantity: 1, unitPrice: 349, currency: 'NOK', imageUrl: '' }
@@ -56,6 +60,8 @@ afterEach(() => {
   unmountAll()
   ;(Vio.checkout as any).state = null
   Configuration.reset()
+  // Whatever code a test's link named is forgotten.
+  syncDiscountParam('?vio_discount=')
   vi.restoreAllMocks()
 })
 
@@ -88,8 +94,8 @@ async function cartChanged(el: El) {
   await settle(el)
 }
 
-describe('off unless the page asks for it', () => {
-  it('no field in the cart — not even with a code on the cart, whose «Rabatt» row still shows', async () => {
+describe('where the field shows', () => {
+  it('a page that says nothing about discount codes has no field — not even with a code on the cart, whose «Rabatt» row still shows', async () => {
     page({})
     cartCode = 'gratis_face_mask'
     const el = await cart([CREAM, MASK])
@@ -102,7 +108,31 @@ describe('off unless the page asks for it', () => {
     expect(field(el)).toBeNull()
   })
 
-  it('with discountField: an input named «Rabattkode» and «Bruk», first thing in the footer', async () => {
+  it('a page that names its code (discountCode) has codes on: the field shows without being asked for', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    const el = await cart()
+    expect(field(el)?.tagName).toBe('FORM')
+    expect(input(el).value).toBe('')
+    expect(el.shadowRoot!.querySelector('.footer')!.firstElementChild).toBe(field(el))
+  })
+
+  it('so does a page whose link carried ?vio_discount=', async () => {
+    syncDiscountParam('?vio_discount=FRA-LENKE')
+    page({})
+    const el = await cart()
+    expect(field(el)?.tagName).toBe('FORM')
+  })
+
+  it('discountField: false hides it, whatever code the page has — the discount itself still shows', async () => {
+    syncDiscountParam('?vio_discount=FRA-LENKE')
+    page({ discountCode: 'gratis_face_mask', discountField: false })
+    cartCode = 'gratis_face_mask'
+    const el = await cart([CREAM, MASK])
+    expect(field(el)).toBeNull()
+    expect(text(el.shadowRoot!.querySelector('.discount-row'))).toBe('Rabatt (gratis_face_mask) −52 Kr')
+  })
+
+  it('discountField: true on a page with no code of its own: an input named «Rabattkode» and «Bruk», over the totals and the buttons that pay', async () => {
     page()
     const el = await cart()
     expect(field(el)?.tagName).toBe('FORM')
@@ -305,8 +335,8 @@ describe('the page\'s own code (discountCode) and the field', () => {
     expect(el.shadowRoot!.querySelector('.cart-notice')).toBeNull()
   })
 
-  it('discountCode without the field: nothing of it on screen, taken or refused', async () => {
-    page({ discountCode: 'gratis_face_mask' })
+  it('with discountField: false nothing of it is on screen, taken or refused', async () => {
+    page({ discountCode: 'gratis_face_mask', discountField: false })
     busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
     const el = await cart()
     expect(field(el)).toBeNull()
@@ -339,13 +369,21 @@ describe('the checkout\'s summary', () => {
     return el
   }
 
-  it('no field unless the page asks for it', async () => {
+  it('no field on a page that says nothing about discount codes, nor with discountField: false', async () => {
     page({})
-    const el = await checkout()
-    expect(field(el)).toBeNull()
+    expect(field(await checkout())).toBeNull()
+    unmountAll()
+    page({ discountCode: 'gratis_face_mask', discountField: false })
+    expect(field(await checkout())).toBeNull()
   })
 
-  it('with discountField: the field between the lines and «Sum», for the cart this checkout pays', async () => {
+  it('a page that names its code shows the field here too, without being asked for', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    const el = await checkout()
+    expect(field(el)?.closest('.order-summary')).not.toBeNull()
+  })
+
+  it('the field sits between the lines and «Sum», for the cart this checkout pays', async () => {
     page()
     const el = await checkout()
     expect(field(el)?.closest('.order-summary')).not.toBeNull()

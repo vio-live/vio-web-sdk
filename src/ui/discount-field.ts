@@ -1,7 +1,8 @@
 /**
  * The «Rabattkode» field of the cart and of the checkout's summary: where the
  * shopper types the brand's discount code, sees it applied, and takes it off.
- * Off unless the page asks for it — `Vio.init({ discountField: true })`.
+ * Shown wherever discount codes are on for the page (`discountFieldEnabled`);
+ * `Vio.init({ discountField: false })` hides it.
  *
  * One state for whoever puts a code on the cart: the field's own «Bruk» and
  * the page's own code (`discountCode`, `?vio_discount=`) go through the same
@@ -20,13 +21,22 @@
 import { css, html, nothing } from 'lit'
 import { Vio } from '../core/client.js'
 import { Configuration } from '../core/configuration.js'
-import { DISCOUNT_CODE_MAX_LENGTH } from '../core/cart/discount-code.js'
+import { DISCOUNT_CODE_MAX_LENGTH, rememberedDiscountCode } from '../core/cart/discount-code.js'
 import { DISCOUNT_TEXT, couponReasonText } from './discount-texts.js'
 
-/** Whether the page turned the field on. */
+/**
+ * Whether the field is drawn. The page says (`discountField: true` /
+ * `false`); when it does not, the field shows wherever the page has a
+ * discount code of its own — `discountCode` in its config, or the
+ * `?vio_discount=` its link carried — because codes are on there. A page
+ * with neither is the one it always was: no field.
+ */
 export function discountFieldEnabled(): boolean {
   try {
-    return Configuration.isInitialized && Configuration.get().discountField === true
+    if (!Configuration.isInitialized) return false
+    const config = Configuration.get()
+    if (typeof config.discountField === 'boolean') return config.discountField
+    return !!(config.discountCode ?? rememberedDiscountCode())
   } catch {
     return false
   }
@@ -143,7 +153,7 @@ export class DiscountField {
     }
   }
 
-  /** The field, or nothing when the page did not ask for it (or there is no cart to put a code on). */
+  /** The field, or nothing where discount codes are not on (or there is no cart to put a code on). */
   render() {
     if (!discountFieldEnabled()) return nothing
     const sponsorIds = this.opts.sponsorIds()

@@ -413,15 +413,17 @@ describe('where the page\'s code comes from', () => {
     expect(Configuration.get().discountCode).toBe('GAVE')
   })
 
-  it('the «Rabattkode» field is off unless the config says discountField: true — a config without either is the one it always was', async () => {
+  it('discountField is kept as the page said it (true: shown, false: hidden) — a config that says nothing is the one it always was', async () => {
     page()
     expect(Configuration.get()).not.toHaveProperty('discountField')
     expect(Configuration.get()).not.toHaveProperty('discountCode')
     Configuration.init({ apiKey: 'surface-key', discountField: true })
     expect(Configuration.get().discountField).toBe(true)
-    for (const notTrue of [false, 'true', 1, undefined]) {
-      Configuration.init({ apiKey: 'surface-key', discountField: notTrue as never })
-      expect(Configuration.get()).not.toHaveProperty('discountField')
+    Configuration.init({ apiKey: 'surface-key', discountCode: 'GAVE', discountField: false })
+    expect(Configuration.get().discountField).toBe(false)
+    for (const notSaid of ['true', 'false', 1, 0, null, undefined]) {
+      Configuration.init({ apiKey: 'surface-key', discountField: notSaid as never })
+      expect(Configuration.get(), String(notSaid)).not.toHaveProperty('discountField')
     }
   })
 })

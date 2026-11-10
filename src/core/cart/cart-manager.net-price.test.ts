@@ -149,6 +149,59 @@ describe('quantities and the discount', () => {
   })
 })
 
+describe('a gift is one unit', () => {
+  async function withGift(): Promise<CartManager> {
+    const m = await withCream()
+    m.updateFromBackendCart(SPONSOR, serverCart([line('srv-1', 100, 349, 1, 0), line('srv-2', 421306, 52, 1, 52)]))
+    return m
+  }
+
+  it('it is not raised: «+» (adjustQuantity / updateQuantity) changes nothing and sends nothing', async () => {
+    const m = await withGift()
+    const changes = vi.fn()
+    m.addEventListener('change', changes)
+    m.adjustQuantity('srv-2', SPONSOR, +1)
+    m.updateQuantity('srv-2', SPONSOR, 5)
+    await m.waitForCartMutations(SPONSOR)
+    expect(item(m, 'srv-2')).toMatchObject({ quantity: 1, discount: 52 })
+    expect(gql.updateItem).not.toHaveBeenCalled()
+    expect(changes).not.toHaveBeenCalled()
+  })
+
+  it('adding the same product again changes nothing either (Commerce would refuse to be paid for two)', async () => {
+    const m = await withGift()
+    const added = m.addManual({ productId: 421306, sponsorId: SPONSOR, brand: 'Faves', name: 'P421306', unitPrice: 52, currency: 'NOK', imageUrl: '' })
+    await m.waitForCartMutations(SPONSOR)
+    expect(added.id).toBe('srv-2')
+    expect(item(m, 'srv-2')?.quantity).toBe(1)
+    expect(gql.addItem).toHaveBeenCalledTimes(1) // the cream's, long ago
+  })
+
+  it('it can be taken out, and every other line is raised as always', async () => {
+    const m = await withGift()
+    gql.updateItem.mockResolvedValueOnce(serverCart([line('srv-1', 100, 349, 2, 0), line('srv-2', 421306, 52, 1, 52)]))
+    m.adjustQuantity('srv-1', SPONSOR, +1)
+    await m.waitForCartMutations(SPONSOR)
+    expect(item(m, 'srv-1')?.quantity).toBe(2)
+
+    gql.deleteItem.mockResolvedValueOnce(serverCart([line('srv-1', 100, 349, 2, 0)]))
+    m.removeItem('srv-2', SPONSOR)
+    await m.waitForCartMutations(SPONSOR)
+    expect(item(m, 'srv-2')).toBeUndefined()
+    expect(gql.deleteItem).toHaveBeenCalledTimes(1)
+  })
+
+  it('a gift line that somehow has two units can still come down to one', async () => {
+    const m = await withCream()
+    m.updateFromBackendCart(SPONSOR, serverCart([line('srv-1', 100, 349, 1, 0), line('srv-2', 421306, 52, 2, 104)]))
+    gql.updateItem.mockResolvedValueOnce(serverCart([line('srv-1', 100, 349, 1, 0), line('srv-2', 421306, 52, 1, 52)]))
+    m.adjustQuantity('srv-2', SPONSOR, -1)
+    expect(item(m, 'srv-2')).toMatchObject({ quantity: 1, discount: 52 })
+    await m.waitForCartMutations(SPONSOR)
+    expect(gql.updateItem).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('vio:cart-updated says the discount', () => {
   function events() {
     const seen: CartUpdatedDetail[] = []

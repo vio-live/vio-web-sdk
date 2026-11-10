@@ -13,7 +13,15 @@
  * Return-flow messages ("Betalingen ble avbrutt eller feilet…", the
  * unverified-return text) are not this: they are already written for the
  * shopper and stay where they are.
+ *
+ * A payment Commerce refuses because of the cart's discount code says why
+ * with a stable word (`GIFT_MAX_ONE_UNIT`, `COUPON_EXPIRED`…): in the error's
+ * `extensions.code` and at the end of its text. Those have their own
+ * sentences (discount-texts.ts) — `paymentErrorText` reads the code first.
  */
+
+import { discountReasonOf, discountReasonOfError } from '../core/cart/discount-code.js'
+import { discountPaymentText } from './discount-texts.js'
 
 /** The cart has no lines: the gateway refuses a zero amount. */
 export const EMPTY_CART_MESSAGE = 'Handlekurven er tom. Legg til et produkt og prøv igjen.'
@@ -40,6 +48,9 @@ const SHIPS_APART = 'kan ikke sendes sammen'
 export function friendlyPaymentError(raw: string, method: string): string {
   void method
   const text = String(raw ?? '')
+  // Refused because of the cart's discount code: the word at the end of the text says why.
+  const discount = discountReasonOf(text)
+  if (discount) return discountPaymentText(discount)
   const lower = text.toLowerCase()
   if (lower.includes('got 0') || lower.includes('amount must be a positive')) {
     return EMPTY_CART_MESSAGE
@@ -62,6 +73,18 @@ function norwegianSentence(text: string): string {
   const at = text.indexOf(SHIPS_APART)
   const prefixEnd = text.lastIndexOf(': ', at)
   return (prefixEnd === -1 ? text : text.slice(prefixEnd + 2)).trim()
+}
+
+/**
+ * The sentence to show for a payment that could not start, from the error
+ * itself: when Commerce refused it because of the cart's discount code, the
+ * reason its code names (`extensions.code`, else its text); otherwise as
+ * `friendlyPaymentError` reads the text.
+ */
+export function paymentErrorText(err: unknown, method: string): string {
+  const discount = discountReasonOfError(err)
+  if (discount) return discountPaymentText(discount)
+  return friendlyPaymentError(errorText(err), method)
 }
 
 /** A thrown value as text — what the call sites used to build the message from. */

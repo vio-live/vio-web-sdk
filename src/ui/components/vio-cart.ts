@@ -30,7 +30,10 @@ import { highlightsStyles, renderHighlights } from '../highlights.js'
 import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { lineOrigins } from '../../core/cart/cart-manager.js'
-import { cartDiscountTotal, cartNetTotal } from '../../core/cart/discount.js'
+import { cartDiscountTotal, cartNetTotal, isGiftLine, isGiftOnlyCart } from '../../core/cart/discount.js'
+import { discountReasonOfError } from '../../core/cart/discount-code.js'
+import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
+import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -108,6 +111,12 @@ export class VioCart extends LitElement {
   @state() private vippsOfficial = false
   /** A Vipps payment is being started from here: one at a time. */
   private vippsStarting = false
+  /**
+   * Why Vipps would not start the payment, when it is about the cart's
+   * discount code (a gift with two units, a code that ended…): said here, on
+   * the cart it is about, instead of opening the checkout.
+   */
+  @state() private paymentNotice: string | null = null
   /** Whether the method lookup has been attempted — see boundOnCartChange. */
   private paymentMethodsAttempted = false
   /** Set after an Apple Pay express purchase — switches the drawer to the
@@ -387,6 +396,26 @@ export class VioCart extends LitElement {
       color: var(--vio-color-text-secondary, #666);
     }
     .subtotal-value { font-weight: 700; font-size: 16px; }
+    /* What the discount code takes off, between «Sum» and «Frakt». */
+    .discount-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin: calc(var(--vio-space-md, 16px) * -0.5) 0 var(--vio-space-md, 16px);
+      font-size: 14px;
+    }
+    .discount-row .subtotal-label { overflow-wrap: anywhere; }
+    /* Under a gift line with more than its one unit, and over the buttons when the cart cannot be paid for. */
+    .item-note,
+    .cart-notice {
+      margin: 6px 0 0;
+      font-size: 12px;
+      line-height: 1.35;
+      color: var(--vio-color-text-secondary, #666);
+    }
+    .cart-notice { margin: 0 0 var(--vio-space-md, 16px); font-size: 13px; color: var(--vio-color-text, #0a0a0a); }
+    .qty-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .qty-btn:disabled:hover { border-color: var(--vio-color-border, #e5e5e5); }
 
     /* Apple Pay express — pay the whole cart directly. */
     .applepay-btn {
@@ -545,6 +574,7 @@ export class VioCart extends LitElement {
     .confirm-close:hover { background: #222; }
   `,
     highlightsStyles('cart'),
+    discountStyles,
   ]
 
   override connectedCallback(): void {
@@ -676,6 +706,7 @@ export class VioCart extends LitElement {
     // Fresh open → drop any previous confirmation, force an Apple Pay re-prep.
     if (changed.has('open') && this.open) {
       this.confirmedOrder = null
+      this.paymentNotice = null
       this.preparedTotal = -1
       // The lines on screen are the server's: a line another tab added, a
       // cart another tab paid. Asked on every opening — the `change` it
@@ -792,6 +823,7 @@ export class VioCart extends LitElement {
    */
   private onCheckout(): void {
     if (!this.payable) return
+    this.paymentNotice = null
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -817,6 +849,7 @@ export class VioCart extends LitElement {
    */
   private onVipps(): void {
     if (!this.payable) return
+    this.paymentNotice = null
     if (resolveVippsCartPayment(this, this.vippsCartPayment) === 'checkout') {
       const firstSponsorId = [...this.carts.keys()][0]
       if (firstSponsorId === undefined) return
@@ -866,6 +899,14 @@ export class VioCart extends LitElement {
         console.warn('[VioCart] Vipps Express not started:', err)
       }
       redirect.fail(err instanceof Error ? err.message : String(err))
+      // Refused because of the cart's discount code: the reason is said here,
+      // where the cart can be put right (it is being read again from the
+      // server) — the checkout would only refuse the same payment.
+      const reason = discountReasonOfError(err)
+      if (reason) {
+        this.paymentNotice = discountPaymentText(reason)
+        return
+      }
     }
     if (!fallback) return
     this.openCheckoutWithVipps(sponsorId)
@@ -1027,6 +1068,8 @@ export class VioCart extends LitElement {
                                     data-vio-cta-line=${item.id}
                                     @click=${() => this.onIncrement(item)}
                                     aria-label="Øk"
+                                    ?disabled=${isGiftLine(item)}
+                                    title=${isGiftLine(item) ? DISCOUNT_TEXT.giftMaxOneShort : ''}
                                   >
                                     +
                                   </button>
@@ -1041,13 +1084,11 @@ export class VioCart extends LitElement {
                                     ×
                                   </button>
                                 </span>
-                                <span class="item-price">
-                                  ${formatPrice(
-                                    item.unitPrice * item.quantity,
-                                    item.currency,
-                                  )}
-                                </span>
+                                <span class="item-price">${renderLinePrice(item)}</span>
                               </div>
+                              ${isGiftLine(item) && item.quantity > 1
+                                ? html`<p class="item-note" part="cart-gift-note" role="status">${DISCOUNT_TEXT.giftMaxOne}</p>`
+                                : ''}
                             </div>
                           </div>
                         `,
@@ -1063,7 +1104,9 @@ export class VioCart extends LitElement {
                     ${formatPrice(this.totalAcrossSponsors, this.primaryCurrency)}
                   </span>
                 </div>
+                ${this.renderDiscountRow()}
                 ${this.renderShippingRows()}
+                ${this.renderCartNotice()}
                 <button
                   class="checkout-btn"
                   data-vio-cta="checkout"
@@ -1187,9 +1230,42 @@ export class VioCart extends LitElement {
             <span>Totalt</span>
             <span>${fra}${formatPrice(this.payableTotal + shipping, this.primaryCurrency)}</span>
           </div>`
-        : ''}
+        : this.discountAcrossSponsors > 0
+          ? // «Sum» is the list prices: with a discount, what the lines cost is said too.
+            html`<div class="total-row" part="cart-total">
+              <span>${DISCOUNT_TEXT.totalBeforeShipping}</span>
+              <span>${formatPrice(this.payableTotal, this.primaryCurrency)}</span>
+            </div>`
+          : ''}
       <p class="shipping-hint" part="cart-shipping-hint">Frakt velger du i Vipps eller i neste steg.</p>
     `
+  }
+
+  /** «Rabatt (KODE)  −52 Kr» — what the discount code takes off the lines; nothing without one. */
+  private renderDiscountRow() {
+    const amount = this.discountAcrossSponsors
+    if (!(amount > 0)) return ''
+    // The code, when every cart with a discount carries the same one.
+    const codes = new Set(
+      [...this.carts.values()].filter((c) => cartDiscountTotal(c.items) > 0).map((c) => c.discountCode ?? ''),
+    )
+    const row = discountRow(amount, this.primaryCurrency, codes.size === 1 ? [...codes][0] : '')
+    return html`<div class="discount-row" part="cart-discount">
+      <span class="subtotal-label">${row.label}</span>
+      <span>${row.value}</span>
+    </div>`
+  }
+
+  /**
+   * Why the cart cannot be paid for as it is, over the buttons: Vipps refused
+   * the payment because of the discount code, or the cart holds only the
+   * code's gift (nothing to pay for — the buttons are off).
+   */
+  private renderCartNotice() {
+    const items = [...this.carts.values()].flatMap((c) => c.items)
+    const text = this.paymentNotice ?? (!this.payable && isGiftOnlyCart(items) ? DISCOUNT_TEXT.giftOnly : null)
+    if (!text) return ''
+    return html`<p class="cart-notice" part="cart-notice" role="alert">${text}</p>`
   }
 
   private renderConfirmation() {

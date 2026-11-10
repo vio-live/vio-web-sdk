@@ -83,6 +83,20 @@ describe('«Lagt i handlekurven»', () => {
     expect(opened).not.toHaveBeenCalled()
   })
 
+  it('«Til kassen» on a cart that holds only a discount code\'s gift: no checkout — the toast says what to do', async () => {
+    vi.spyOn(Vio.cart, 'getCart').mockReturnValue({ sponsorId: 4, currency: 'NOK', items: [{ unitPrice: 52, quantity: 1, discount: 52 }] } as any)
+    const el = await openAndAdd()
+    const opened = vi.fn()
+    document.addEventListener('vio:checkout-open', opened)
+    toast(el)!.querySelector<HTMLButtonElement>('.added-toast-checkout')!.click()
+    await settle(el)
+    document.removeEventListener('vio:checkout-open', opened)
+    expect(opened).not.toHaveBeenCalled()
+    expect(toast(el)?.classList.contains('is-notice')).toBe(true)
+    expect(toast(el)?.querySelector('.added-toast-text')?.textContent).toBe('Legg til et produkt for å få med gaven.')
+    expect([...toast(el)!.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual(['Fortsett å handle'])
+  })
+
   it('«Fortsett å handle» just closes it', async () => {
     const el = await openAndAdd()
     const opened = vi.fn()

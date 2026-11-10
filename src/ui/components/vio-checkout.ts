@@ -60,7 +60,10 @@ import { DialogFocus } from '../dialog-focus.js'
 import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
-import { errorText, friendlyPaymentError, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { isGiftOnlyCart } from '../../core/cart/discount.js'
+import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
+import { DISCOUNT_TEXT } from '../discount-texts.js'
 import { receiptFromCheckout } from '../../core/checkout/checkout-receipt.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
 import {
@@ -161,6 +164,8 @@ export class VioCheckout extends LitElement {
     orderId?: string
     /** The shipping charged, when there was one. */
     shipping?: { name: string; price: number }
+    /** What a discount code took off the lines, and the code — a purchase read from its checkout (Vipps). */
+    discount?: { amount: number; code?: string }
     /** The provider's own reference for the payment (e.g. Nexi's paymentId). */
     providerRef?: { label: string; value: string }
     /** "Visa •••• 4847", once the provider says. */
@@ -460,7 +465,8 @@ export class VioCheckout extends LitElement {
     this.open = true
   }
 
-  static override styles = css`
+  static override styles = [
+    css`
     :host { display: contents; }
     .backdrop {
       position: fixed;
@@ -1076,7 +1082,15 @@ export class VioCheckout extends LitElement {
       .payment-grid { grid-template-columns: 1fr; }
       .body { padding: 32px var(--vio-space-lg, 24px) 64px; }
     }
-  `
+    /* Under the summary's total: why a cart of a gift alone cannot be paid for. */
+    .summary-note {
+      margin: var(--vio-space-sm, 8px) 0 0;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+  `,
+    discountStyles,
+  ]
 
   override connectedCallback(): void {
     super.connectedCallback()
@@ -2338,7 +2352,7 @@ export class VioCheckout extends LitElement {
     // Never a payment for an empty cart or one of 0 kr (another tab may have
     // paid or emptied it while this one was open).
     if (!this.cartPayable) {
-      this.paymentError = EMPTY_CART_MESSAGE
+      this.paymentError = this.nothingToPayMessage()
       return
     }
     // Apple Pay collects address, shipping AND email inside its own sheet —
@@ -2450,7 +2464,9 @@ export class VioCheckout extends LitElement {
             console.warn('[VioCheckout] Vipps payment could not start:', err)
           }
           redirect.fail(errorText(err))
-          this.paymentError = friendlyPaymentError(errorText(err), 'vipps')
+          // A payment refused because of the cart's discount code says why
+          // (the cart is being read again meanwhile — CheckoutManager).
+          this.paymentError = paymentErrorText(err, 'vipps')
         })
         .finally(() => {
           this.vippsLoading = false
@@ -2468,7 +2484,7 @@ export class VioCheckout extends LitElement {
     if (!s || !s.paymentMethod) return
     if (this.shippingBlocked) return
     if (!this.cartPayable) {
-      this.paymentError = EMPTY_CART_MESSAGE
+      this.paymentError = this.nothingToPayMessage()
       return
     }
     if (!this.isAddressValid) {
@@ -2514,7 +2530,10 @@ export class VioCheckout extends LitElement {
     // Who the order is with, named before the cart is cleared.
     this.setOrderSponsor(sponsorId, checkoutId)
     this.confirmedOrder = {
-      items: [...this.items],
+      // The methods confirmed on this page work their amounts out of the list
+      // prices (discount codes are for Vipps, whose receipt is read from its
+      // checkout): their receipt prints the lines the same way.
+      items: this.items.map(({ discount: _discount, ...line }) => line),
       currency: this.checkoutState?.currency ?? '',
       total:
         typeof r.chargedTotal === 'number' ? r.chargedTotal : (this.checkoutState?.subtotal ?? 0),
@@ -2756,6 +2775,7 @@ export class VioCheckout extends LitElement {
         items: read.items,
         ...(providerSaidTotal ? {} : { total: read.total, currency: read.currency || o.currency }),
         ...(!o.shipping && read.shipping ? { shipping: read.shipping } : {}),
+        ...(read.discount ? { discount: read.discount } : {}),
         ...(!o.email && read.email ? { email: read.email } : {}),
       }
     } catch (err) {
@@ -2814,6 +2834,11 @@ export class VioCheckout extends LitElement {
    */
   private get cartPayable(): boolean {
     return this.linesTotal() > 0
+  }
+
+  /** Said when a pay button is pressed on a cart with nothing to pay for: empty, or only a discount code's gift. */
+  private nothingToPayMessage(): string {
+    return isGiftOnlyCart(this.items) ? DISCOUNT_TEXT.giftOnly : EMPTY_CART_MESSAGE
   }
 
   /** What the lines cost: the state's subtotal (list prices) less what the cart's discount code takes off them. */
@@ -3211,12 +3236,18 @@ export class VioCheckout extends LitElement {
                         <span>${it.name}</span>
                         <small>Antall: ${it.quantity}</small>
                       </span>
-                      <span class="confirm-line-price">
-                        ${formatPrice(it.unitPrice * it.quantity, it.currency)}
-                      </span>
+                      <span class="confirm-line-price">${renderLinePrice(it)}</span>
                     </div>
                   `,
                 )}
+                ${o.discount && o.discount.amount > 0
+                  ? html`
+                      <div class="order-row discount" part="confirm-discount">
+                        <span>${discountRow(o.discount.amount, o.currency, o.discount.code).label}</span>
+                        <span>${discountRow(o.discount.amount, o.currency, o.discount.code).value}</span>
+                      </div>
+                    `
+                  : ''}
                 ${o.shipping
                   ? html`
                       <div class="order-row">
@@ -4725,15 +4756,14 @@ export class VioCheckout extends LitElement {
                           <b>${item.name}</b>
                           <span>×${item.quantity}</span>
                         </div>
-                        <div class="order-line-price">
-                          ${formatPrice(item.unitPrice * item.quantity, item.currency)}
-                        </div>
+                        <div class="order-line-price">${renderLinePrice(item)}</div>
                       </div>
                     `,
                   )}
                   <div class="order-row" style="margin-top: 16px;">
                     <span>Sum</span><span>${this.orderTotal()}</span>
                   </div>
+                  ${this.renderSummaryDiscount()}
                   <div class="order-row">
                     <span>Frakt${this.shippingInEffect() !== null && this.summaryShippingName() ? ` – ${this.summaryShippingName()}` : ''}</span>
                     <span>${this.shippingInEffect() !== null
@@ -4743,12 +4773,26 @@ export class VioCheckout extends LitElement {
                   <div class="order-row total">
                     <span>Totalt</span><span>${this.payTotalLabel()}</span>
                   </div>
+                  ${!this.cartPayable && isGiftOnlyCart(this.items)
+                    ? html`<p class="summary-note" part="summary-gift-note" role="alert">${DISCOUNT_TEXT.giftOnly}</p>`
+                    : ''}
                 </section>
               `
             : ''}
         </div>
       </div>
     `
+  }
+
+  /** «Rabatt (KODE)  −52 Kr» in the summary — what the cart's discount code takes off the lines; nothing without one. */
+  private renderSummaryDiscount() {
+    const s = this.checkoutState
+    const amount = s?.discount ?? 0
+    if (!s || !(amount > 0)) return ''
+    const row = discountRow(amount, s.currency, Vio.cart.discountCodeForSponsor(s.sponsorId))
+    return html`<div class="order-row discount" part="summary-discount">
+      <span>${row.label}</span><span>${row.value}</span>
+    </div>`
   }
 }
 

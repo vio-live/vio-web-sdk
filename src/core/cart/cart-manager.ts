@@ -56,7 +56,7 @@ import {
   type DiscountReason,
 } from './discount-code.js'
 
-import { cartDiscountTotal, cartListTotal, cartNetTotal, serverLineDiscount } from './discount.js'
+import { cartDiscountTotal, cartListTotal, cartNetTotal, isGiftLine, serverLineDiscount } from './discount.js'
 
 /**
  * How many times in a row the page's code is asked for on the same cart with
@@ -936,6 +936,9 @@ export class CartManager extends EventTarget {
       return false
     })
     if (existing) {
+      // A line the discount code gives away is one unit: adding it again
+      // changes nothing (Commerce would refuse to be paid for two).
+      if (isGiftLine(existing)) return existing
       existing.quantity += qty
       addOriginQuantity(existing, opts.origin, qty)
     } else {
@@ -1072,6 +1075,8 @@ export class CartManager extends EventTarget {
     const target = quantity > 0 ? quantity : 0
     // Already there (or already heading there): nothing new to say or send.
     if (target === item.quantity) return
+    // A line the discount code gives away is one unit: it is not raised.
+    if (target > item.quantity && isGiftLine(item)) return
     const targetItemId = item.cartItemId
     // The origins follow the quantity: more units go to the given origin (or
     // the most recent one), fewer come off the most recent first.

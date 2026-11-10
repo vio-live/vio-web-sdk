@@ -211,4 +211,67 @@ describe('vio-product-detail — «Kjøp nå med Vipps» and a cart that already
     expect(productIds()).toEqual([9])
     expect(Vio.cart.getCart(8)?.items.map((i) => i.productId)).toEqual([77])
   })
+
+  /** What `executeCartGraphQL` throws for a payment the gateway refuses with a code. */
+  const refused = (code: string) => {
+    const message = `Payment Vipps not initialize: the payment was refused [${code}]`
+    return Object.assign(new Error(message), { graphql: { hasData: false, errors: [{ message, extensions: { code } }] } })
+  }
+  const notice = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLElement>('.added-toast.is-notice')
+
+  it('Vipps refuses the payment because of the discount code: the reason is said on the page, and no checkout opens', async () => {
+    const el = await openDetail()
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockRejectedValue(refused('COUPON_EXPIRED'))
+    const opened = heard('vio:checkout-open')
+    const failed = heard('vio:payment-redirect-error')
+
+    el.buyWithVipps()
+    for (let i = 0; i < 4; i++) await settle(el)
+
+    expect(failed.calls).toHaveLength(1)
+    expect(opened.calls).toHaveLength(0)
+    expect(notice(el)?.getAttribute('role')).toBe('alert')
+    expect(notice(el)?.querySelector('.added-toast-text')?.textContent).toBe(
+      'Rabattkoden er ikke lenger gyldig. Handlekurven er oppdatert – prøv igjen.',
+    )
+    // A notice is no «added» confirmation: nothing to check out from it.
+    expect(notice(el)?.querySelector('.added-toast-checkout')).toBeNull()
+    notice(el)!.querySelector<HTMLButtonElement>('.added-toast-continue')!.click()
+    await settle(el)
+    expect(notice(el)).toBeNull()
+  })
+
+  it('the cart holds only the code\'s gift (nothing to pay for): said, even with no-added-toast — nothing else would', async () => {
+    const el = await openDetail()
+    el.setAttribute('no-added-toast', '')
+    await settle(el)
+    // The server answers the add with the line given away: its discount is its price.
+    gql.addItem.mockResolvedValueOnce({
+      cart_id: 'cart-1',
+      currency: 'NOK',
+      line_items: [{ id: 'srv-9', product_id: 9, title: 'Vilde', quantity: 1, price: { amount: 899, amount_incl_taxes: 899, currency_code: 'NOK', discount: 899 } }],
+    } as never)
+    gql.getCart.mockResolvedValue(undefined)
+    const opened = heard('vio:checkout-open')
+
+    el.buyWithVipps()
+    for (let i = 0; i < 6; i++) await settle(el)
+
+    expect(Vio.cart.totalForSponsor(SPONSOR)).toBe(0)
+    expect(opened.calls).toHaveLength(0)
+    expect(notice(el)?.querySelector('.added-toast-text')?.textContent).toBe('Legg til et produkt for å få med gaven.')
+  })
+
+  it('any other failure still opens the checkout with Vipps, and says nothing about a discount', async () => {
+    const el = await openDetail()
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockRejectedValue(new Error('Payment Vipps not initialize: 503'))
+    const opened = heard('vio:checkout-open')
+
+    el.buyWithVipps()
+    for (let i = 0; i < 4; i++) await settle(el)
+
+    expect(opened.calls).toHaveLength(1)
+    expect(opened.calls[0]!.detail).toMatchObject({ sponsorId: SPONSOR, paymentMethod: 'vipps' })
+    expect(notice(el)).toBeNull()
+  })
 })

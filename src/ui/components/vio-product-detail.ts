@@ -16,7 +16,9 @@ import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
-import { cartNetTotal } from '../../core/cart/discount.js'
+import { cartNetTotal, isGiftOnlyCart } from '../../core/cart/discount.js'
+import { discountReasonOfError } from '../../core/cart/discount-code.js'
+import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
@@ -347,7 +349,12 @@ export class VioProductDetail extends LitElement {
    * handle» (Mote & Livsstil, 2026-10-28: an add closed the detail and said
    * nothing). Outlives the detail: the brand and attribution of the add.
    */
-  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown> } | null = null
+  /**
+   * The toast after an add. With `notice` it says why the purchase could not
+   * go on instead — the cart holds only a discount code's gift, or Vipps
+   * refused the payment because of the code.
+   */
+  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown>; notice?: string } | null = null
   private addedToastTimer: ReturnType<typeof setTimeout> | null = null
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
@@ -1331,6 +1338,9 @@ export class VioProductDetail extends LitElement {
     }
     .added-toast-text { font-size: 14px; font-weight: 600; }
     .added-toast-text::before { content: '✓ '; color: #2e7d32; }
+    /* A notice is no confirmation: no tick, and one button. */
+    .added-toast.is-notice .added-toast-text::before { content: none; }
+    .added-toast.is-notice .added-toast-actions { grid-template-columns: 1fr; }
     .added-toast-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .added-toast-actions button {
       min-height: 44px;
@@ -2255,6 +2265,21 @@ export class VioProductDetail extends LitElement {
     this.addedToast = null
   }
 
+  /**
+   * The toast as a notice: the purchase could not go on, and why. Shown even
+   * with `no-added-toast` — it is not the «added» confirmation a host may
+   * draw itself, and nothing else on the page would say it.
+   */
+  private showNoticeToast(notice: string): void {
+    this.addedToast = {
+      sponsorId: this.sponsorId,
+      detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
+      notice,
+    }
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = setTimeout(() => this.hideAddedToast(), ADDED_TOAST_MS)
+  }
+
   /** «Til kassen»: the checkout of the brand just added to — the host opens it on `vio:checkout-open`, as from the cart. */
   private toastToCheckout(): void {
     const toast = this.addedToast
@@ -2262,13 +2287,28 @@ export class VioProductDetail extends LitElement {
     if (!toast) return
     const cart = Vio.cart.getCart(toast.sponsorId)
     const total = cartNetTotal(cart?.items)
-    // Nothing to pay for (removed meanwhile, or 0 kr — a discount code's gift alone): no checkout.
+    // Only a discount code's gift in the cart: nothing to pay for — said, instead of a checkout that would not open.
+    if (cart && isGiftOnlyCart(cart.items)) {
+      this.showNoticeToast(DISCOUNT_TEXT.giftOnly)
+      return
+    }
+    // Nothing to pay for (removed meanwhile, or 0 kr): no checkout.
     if (!cart || cart.items.length === 0 || !(total > 0)) return
     this.dispatchEvent(new CustomEvent('vio:checkout-open', { bubbles: true, composed: true, detail: toast.detail }))
   }
 
   private renderAddedToast() {
     if (!this.addedToast) return nothing
+    if (this.addedToast.notice) {
+      return html`
+        <div class="added-toast is-notice" part="added-toast" role="alert">
+          <div class="added-toast-text">${this.addedToast.notice}</div>
+          <div class="added-toast-actions">
+            <button class="added-toast-continue" part="added-toast-continue" @click=${this.hideAddedToast}>Fortsett å handle</button>
+          </div>
+        </div>
+      `
+    }
     return html`
       <div class="added-toast" part="added-toast" role="status" aria-live="polite">
         <div class="added-toast-text">Lagt i handlekurven</div>
@@ -2438,6 +2478,16 @@ export class VioProductDetail extends LitElement {
         console.warn('[VioProductDetail] Vipps Express not started:', err)
       }
       redirect.fail(err instanceof Error ? err.message : String(err))
+      // Refused because of the cart's discount code — or the cart holds only
+      // the code's gift, which is nothing to pay for: said here (the panel is
+      // closed by now); the checkout would only refuse the same payment.
+      const reason =
+        discountReasonOfError(err) ??
+        (isGiftOnlyCart(Vio.cart.getCart(this.sponsorId)?.items) ? ('CHECKOUT_AMOUNT_ZERO' as const) : undefined)
+      if (reason) {
+        this.showNoticeToast(discountPaymentText(reason))
+        return
+      }
     }
     if (!fallback) return
     this.openCheckoutWithVipps()

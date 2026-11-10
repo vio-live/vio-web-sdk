@@ -2813,7 +2813,14 @@ export class VioCheckout extends LitElement {
    * another tab drops it to 0 here.
    */
   private get cartPayable(): boolean {
-    return (this.checkoutState?.subtotal ?? 0) > 0
+    return this.linesTotal() > 0
+  }
+
+  /** What the lines cost: the state's subtotal (list prices) less what the cart's discount code takes off them. */
+  private linesTotal(): number {
+    const s = this.checkoutState
+    if (!s) return 0
+    return Math.max(0, Math.round((s.subtotal - (s.discount ?? 0)) * 100) / 100)
   }
 
   private orderTotal(): string {
@@ -2863,11 +2870,13 @@ export class VioCheckout extends LitElement {
     return o ? o.method || o.name || '' : ''
   }
 
-  /** Total to charge — items + shipping (express). */
+  /** Total to charge — the lines (less the discount code) + shipping. */
   private payTotalLabel(): string {
     const s = this.checkoutState
     if (!s) return ''
-    return formatPrice(s.subtotal + this.shippingMajor(), s.currency)
+    // Without a discount: the subtotal as it is (no rounding of its own).
+    const lines = s.discount ? this.linesTotal() : s.subtotal
+    return formatPrice(lines + this.shippingMajor(), s.currency)
   }
 
   override render() {

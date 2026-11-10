@@ -1085,6 +1085,26 @@ describe('purchase de una vuelta: las líneas salen del checkout pagado, no del 
     m.stop()
   })
 
+  it('con código de descuento: value e items son lo pagado — el regalo vale 0 y la línea rebajada, su neto', async () => {
+    const checkout = checkoutOf([
+      { productId: 101, quantity: 2, price: 349 },
+      { productId: 421306, quantity: 1, price: 52 },
+    ])
+    // Lo que el código quita de cada LÍNEA: 10 % de las dos cremas, y la mascarilla entera (el regalo).
+    ;(checkout.cart.line_items[0]!.price as Record<string, unknown>).discount = 69.8
+    ;(checkout.cart.line_items[1]!.price as Record<string, unknown>).discount = 52
+    const { m } = page([{ ...checkout, discount_code: 'gratis_face_mask', totals: { currency_code: 'NOK', total: 628.2, discounts: 121.8 } }])
+    fire(vippsReturn)
+    await vi.advanceTimersByTimeAsync(0)
+    const [ev] = await purchases(m)
+    expect(ev!.commerce.value).toBe(628.2)
+    expect(ev!.commerce.items).toEqual([
+      expect.objectContaining({ product_id: '101', price: 314.1, quantity: 2 }),
+      expect.objectContaining({ product_id: '421306', price: 0, quantity: 1 }),
+    ])
+    m.stop()
+  })
+
   it('carrito reemplazado por la compra SIGUIENTE: no se reporta como esta', async () => {
     const { m } = page(
       [checkoutOf([{ productId: 101, quantity: 1, price: 1298 }])],
@@ -1554,6 +1574,39 @@ describe('la compra se parte por campaña (orígenes del carrito, ADR-0034)', ()
       expect(ev.context).toMatchObject({ campaign_id: 12, location_id: 'hero', sponsor_id: 4 })
       expect(ev.commerce).toMatchObject({ value: 100 })
     }
+  })
+
+  it('con código de descuento: cada campaña suma lo pagado por sus unidades, y el regalo no suma', async () => {
+    const { purchases } = await paid([
+      // Dos unidades a 100 con 20 de descuento en la línea (10 %): 90 cada una, una por campaña.
+      line({ id: 'a', productId: 1, unitPrice: 100, quantity: 2, discount: 20, origins: [
+        { campaignId: 12, slot: 'hero', quantity: 1 },
+        { campaignId: 10, slot: 'carousel-1', quantity: 1 },
+      ] } as never),
+      // El regalo del código: su descuento es su precio.
+      line({ id: 'g', productId: 9, unitPrice: 52, quantity: 1, discount: 52, origins: [{ campaignId: 12, slot: 'hero', quantity: 1 }] } as never),
+    ])
+    const byCampaign = (id: number) => purchases.find((e) => (e.context as Record<string, unknown>).campaign_id === id)!
+    expect(byCampaign(12).commerce).toMatchObject({ value: 90 })
+    expect((byCampaign(12).commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', quantity: 1, price: 90 }),
+      expect.objectContaining({ product_id: '9', quantity: 1, price: 0 }),
+    ])
+    expect(byCampaign(10).commerce).toMatchObject({ value: 90 })
+  })
+
+  it('compra pagada en la página con un regalo en el carrito: value es lo pagado', async () => {
+    const { purchases, checkouts } = await paid([
+      line({ id: 'a', productId: 1, unitPrice: 349, quantity: 1 }),
+      line({ id: 'g', productId: 9, unitPrice: 52, quantity: 1, discount: 52 } as never),
+    ])
+    expect(purchases).toHaveLength(1)
+    expect(purchases[0]!.commerce).toMatchObject({ value: 349 })
+    expect((purchases[0]!.commerce as { items: unknown[] }).items).toEqual([
+      expect.objectContaining({ product_id: '1', price: 349 }),
+      expect.objectContaining({ product_id: '9', price: 0 }),
+    ])
+    expect(checkouts[0]!.commerce).toMatchObject({ value: 349 })
   })
 
   it('W5: cada evento partido lleva props.slice / props.slices para que el colector cuente el pedido una vez', async () => {

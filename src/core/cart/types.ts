@@ -65,8 +65,19 @@ export interface CartLineItem {
   brand: string
   /** Display product name. */
   name: string
-  /** Numeric unit price (inclusive of taxes when available). */
+  /**
+   * Numeric unit price (inclusive of taxes when available) — the LIST price:
+   * it does not change with a discount code.
+   */
   unitPrice: number
+  /**
+   * What the cart's discount code takes off this LINE — all its units — in
+   * major units, taxes included (Commerce's `price.discount`). Absent without
+   * one. What the line costs is `unitPrice × quantity − discount`
+   * (`lineNetTotal`, cart/discount.ts); a line whose discount is its whole
+   * price is a gift.
+   */
+  discount?: number
   /** Currency code (e.g. "NOK"). */
   currency: string
   /** Display image URL. */

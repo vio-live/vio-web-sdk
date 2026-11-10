@@ -85,6 +85,21 @@ describe('the line under the Vipps button', () => {
     expect(note(el)).toBe(`Betaler hele handlekurven · 4 varer · ${formatPrice(3996, 'NOK')}`)
   })
 
+  it('a discount code on the cart: the total is what is paid — the gift counts as a unit, not as money', async () => {
+    methods([{ name: 'Vipps' }])
+    vi.spyOn(Vio.cart, 'getCart').mockReturnValue({
+      sponsorId: 4,
+      currency: 'NOK',
+      items: [
+        { unitPrice: 1299, quantity: 2, discount: 259.8 },
+        { unitPrice: 52, quantity: 1, discount: 52 },
+      ],
+    } as any)
+    const el = await open()
+    // 3 in the cart + 1 of this product; (2 × 1299 − 259,80) + (52 − 52) + 699.
+    expect(note(el)).toBe(`Betaler hele handlekurven · 4 varer · ${formatPrice(3037.2, 'NOK')}`)
+  })
+
   it('the line follows the cart: an add elsewhere (a change event) counts it again', async () => {
     methods([{ name: 'Vipps', config: [{ name: 'express', value: 'true' }] }])
     let items: Array<{ unitPrice: number; quantity: number }> = []

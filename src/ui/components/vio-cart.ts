@@ -30,6 +30,7 @@ import { highlightsStyles, renderHighlights } from '../highlights.js'
 import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { lineOrigins } from '../../core/cart/cart-manager.js'
+import { cartDiscountTotal, cartNetTotal } from '../../core/cart/discount.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -839,8 +840,8 @@ export class VioCart extends LitElement {
    */
   private vippsSponsorId(): number | undefined {
     for (const cart of this.carts.values()) {
-      const total = cart.items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
-      if (cart.items.length > 0 && total > 0) return cart.sponsorId
+      // What its lines cost, a discount code counted: a cart of a gift alone is nothing to pay for.
+      if (cart.items.length > 0 && cartNetTotal(cart.items) > 0) return cart.sponsorId
     }
     return undefined
   }
@@ -907,14 +908,29 @@ export class VioCart extends LitElement {
 
   /** Something to pay for: lines, and a total above 0. No button opens a checkout or a payment otherwise. */
   private get payable(): boolean {
-    return this.itemCount > 0 && this.totalAcrossSponsors > 0
+    return this.itemCount > 0 && this.payableTotal > 0
   }
 
+  /** The lines at their list prices: the «Sum» (and what Apple Pay is prepared for — discount codes are for Vipps). */
   private get totalAcrossSponsors(): number {
     let sum = 0
     for (const cart of this.carts.values()) {
       for (const item of cart.items) sum += item.unitPrice * item.quantity
     }
+    return sum
+  }
+
+  /** What the carts' discount codes take off their lines; 0 without one. */
+  private get discountAcrossSponsors(): number {
+    let sum = 0
+    for (const cart of this.carts.values()) sum += cartDiscountTotal(cart.items)
+    return sum
+  }
+
+  /** What the lines cost: list prices less discounts — what «Totalt» and the Vipps payment start from. */
+  private get payableTotal(): number {
+    let sum = 0
+    for (const cart of this.carts.values()) sum += cartNetTotal(cart.items)
     return sum
   }
 
@@ -1169,7 +1185,7 @@ export class VioCart extends LitElement {
       ${shipping !== null
         ? html`<div class="total-row" part="cart-total">
             <span>Totalt</span>
-            <span>${fra}${formatPrice(this.totalAcrossSponsors + shipping, this.primaryCurrency)}</span>
+            <span>${fra}${formatPrice(this.payableTotal + shipping, this.primaryCurrency)}</span>
           </div>`
         : ''}
       <p class="shipping-hint" part="cart-shipping-hint">Frakt velger du i Vipps eller i neste steg.</p>

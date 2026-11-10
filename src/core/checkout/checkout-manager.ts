@@ -14,6 +14,7 @@ import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
 import { discountReasonOfError } from '../cart/discount-code.js'
+import { cartDiscountTotal, cartNetTotal } from '../cart/discount.js'
 import {
   checkoutSponsorOf,
   rememberCheckoutSponsor,
@@ -607,9 +608,9 @@ export function usesStripe(methods: unknown): boolean {
  */
 export const DISCOUNT_SETTLE_BUDGET_MS = 1200
 
-/** What the lines add up to (unit price × quantity). */
-function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
-  return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
+/** What the lines cost: unit price × quantity, less what the cart's discount code takes off each. */
+function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number; discount?: number }>): number {
+  return cartNetTotal(items)
 }
 
 export class CheckoutManager extends EventTarget {
@@ -747,8 +748,13 @@ export class CheckoutManager extends EventTarget {
   /** The open checkout's lines as a signature, to tell a real change from an echo. */
   private cartSignature(sponsorId: number): string {
     return (this.cartManager.getCart(sponsorId)?.items ?? [])
-      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}${i.discount ? `:-${i.discount}` : ''}`)
       .join('|')
+  }
+
+  /** What the discount code of the sponsor's cart takes off its lines; 0 without one. */
+  private cartDiscount(sponsorId: number): number {
+    return cartDiscountTotal(this.cartManager.getCart(sponsorId)?.items)
   }
 
   /** What the open checkout's cart looked like when it was last emitted. */
@@ -762,7 +768,11 @@ export class CheckoutManager extends EventTarget {
     const signature = this.cartSignature(state.sponsorId)
     if (subtotal === state.subtotal && signature === this.lastCartSignature) return
     this.lastCartSignature = signature
-    this.state = { ...state, subtotal }
+    const next: CheckoutState = { ...state, subtotal }
+    const discount = this.cartDiscount(state.sponsorId)
+    if (discount > 0) next.discount = discount
+    else delete next.discount
+    this.state = next
     this.emit()
   }
 
@@ -776,10 +786,12 @@ export class CheckoutManager extends EventTarget {
     if (!(cartTotal(cart.items) > 0)) {
       throw new Error(`[VioCheckout] sponsor ${sponsorId} has a cart that totals 0`)
     }
+    const discount = cartDiscountTotal(cart.items)
     this.state = {
       sponsorId,
       session: ++this.sessionSeq,
       subtotal: this.cartManager.subtotalForSponsor(sponsorId),
+      ...(discount > 0 ? { discount } : {}),
       // Page-level currency wins over whatever the persisted cart carries —
       // the host may have switched currency since the cart was created.
       currency: getGlobalCurrency(),

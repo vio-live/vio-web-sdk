@@ -426,6 +426,37 @@ describe('Vio.init({ discountCode }) — the page\'s code, without the shopper t
     expect(linesNow()).toEqual([`${CREAM}×2`, `${MASK}×1`])
   })
 
+  it('what the cart costs: the gift keeps its list price and its discount, and the totals are what is paid', async () => {
+    await ready({ discountCode: GIFT_CODE })
+    add(CREAM)
+    await idle()
+
+    expect(lineOf(MASK)).toMatchObject({ unitPrice: 52, quantity: 1, discount: 52 })
+    expect(lineOf(CREAM)).not.toHaveProperty('discount')
+    expect(Vio.cart.subtotalForSponsor(FAVES)).toBe(401)
+    expect(Vio.cart.discountForSponsor(FAVES)).toBe(52)
+    expect(Vio.cart.totalForSponsor(FAVES)).toBe(349)
+    expect(Vio.checkout.open(FAVES)).toMatchObject({ subtotal: 401, discount: 52 })
+    Vio.checkout.close()
+  })
+
+  it('a percentage on the whole cart: every line says its share, and a tap on + keeps the totals right', async () => {
+    await ready({ discountCode: 'TI' })
+    add(CREAM)
+    add(TINY)
+    await idle()
+    expect(lineOf(CREAM)).toMatchObject({ unitPrice: 349, discount: 34.9 })
+    expect(lineOf(TINY)).toMatchObject({ unitPrice: 5, discount: 0.5 })
+    expect(Vio.cart.totalForSponsor(FAVES)).toBe(318.6)
+
+    Vio.cart.adjustQuantity(lineOf(CREAM)!.id, FAVES, +1)
+    // At once, before the server answers: two creams, twice the amount off.
+    expect(Vio.cart.totalForSponsor(FAVES)).toBe(632.7)
+    await idle()
+    expect(lineOf(CREAM)).toMatchObject({ quantity: 2, discount: 69.8 })
+    expect(Vio.cart.totalForSponsor(FAVES)).toBe(632.7)
+  })
+
   it('the shopper takes the gift out: it stays out for that cart', async () => {
     await ready({ discountCode: GIFT_CODE })
     add(CREAM)

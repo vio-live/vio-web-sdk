@@ -16,6 +16,7 @@ import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
+import { cartNetTotal } from '../../core/cart/discount.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
@@ -2260,8 +2261,8 @@ export class VioProductDetail extends LitElement {
     this.hideAddedToast()
     if (!toast) return
     const cart = Vio.cart.getCart(toast.sponsorId)
-    const total = (cart?.items ?? []).reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
-    // Nothing to pay for (removed meanwhile, or 0 kr): no checkout.
+    const total = cartNetTotal(cart?.items)
+    // Nothing to pay for (removed meanwhile, or 0 kr — a discount code's gift alone): no checkout.
     if (!cart || cart.items.length === 0 || !(total > 0)) return
     this.dispatchEvent(new CustomEvent('vio:checkout-open', { bubbles: true, composed: true, detail: toast.detail }))
   }
@@ -2402,9 +2403,8 @@ export class VioProductDetail extends LitElement {
     const items = cart?.items ?? []
     if (items.length === 0) return null
     const units = items.reduce((n, i) => n + (Number(i.quantity) || 0), 0) + this.quantity
-    const total =
-      items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0) +
-      this.unitPrice * this.quantity
+    // The cart's lines as they are paid for (a discount code counted) plus this product at its price.
+    const total = cartNetTotal(items) + this.unitPrice * this.quantity
     return { units, total, currency: cart?.currency || this.currency }
   }
 

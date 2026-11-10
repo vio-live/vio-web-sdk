@@ -56,6 +56,8 @@ import {
   type DiscountReason,
 } from './discount-code.js'
 
+import { cartDiscountTotal, cartListTotal, cartNetTotal, serverLineDiscount } from './discount.js'
+
 /**
  * How many times in a row the page's code is asked for on the same cart with
  * the same lines when Commerce could not say (the call failed, or the
@@ -106,7 +108,12 @@ export interface CartUpdatedDetail {
   cartId?: string
   items: CartLineItem[]
   itemCount: number
+  /** The lines at their list prices. */
   subtotal: number
+  /** What the cart's discount code takes off them — only with one: `subtotal - discount` is what the lines cost. */
+  discount?: number
+  /** The discount code the cart carries, when it carries one. */
+  discountCode?: string
   currency: string
   source: 'server' | 'storage'
 }
@@ -430,7 +437,7 @@ export class CartManager extends EventTarget {
       line_items?: Array<{
         id: string
         quantity: number
-        price?: { amount?: number; amount_incl_taxes?: number | null } | null
+        price?: { amount?: number; amount_incl_taxes?: number | null; discount?: number | string | null } | null
       }>
     },
     settling?: Promise<unknown>,
@@ -441,6 +448,13 @@ export class CartManager extends EventTarget {
     if (!cart || !line || !server) return
     const price = server.price?.amount_incl_taxes ?? server.price?.amount
     let changed = false
+    // What the discount code takes off the line, for the quantity and price this answer says.
+    const discount = serverLineDiscount(server.price?.discount, price ?? line.unitPrice, server.quantity)
+    if (discount !== (line.discount ?? 0)) {
+      if (discount > 0) line.discount = discount
+      else delete line.discount
+      changed = true
+    }
     if (server.quantity !== line.quantity) {
       line.quantity = server.quantity
       if (!this.hasMutationsInFlight(sponsorId, settling)) {
@@ -708,6 +722,8 @@ export class CartManager extends EventTarget {
           amount?: number
           amount_incl_taxes?: number | null
           currency_code?: string
+          /** What the cart's discount code takes off the line (all its units); 0 or null without one. */
+          discount?: number | string | null
         } | null
         shipping?: unknown
         available_shippings?: unknown[]
@@ -792,6 +808,10 @@ export class CartManager extends EventTarget {
           return false
         })
         const imageUrl = urlFromBackend || matchedLocal?.imageUrl || ''
+        const unitPrice = li.price?.amount_incl_taxes ?? li.price?.amount ?? matchedLocal?.unitPrice ?? 0
+        // What the discount code takes off the line — for the quantity the
+        // line is heading to, when that is not the one this answer knew.
+        const discount = serverLineDiscount(li.price?.discount, unitPrice, intended ?? li.quantity, li.quantity)
 
         const line: CartLineItem = {
           id: li.id,
@@ -805,7 +825,8 @@ export class CartManager extends EventTarget {
               ? `${li.title} — ${li.variant_title}`
               : li.title
             : matchedLocal?.name || '',
-          unitPrice: li.price?.amount_incl_taxes ?? li.price?.amount ?? matchedLocal?.unitPrice ?? 0,
+          unitPrice,
+          ...(discount > 0 ? { discount } : {}),
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
@@ -1092,6 +1113,11 @@ export class CartManager extends EventTarget {
         )
       }
     } else {
+      // A code is a percentage: what it takes off the line follows its units
+      // until the server says (its answer to this change carries the amount).
+      if (item.discount && item.quantity > 0) {
+        item.discount = Math.round(((item.discount * target) / item.quantity) * 100) / 100
+      }
       item.quantity = target
     }
     // What is left is only the gifts the SDK put in for the discount code:
@@ -1330,12 +1356,15 @@ export class CartManager extends EventTarget {
     if (!this.active || typeof document === 'undefined') return
     const cart = this.cartsBySponsor.get(sponsorId)
     const items = (cart?.items ?? []).map((item) => ({ ...item }))
+    const discount = cartDiscountTotal(items)
     const detail: CartUpdatedDetail = {
       sponsorId,
       cartId: cart?.cartId,
       items,
       itemCount: items.reduce((count, item) => count + item.quantity, 0),
       subtotal: items.reduce((sum, item) => sum + item.unitPrice * item.quantity, 0),
+      ...(discount > 0 ? { discount } : {}),
+      ...(cart?.discountCode ? { discountCode: cart.discountCode } : {}),
       currency: cart?.currency || getGlobalCurrency(),
       source,
     }
@@ -2010,17 +2039,34 @@ export class CartManager extends EventTarget {
     return count
   }
 
+  /** A sponsor's lines at their list prices — the «Sum» of its cart, before a discount code. */
   subtotalForSponsor(sponsorId: number): number {
     const cart = this.cartsBySponsor.get(sponsorId)
     if (!cart) return 0
     return cart.items.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
   }
 
+  /** What the discount code of a sponsor's cart takes off its lines. 0 without one. */
+  discountForSponsor(sponsorId: number): number {
+    return cartDiscountTotal(this.cartsBySponsor.get(sponsorId)?.items)
+  }
+
+  /** What a sponsor's lines cost: their list prices less the discount (shipping apart). */
+  totalForSponsor(sponsorId: number): number {
+    return cartNetTotal(this.cartsBySponsor.get(sponsorId)?.items)
+  }
+
+  /** What every cart's lines cost together: list prices less discounts (shipping apart). */
   get totalAcrossSponsors(): number {
     let sum = 0
-    for (const cart of this.cartsBySponsor.values()) {
-      for (const item of cart.items) sum += item.unitPrice * item.quantity
-    }
+    for (const cart of this.cartsBySponsor.values()) sum += cartNetTotal(cart.items)
+    return sum
+  }
+
+  /** Every cart's lines at their list prices. */
+  get listTotalAcrossSponsors(): number {
+    let sum = 0
+    for (const cart of this.cartsBySponsor.values()) sum += cartListTotal(cart.items)
     return sum
   }
 

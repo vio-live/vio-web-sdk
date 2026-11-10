@@ -13,7 +13,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-type Line = { id: string; unitPrice: number; quantity: number }
+type Line = { id: string; unitPrice: number; quantity: number; discount?: number }
 
 function manager(lines: Line[]) {
   const cart = {
@@ -32,6 +32,8 @@ function manager(lines: Line[]) {
 }
 
 const line = (unitPrice: number, quantity = 1): Line => ({ id: 'l1', unitPrice, quantity })
+/** A line a discount code gives away: its discount is its whole price. */
+const gift = (unitPrice = 52): Line => ({ id: 'gift', unitPrice, quantity: 1, discount: unitPrice })
 
 describe('CheckoutManager.open', () => {
   it('refuses an empty cart', () => {
@@ -48,6 +50,19 @@ describe('CheckoutManager.open', () => {
   it('opens a cart with something to pay', () => {
     const { m } = manager([line(599)])
     expect(m.open(5)).toMatchObject({ sponsorId: 5, subtotal: 599 })
+    // No discount code on the cart: the state does not even name one.
+    expect(m.currentState).not.toHaveProperty('discount')
+  })
+
+  it('refuses a cart of a gift alone: its lines cost nothing once the discount code is counted', () => {
+    const { m } = manager([gift()])
+    expect(() => m.open(5)).toThrow(/totals 0/)
+    expect(m.currentState).toBeNull()
+  })
+
+  it('a cart with a gift and something to pay: the subtotal is the list prices, the discount beside it', () => {
+    const { m } = manager([line(599), gift(52)])
+    expect(m.open(5)).toMatchObject({ sponsorId: 5, subtotal: 651, discount: 52 })
   })
 })
 
@@ -74,6 +89,14 @@ describe('Vipps never starts for nothing', () => {
       expect(gql).not.toHaveBeenCalled()
     })
   }
+
+  it('a cart of a gift alone creates no checkout and no payment either', async () => {
+    const { m } = manager([gift()])
+    const create = vi.spyOn(cartQueries, 'createCheckout')
+    await expect(m.startVippsExpress(5)).rejects.toThrow(/totals 0/)
+    await expect(m.startVippsPayment(5, { email: 'kari@example.no' })).rejects.toThrow(/totals 0/)
+    expect(create).not.toHaveBeenCalled()
+  })
 
   it('the check runs on the cart the server answered, after the in-flight changes', async () => {
     const { m, cart } = manager([line(599)])

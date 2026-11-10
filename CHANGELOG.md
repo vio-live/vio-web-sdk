@@ -113,8 +113,11 @@ and *when*, and links there.
   (the code and «Fjern» once it is taken); add `discountField: false` for a page that wants the code applied
   and no field.
 - A page with `discountCode` asks Commerce for the code once per cart (one `ApplyDiscount`, plus one `AddItem`
-  for a gift and one `GetCart`); «Kjøp nå med Vipps» waits up to 1.2 s for it before leaving for Vipps, and
-  leaves without the gift when the brand's shop has not answered by then.
+  for a gift and one `GetCart`); «Kjøp nå med Vipps» **waits for the code and its gift in full** before leaving
+  for Vipps — the apply is one to three seconds (the brand's shop asked live) — so the gift is never lost, with
+  the request timeout (15 s) the only cap, a short «Legger til gave …» on the overlay meanwhile, and the
+  purchase going on without the gift only if the apply or the AddItem fails. A page with no `discountCode` waits
+  for nothing and makes no extra call.
 - A host that draws its own cart from `vio:cart-updated` or from the lines: a line's `unitPrice` is still its
   list price — subtract `discount` (the line's, or the event's) to show what is paid.
 

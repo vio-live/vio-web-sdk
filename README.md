@@ -1197,17 +1197,19 @@ keeps the page's code and hides the field. What the SDK does with the page's cod
 - **Puts it on the cart by itself**, through the same call a field makes: once the cart has
   lines (a code with a minimum purchase would be refused on an empty cart), on every new cart
   (after a purchase), on the cart the page opens with, and before a checkout or a payment is
-  built on the cart. Nothing in the cart waits for it. A payment waits for it **1.2 s at
-  most** — «Kjøp nå med Vipps» leaves for Vipps right after the add, when the brand's shop
-  may still be answering — and then goes on with the cart as it is.
+  built on the cart. Nothing in the cart waits for it while the shopper browses. A payment,
+  though, **waits for it in full**: «Kjøp nå med Vipps» from the product (the cart is born at
+  the tap) holds for the apply — one to three seconds, the brand's shop asked live — and the
+  gift it adds, so the page never leaves for Vipps without the gift. The request timeout
+  (15 s) is the only cap; if the apply or the gift's AddItem fails, the purchase goes on
+  without it. While it waits, the redirect overlay says **«Legger til gave …»**.
 - **Adds the gift.** When Commerce answers that the code gives a product away
   (`ApplyDiscount` → `gifts`), one unit of it goes in the cart as soon as the cart has
-  something to pay for. A gift the shopper takes out stays out for that cart; when the last
-  line to pay for goes, the gift the SDK put in goes with it (a cart of a gift alone cannot
-  be paid for); when it cannot be added (not sold on that channel, out of stock) the
-  purchase goes on without it; and it goes out again with its code. When a payment did not
-  wait for the code (the 1.2 s), the gift is not put in the cart being paid — it goes in if
-  that payment does not start after all.
+  something to pay for — and, before a payment, _before_ it starts (above). A gift the shopper
+  takes out stays out for that cart; when the last line to pay for goes, the gift the SDK put
+  in goes with it (a cart of a gift alone cannot be paid for); when it cannot be added (not
+  sold on that channel, out of stock) the purchase goes on without it; and it goes out again
+  with its code.
 - **Says nothing when the code is not taken.** A coupon that is over, unknown, used up or
   not for here is asked once per cart, remembered with the cart, and the article keeps
   selling at its prices — a line in the console (`[CartManager] discount code "…" not

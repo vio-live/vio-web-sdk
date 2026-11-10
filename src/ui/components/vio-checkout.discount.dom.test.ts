@@ -249,3 +249,63 @@ describe('the receipt', () => {
     expect(confirmRow(el, 'Totalt')).toMatch(/^Totalt\s*450 Kr$/)
   })
 })
+
+describe('a discount code on the cart: only Vipps', () => {
+  const METHODS = [{ name: 'Vipps' }, { name: 'Stripe' }, { name: 'Kustom' }]
+  async function openList(code: string | undefined) {
+    vi.mocked(Vio.cart.discountCodeForSponsor).mockReturnValue(code)
+    manager.getAvailablePaymentMethods.mockResolvedValue(METHODS)
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.open(SPONSOR)
+    el.show()
+    await cycles(el)
+    return el
+  }
+  const choice = (el: HTMLElement, cta: string) => el.shadowRoot!.querySelector<HTMLButtonElement>(`[data-vio-cta="${cta}"]`)
+
+  it('every other method is off, with a note; Vipps is on', async () => {
+    const el = await openList('gratis_face_mask')
+    for (const cta of ['select_stripe', 'select_kustom']) {
+      expect(choice(el, cta)?.disabled, cta).toBe(true)
+      expect(choice(el, cta)?.hasAttribute('data-discount-off'), cta).toBe(true)
+    }
+    expect(choice(el, 'select_vipps')?.disabled).toBe(false)
+    expect(text(el.shadowRoot!.querySelector('.vipps-only-note'))).toBe('Med rabattkode kan du bare betale med Vipps.')
+  })
+
+  it('choosing another method does nothing', async () => {
+    const el = await openList('gratis_face_mask')
+    await el.onPay('stripe')
+    await cycles(el)
+    expect(manager.state.paymentMethod).toBeFalsy()
+    expect(el.shadowRoot!.querySelector('[data-vio-cta="pay_stripe"]')).toBeNull()
+  })
+
+  it('a method chosen before the code went on is unchosen: back to the list, where only Vipps is on', async () => {
+    const el = await openList('gratis_face_mask')
+    manager.state = { ...manager.state, paymentMethod: 'stripe' }
+    manager.emit()
+    await cycles(el)
+    expect(manager.state.paymentMethod).toBe('')
+    expect(el.shadowRoot!.querySelector('[data-vio-cta="pay_stripe"]')).toBeNull()
+    expect(choice(el, 'select_vipps')?.disabled).toBe(false)
+  })
+
+  it('Vipps chosen stays chosen, and pays', async () => {
+    const el = await openList('gratis_face_mask')
+    manager.state = { ...manager.state, paymentMethod: 'vipps' }
+    manager.emit()
+    await cycles(el)
+    expect(manager.state.paymentMethod).toBe('vipps')
+    expect(text(payButton(el))).toMatch(/med Vipps$/)
+  })
+
+  it('without a code: every method on, no note', async () => {
+    const el = await openList(undefined)
+    for (const cta of ['select_stripe', 'select_kustom', 'select_vipps']) {
+      expect(choice(el, cta)?.disabled, cta).toBe(false)
+      expect(choice(el, cta)?.hasAttribute('data-discount-off'), cta).toBe(false)
+    }
+    expect(el.shadowRoot!.querySelector('.vipps-only-note')).toBeNull()
+  })
+})

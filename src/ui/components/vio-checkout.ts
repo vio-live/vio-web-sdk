@@ -62,7 +62,7 @@ import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } from '../checkout-errors.js'
 import { isGiftOnlyCart } from '../../core/cart/discount.js'
-import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
+import { discountRow, discountStyles, isVippsMethod, renderLinePrice, renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
 import { DISCOUNT_TEXT } from '../discount-texts.js'
 import { DiscountField, discountFieldStyles } from '../discount-field.js'
 import { receiptFromCheckout } from '../../core/checkout/checkout-receipt.js'
@@ -1106,6 +1106,7 @@ export class VioCheckout extends LitElement {
   `,
     discountStyles,
     discountFieldStyles,
+    vippsOnlyStyles,
   ]
 
   override connectedCallback(): void {
@@ -1771,6 +1772,10 @@ export class VioCheckout extends LitElement {
       this.dialogFocus.update(this.open)
       this.bottomSheet.update(this.open)
     }
+    // A discount code went on the cart (the summary's field, the page's own)
+    // while another method was chosen: back to the list, where only Vipps is on.
+    const chosen = this.checkoutState?.paymentMethod
+    if (chosen && this.discountOff(chosen)) this.unchooseMethod()
     // Opening the overlay: make sure the real shippings are loaded. Gated on
     // items.length — fetching shippings for an empty cart is wasted work and
     // can race the cart's own in-flight mutations.
@@ -2060,13 +2065,40 @@ export class VioCheckout extends LitElement {
       applepay: this.applePayAvailable ? 'apple-pay' : undefined,
     }
     const only = usable[id]
-    if (!only) return
+    if (!only || this.discountOff(only)) return
     Vio.checkout.selectPaymentMethod(only)
   }
 
   /** Backend names arrive as e.g. "Apple Pay" — compare letters only. */
   private methodEnabled(...names: string[]): boolean {
     return isMethodEnabled(this.availableMethods, ...names)
+  }
+
+  /** Back to the list of methods (the «Endre» link): whatever widget the chosen one mounted goes. */
+  private unchooseMethod(): void {
+    this.unmountKlarna()
+    this.unmountKustom()
+    this.unmountQliro()
+    this.unmountWalley()
+    this.unmountNexi()
+    this.unmountAdyen()
+    Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+  }
+
+  /**
+   * The cart this checkout pays carries a discount code: Vipps is the only
+   * way to pay — Commerce works the discounted amount out for it, the other
+   * methods would charge list prices (`renderVippsOnlyNote`). Their buttons
+   * are off, and a method chosen before the code went on is unchosen.
+   */
+  private get discountOnCart(): boolean {
+    const id = this.checkoutState?.sponsorId
+    return !!id && !!Vio.cart.discountCodeForSponsor(id)
+  }
+
+  /** A way to pay the cart's discount code turns off: anything but Vipps, while a code is on. */
+  private discountOff(method: string): boolean {
+    return this.discountOnCart && !isVippsMethod(method)
   }
 
   /**
@@ -2365,6 +2397,8 @@ export class VioCheckout extends LitElement {
   private async onPay(method: PaymentMethod): Promise<void> {
     // The payment step already says why nothing can be paid.
     if (this.shippingBlocked) return
+    // A discount code on the cart: only Vipps charges what Commerce works out.
+    if (this.discountOff(method)) return
     this.paymentError = null
     this.paymentNotice = null
     // Never a payment for an empty cart or one of 0 kr (another tab may have
@@ -4374,7 +4408,9 @@ export class VioCheckout extends LitElement {
   }
 
   private renderCheckoutBody() {
-    const method = this.checkoutState?.paymentMethod
+    const chosen = this.checkoutState?.paymentMethod
+    // Never a non-Vipps pay button while a discount code is on the cart (updated() unchooses it).
+    const method = chosen && this.discountOff(chosen) ? undefined : chosen
     const showCompleteCta = !!method && !this.isExpressMethod(method)
     // Method first (Angelo, 2026-09-22): our delivery form is asked only once
     // the shopper has chosen a method that needs it. Asking it up front made
@@ -4530,15 +4566,7 @@ export class VioCheckout extends LitElement {
                           <button
                             type="button"
                             style="background:none; border:none; color:var(--vio-color-accent, #c14a3b); text-decoration:underline; font-size:13px; cursor:pointer;"
-                            @click=${() => {
-                              this.unmountKlarna()
-                              this.unmountKustom()
-                              this.unmountQliro()
-                              this.unmountWalley()
-                              this.unmountNexi()
-                              this.unmountAdyen()
-                              Vio.checkout.selectPaymentMethod('' as PaymentMethod)
-                            }}
+                            @click=${() => this.unchooseMethod()}
                           >
                             Endre
                           </button>
@@ -4670,7 +4698,8 @@ export class VioCheckout extends LitElement {
                             data-vio-cta="select_apple_pay"
                             data-vio-cta-label="Apple Pay"
                             @click=${() => this.onPay('apple-pay')}
-                            ?disabled=${this.applePayInProgress}
+                            ?disabled=${this.applePayInProgress || this.discountOnCart}
+                            ?data-discount-off=${this.discountOnCart}
                           >
                             ${this.applePayInProgress
                               ? 'Åpner…'
@@ -4685,7 +4714,8 @@ export class VioCheckout extends LitElement {
                             data-vio-cta="select_stripe"
                             data-vio-cta-label="Stripe"
                             @click=${() => this.onPay('stripe')}
-                            ?disabled=${this.stripeLoading}
+                            ?disabled=${this.stripeLoading || this.discountOnCart}
+                            ?data-discount-off=${this.discountOnCart}
                           >
                             <img src=${STRIPE_LOGO_SRC} style="height: 20px; display: block;" alt="Stripe" />
                           </button>
@@ -4693,42 +4723,42 @@ export class VioCheckout extends LitElement {
                       : ''}
                     ${this.methodEnabled('klarna') && this.klarnaAvailable
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_klarna" data-vio-cta-label="Klarna" @click=${() => this.onPay('klarna')}>
+                          <button class="payment-btn" data-vio-cta="select_klarna" data-vio-cta-label="Klarna" @click=${() => this.onPay('klarna')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             Klarna
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('kustom')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_kustom" data-vio-cta-label="Kustom" @click=${() => this.onPay('kustom')}>
+                          <button class="payment-btn" data-vio-cta="select_kustom" data-vio-cta-label="Kustom" @click=${() => this.onPay('kustom')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Kustom</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('qliro')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_qliro" data-vio-cta-label="Qliro" @click=${() => this.onPay('qliro')}>
+                          <button class="payment-btn" data-vio-cta="select_qliro" data-vio-cta-label="Qliro" @click=${() => this.onPay('qliro')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Qliro</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('walley')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_walley" data-vio-cta-label="Walley" @click=${() => this.onPay('walley')}>
+                          <button class="payment-btn" data-vio-cta="select_walley" data-vio-cta-label="Walley" @click=${() => this.onPay('walley')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Walley</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('nexi')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_nexi" data-vio-cta-label="Nexi" @click=${() => this.onPay('nexi')}>
+                          <button class="payment-btn" data-vio-cta="select_nexi" data-vio-cta-label="Nexi" @click=${() => this.onPay('nexi')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Nexi</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('adyen')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_adyen" @click=${() => this.onPay('adyen')}>
+                          <button class="payment-btn" data-vio-cta="select_adyen" @click=${() => this.onPay('adyen')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
                             <span style="font-weight:700;font-size:15px;letter-spacing:-0.01em">${this.methodLabel('adyen')}</span>
                           </button>
                         `
@@ -4749,6 +4779,9 @@ export class VioCheckout extends LitElement {
                         `
                       : ''}
                   </div>
+                  ${this.discountOnCart && (this.offeredMethods() ?? []).some((m) => !isVippsMethod(m))
+                    ? renderVippsOnlyNote()
+                    : ''}
                 `}
             ${this.paymentNotice
               ? html`<div class="payment-notice">${this.paymentNotice}</div>`

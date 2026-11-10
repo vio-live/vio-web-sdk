@@ -905,7 +905,8 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
   `summary-discount`, `summary-gift-note`, `confirm-discount`.
 - Both, with a discount code: `line-list-price` (struck through), `line-net-price`; and the
   «Rabattkode» field: `discount-field`, `discount-input`, `discount-apply`, `discount-code`,
-  `discount-remove`, `discount-error`.
+  `discount-remove`, `discount-error`; and `vipps-only-note` (only Vipps with a code on the
+  cart).
 
 ```css
 vio-product-detail::part(add-to-cart) { letter-spacing: 0; text-transform: none; }
@@ -1172,9 +1173,14 @@ shopper finds out about their code.
 | **The page's own** (`discountCode`, `?vio_discount=`) — nobody typed it | shown the same way | **nothing is said**: the purchase goes on at its prices (a visitor who typed nothing never reads «invalid code») |
 | Either, **refused when the payment is started** (the safety net) | — | said, with why; the cart is read again |
 
-> **Only for brands that are paid with Vipps.** Apple Pay and Klarna work their amounts out
-> of the list prices on their own; a code on the cart of a brand that offers them shows a
-> total those methods do not charge. Do not configure a code — or the field — for such a brand.
+> **Only for brands that are paid with Vipps.** Commerce works the discounted amount out for
+> the Vipps payment; Apple Pay, Stripe, Klarna and the embedded checkouts work theirs out of
+> the list prices on our side. So **with a code on the cart the SDK offers Vipps only**: in
+> the cart, the checkout and the product detail every other way to pay stays where it is but
+> is off (`disabled`, `data-discount-off`), with «Med rabattkode kan du bare betale med
+> Vipps.» under it (`::part(vipps-only-note)`); a method chosen in the checkout before the
+> code went on is unchosen. When the code comes off they are back. Without a code — or for a
+> brand that only takes Vipps — nothing changes.
 
 ### The page names the code — the shopper types nothing
 

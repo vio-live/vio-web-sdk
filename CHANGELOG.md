@@ -58,10 +58,16 @@ and *when*, and links there.
 - A tap on a Vipps button while a typed code is still being checked waits for the answer; when the code is not
   taken, **no payment is started** (the page would leave for Vipps with the answer unread): the reason is said,
   and the next tap pays for the cart as it is.
+- **With a code on the cart, only Vipps.** Commerce works the discounted amount out for the Vipps payment;
+  Apple Pay, Stripe, Klarna and the embedded checkouts work theirs out of the list prices. While a code is on
+  the cart their buttons — in the cart, the checkout and the product detail — are off, with «Med rabattkode kan
+  du bare betale med Vipps.» under them, and a method chosen in the checkout before the code went on is
+  unchosen. They are back when the code comes off; without a code, or for a brand that only takes Vipps,
+  nothing changes.
 - `cta_click`: `discount_apply` and `discount_remove` (cart and checkout). New `::part` names: `cart-discount`,
   `cart-notice`, `cart-gift-note`, `summary-discount`, `summary-gift-note`, `confirm-discount`, `line-list-price`,
   `line-net-price`, `discount-field`, `discount-input`, `discount-apply`, `discount-code`, `discount-remove`,
-  `discount-error`.
+  `discount-error`, `vipps-only-note`.
 
 ### Fixed
 - **The carousel's impression says its sponsor.** Without a `sponsor-id` on `<vio-product-carousel>` (Replit

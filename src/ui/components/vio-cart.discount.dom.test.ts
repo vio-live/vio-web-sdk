@@ -248,3 +248,61 @@ describe('Vipps refuses the payment because of the discount code', () => {
     expect(el.shadowRoot!.querySelector('.cart-notice')).toBeNull()
   })
 })
+
+describe('a discount code on the cart: only Vipps', () => {
+  // Vipps charges what Commerce works out; the others would charge list prices.
+  const METHODS = ['Vipps', 'Apple Pay', 'Stripe', 'Klarna']
+  async function cartWith(extra: Record<string, unknown>): Promise<CartEl> {
+    vi.mocked(Vio.checkout.getAvailablePaymentMethods).mockResolvedValue(METHODS.map((name) => ({ name })) as any)
+    const el = await cart([CREAM], extra)
+    el.availableMethods = METHODS
+    el.applePayAvailable = true
+    await settle(el)
+    return el
+  }
+  const button = (el: CartEl, sel: string) => el.shadowRoot!.querySelector<HTMLButtonElement>(sel)!
+
+  it('Apple Pay, Stripe and Klarna are off, with a note; Vipps and «Til kassen» stay on', async () => {
+    const el = await cartWith({ discountCode: 'gratis_face_mask' })
+    for (const sel of ['.applepay-btn', '.stripe-btn', '.klarna-btn']) {
+      expect(button(el, sel).disabled, sel).toBe(true)
+      expect(button(el, sel).hasAttribute('data-discount-off'), sel).toBe(true)
+    }
+    expect(button(el, '.vipps-btn').disabled).toBe(false)
+    expect(button(el, '.checkout-btn').disabled).toBe(false)
+    expect(row(el, '.vipps-only-note')).toBe('Med rabattkode kan du bare betale med Vipps.')
+  })
+
+  it('their handlers do nothing either: no checkout is opened for Stripe or Klarna', async () => {
+    const el = await cartWith({ discountCode: 'gratis_face_mask' })
+    const opened = vi.fn()
+    el.addEventListener('vio:checkout-open', opened)
+    el.onStripe()
+    el.onKlarnaExpress()
+    expect(opened).not.toHaveBeenCalled()
+  })
+
+  it('without a code: as before — every button on, no note', async () => {
+    const el = await cartWith({})
+    for (const sel of ['.applepay-btn', '.stripe-btn', '.klarna-btn', '.vipps-btn']) {
+      expect(button(el, sel).disabled, sel).toBe(false)
+      expect(button(el, sel).hasAttribute('data-discount-off'), sel).toBe(false)
+    }
+    expect(el.shadowRoot!.querySelector('.vipps-only-note')).toBeNull()
+  })
+
+  it('the code comes off: the other methods are back', async () => {
+    const el = await cartWith({ discountCode: 'gratis_face_mask' })
+    expect(button(el, '.stripe-btn').disabled).toBe(true)
+    el.carts = new Map([[SPONSOR, { sponsorId: SPONSOR, currency: 'NOK', items: [CREAM] }]])
+    await settle(el)
+    expect(button(el, '.stripe-btn').disabled).toBe(false)
+    expect(el.shadowRoot!.querySelector('.vipps-only-note')).toBeNull()
+  })
+
+  it('a brand that only takes Vipps shows nothing new', async () => {
+    const el = await cart([CREAM], { discountCode: 'gratis_face_mask' })
+    expect(el.shadowRoot!.querySelector('.vipps-only-note')).toBeNull()
+    expect(button(el, '.vipps-btn').disabled).toBe(false)
+  })
+})

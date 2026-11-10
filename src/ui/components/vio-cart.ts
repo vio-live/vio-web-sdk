@@ -32,7 +32,7 @@ import type { CtaInput } from '../../core/analytics/cta.js'
 import { lineOrigins } from '../../core/cart/cart-manager.js'
 import { cartDiscountTotal, cartNetTotal, isGiftLine, isGiftOnlyCart } from '../../core/cart/discount.js'
 import { discountReasonOfError } from '../../core/cart/discount-code.js'
-import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
+import { discountRow, discountStyles, renderLinePrice, renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
 import { DiscountField, discountFieldStyles } from '../discount-field.js'
 
@@ -590,6 +590,7 @@ export class VioCart extends LitElement {
     highlightsStyles('cart'),
     discountStyles,
     discountFieldStyles,
+    vippsOnlyStyles,
   ]
 
   override connectedCallback(): void {
@@ -763,6 +764,8 @@ export class VioCart extends LitElement {
   private onApplePay(): void {
     const handle = this.applePayHandle
     if (!handle || !handle.available || !this.payable) return
+    // A discount code on the cart: only Vipps charges what Commerce works out.
+    if (this.discountOnCart) return
     // Snapshot items + total BEFORE clearing the cart (confirmation needs them).
     const snapshot = this.buildConfirmation()
     // Who the order is with, while the cart still names it — only when one
@@ -816,7 +819,7 @@ export class VioCart extends LitElement {
    * (betalingsmetode). The host's checkout-open handler closes this cart and
    * opens <vio-checkout> in express mode with Klarna preselected. */
   private onKlarnaExpress(): void {
-    if (!this.payable) return
+    if (!this.payable || this.discountOnCart) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -950,7 +953,7 @@ export class VioCart extends LitElement {
 
   /** Stripe — opens the checkout with Stripe preselected. */
   private onStripe(): void {
-    if (!this.payable) return
+    if (!this.payable || this.discountOnCart) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -979,6 +982,17 @@ export class VioCart extends LitElement {
       for (const item of cart.items) sum += item.unitPrice * item.quantity
     }
     return sum
+  }
+
+  /**
+   * A cart in the drawer carries a discount code: Vipps is the only way to
+   * pay (the others would charge list prices — `renderVippsOnlyNote`).
+   */
+  private get discountOnCart(): boolean {
+    for (const cart of this.carts.values()) {
+      if (cart.items.length > 0 && cart.discountCode) return true
+    }
+    return false
   }
 
   /** What the carts' discount codes take off their lines; 0 without one. */
@@ -1146,6 +1160,8 @@ export class VioCart extends LitElement {
                         class="applepay-btn"
                         data-vio-cta="apple_pay"
                         @click=${this.onApplePay}
+                        ?disabled=${this.discountOnCart}
+                        ?data-discount-off=${this.discountOnCart}
                         aria-label="Betal med Apple Pay"
                       >
                         <svg class="ap-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
@@ -1159,6 +1175,8 @@ export class VioCart extends LitElement {
                         class="stripe-btn"
                         data-vio-cta="stripe"
                         @click=${this.onStripe}
+                        ?disabled=${this.discountOnCart}
+                        ?data-discount-off=${this.discountOnCart}
                         aria-label="Betal med Stripe"
                       >
                         <img class="stripe-logo" src=${STRIPE_LOGO_SRC} alt="Stripe" />
@@ -1171,6 +1189,8 @@ export class VioCart extends LitElement {
                         class="klarna-btn"
                         data-vio-cta="klarna"
                         @click=${this.onKlarnaExpress}
+                        ?disabled=${this.discountOnCart}
+                        ?data-discount-off=${this.discountOnCart}
                         aria-label="Betal med Klarna"
                       >
                         Kjøp med
@@ -1181,6 +1201,12 @@ export class VioCart extends LitElement {
                         />
                       </button>
                     `
+                  : ''}
+                ${this.discountOnCart &&
+                ((this.methodEnabled('apple-pay') && this.applePayAvailable) ||
+                  this.methodEnabled('stripe') ||
+                  this.methodEnabled('klarna'))
+                  ? renderVippsOnlyNote()
                   : ''}
                 ${this.methodEnabled('vipps')
                   ? this.vippsOfficial

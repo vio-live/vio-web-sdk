@@ -19,6 +19,7 @@ import { Vio } from '../../core/client.js'
 import { cartNetTotal, isGiftOnlyCart } from '../../core/cart/discount.js'
 import { discountReasonOfError } from '../../core/cart/discount-code.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
+import { renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
@@ -1370,6 +1371,7 @@ export class VioProductDetail extends LitElement {
     }
   `,
     highlightsStyles('detail'),
+    vippsOnlyStyles,
   ]
 
   /** Stops reporting the taps on the buttons (`vio:cta-click`). */
@@ -2327,7 +2329,7 @@ export class VioProductDetail extends LitElement {
    * loads immediately. Reuses the working Klarna Payments flow (no express SDK).
    */
   private async buyWithKlarna(): Promise<void> {
-    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
     if (!this.requireSelection()) return
     this.adding = true
     try {
@@ -2426,6 +2428,15 @@ export class VioProductDetail extends LitElement {
     return this.vippsExpress && !this.cartHasLines()
   }
 
+  /**
+   * This brand's cart carries a discount code: Vipps is the only way to pay
+   * (Apple Pay, Stripe and Klarna would charge list prices — see
+   * `renderVippsOnlyNote`). Their buttons are off until the code comes off.
+   */
+  private discountOnCart(): boolean {
+    return !!Vio.cart.getCart(this.sponsorId)?.discountCode
+  }
+
   /** This brand's cart already has lines. */
   private cartHasLines(): boolean {
     return (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
@@ -2516,7 +2527,7 @@ export class VioProductDetail extends LitElement {
 
   /** Buy with Stripe — opens the checkout with Stripe preselected. */
   private buyWithStripe(): void {
-    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
     if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
@@ -2566,7 +2577,7 @@ export class VioProductDetail extends LitElement {
    * that total.
    */
   private buyWithApplePay(): void {
-    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle || this.discountOnCart()) return
     if (!this.requireSelection()) return
     if (!(this.unitPrice > 0)) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
@@ -3195,7 +3206,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-applepay"
                   data-vio-cta="apple_pay"
                   @click=${this.buyWithApplePay}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                   aria-label="Kjøp nå med Apple Pay"
                 >
                   <span>Kjøp nå med</span>
@@ -3210,7 +3222,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-stripe"
                   data-vio-cta="stripe"
                   @click=${this.buyWithStripe}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                   aria-label="Kjøp nå med Stripe"
                   style="width: 100%; margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #635bff; color: #fff; border: none; padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;"
                 >
@@ -3230,7 +3243,8 @@ export class VioProductDetail extends LitElement {
                   data-vio-cta="klarna"
                   data-vio-cta-label="Kjøp nå med Klarna"
                   @click=${this.buyWithKlarna}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                 >
                   <span>Kjøp nå med</span>
                   <img
@@ -3240,6 +3254,13 @@ export class VioProductDetail extends LitElement {
                   />
                 </button>
               `
+            : ''}
+          ${this.availableQuantity > 0 &&
+          this.discountOnCart() &&
+          ((this.hasPrice && this.applePayOk && this.methodEnabled('apple-pay', 'applepay')) ||
+            this.methodEnabled('stripe') ||
+            this.methodEnabled('klarna'))
+            ? renderVippsOnlyNote()
             : ''}
 
           ${this.renderSellerNote()}

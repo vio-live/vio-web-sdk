@@ -29,6 +29,10 @@ export const DISCOUNT_TEXT = {
   /** On the «+» of a gift line, which does nothing. */
   giftMaxOneShort: 'Maks én gave per bestilling',
 
+  // ── With a code on the cart, only Vipps ───────────────────────────────────
+  /** Under the ways to pay that are off while a discount code is on the cart (they would charge list prices). */
+  vippsOnly: 'Med rabattkode kan du bare betale med Vipps.',
+
   // ── A payment Commerce would not start because of the discount ────────────
   /** The discount could not be worked out right now. */
   discountUnavailable: 'Rabatten kunne ikke beregnes akkurat nå. Prøv igjen om litt.',

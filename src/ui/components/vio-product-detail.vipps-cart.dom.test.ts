@@ -153,6 +153,38 @@ describe('vio-product-detail — «Kjøp nå med Vipps» and a cart that already
     expect(overlay?.textContent).not.toContain('Legger til gave')
   })
 
+  it('a discount code on the brand\'s cart: Stripe and Klarna are off, with a note; Vipps stays on', async () => {
+    Vio.cart.addManual({ productId: 146, sponsorId: SPONSOR, brand: 'Careless', name: 'Sofie genser XL', unitPrice: 1299, currency: 'NOK', imageUrl: '' })
+    await Vio.cart.waitForCartMutations(SPONSOR)
+    Vio.cart.getCart(SPONSOR)!.discountCode = 'gratis_face_mask'
+    const el = await openDetail()
+    const root = el.shadowRoot!
+    for (const sel of ['.buy-stripe', '.buy-klarna']) {
+      const b = root.querySelector<HTMLButtonElement>(sel)!
+      expect(b.disabled, sel).toBe(true)
+      expect(b.hasAttribute('data-discount-off'), sel).toBe(true)
+    }
+    expect(root.querySelector<HTMLButtonElement>('.buy-vipps')!.disabled).toBe(false)
+    expect(root.querySelector('.vipps-only-note')?.textContent?.trim()).toBe('Med rabattkode kan du bare betale med Vipps.')
+
+    // Their handlers do nothing either: nothing added, no checkout opened.
+    const opened = heard('vio:checkout-open')
+    ;(el as unknown as { buyWithStripe: () => void }).buyWithStripe()
+    await (el as unknown as { buyWithKlarna: () => Promise<void> }).buyWithKlarna()
+    expect(opened.calls).toHaveLength(0)
+    expect(productIds()).toEqual([146])
+  })
+
+  it('without a code on the cart: Stripe and Klarna on, no note', async () => {
+    const el = await openDetail()
+    const root = el.shadowRoot!
+    for (const sel of ['.buy-stripe', '.buy-klarna']) {
+      expect(root.querySelector<HTMLButtonElement>(sel)!.disabled, sel).toBe(false)
+      expect(root.querySelector(sel)!.hasAttribute('data-discount-off'), sel).toBe(false)
+    }
+    expect(root.querySelector('.vipps-only-note')).toBeNull()
+  })
+
   it('a line already in the cart: the product is added and the WHOLE cart goes to Vipps Express', async () => {
     // The jumper, added earlier and left in the cart.
     Vio.cart.addManual({ productId: 146, sponsorId: SPONSOR, brand: 'Careless', name: 'Sofie genser XL', unitPrice: 1299, currency: 'NOK', imageUrl: '' })

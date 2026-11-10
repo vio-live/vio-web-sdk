@@ -42,6 +42,41 @@ export function discountRow(amount: number, currency?: string, code?: string | n
   return { label: discountRowLabel(code), value: `−${formatPrice(amount, currency)}` }
 }
 
+/**
+ * With a discount code on the cart, Vipps is the only way to pay. Commerce
+ * works out the discounted amount for the Vipps payment; Apple Pay, Stripe,
+ * Klarna and the embedded checkouts work theirs out of the list prices on our
+ * side, so they would show — and charge — a total Commerce did not. Their
+ * buttons stay where they are, off (`?disabled` + `data-discount-off`, styled
+ * by `vippsOnlyStyles`), with this note under them; when the code comes off
+ * they are back. A method name is the backend's (`Vipps`) or the SDK's
+ * (`vipps`): letters only, any case.
+ */
+export function isVippsMethod(method: string | null | undefined): boolean {
+  return String(method ?? '').toLowerCase().replace(/[^a-z]/g, '') === 'vipps'
+}
+
+/** The note under the ways to pay that a discount code turned off. */
+export function renderVippsOnlyNote() {
+  return html`<p class="vipps-only-note" part="vipps-only-note" role="note">${DISCOUNT_TEXT.vippsOnly}</p>`
+}
+
+/** A way to pay a discount code turned off, and its note; add to the component's styles. */
+export const vippsOnlyStyles = css`
+  [data-discount-off] {
+    opacity: 0.4 !important;
+    cursor: not-allowed !important;
+    filter: grayscale(1);
+  }
+  .vipps-only-note {
+    margin: 8px 0;
+    font-size: 13px;
+    line-height: 1.35;
+    color: var(--vio-color-text-secondary, #666);
+    text-align: center;
+  }
+`
+
 /** Styles of the pieces above; add to the component's own. */
 export const discountStyles = css`
   .list-price {

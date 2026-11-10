@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.38.0 — 2026-11-10
+
+Discount codes and the gift they bring, two analytics fixes, and everything of
+[0.38.0-beta.1](#0380-beta1--2026-11-05-beta) (`<vio-reel>`), now under `latest`.
+
 ### Added
 - **Discount codes: the brand's own code on the cart, and the gift it brings.** A code is applied — and
   validated — **before paying**, in the cart or the checkout: the shopper types it in the «Rabattkode» field
@@ -26,7 +31,7 @@ and *when*, and links there.
   (`Discounts.ApplyDiscount`, one code per cart). When the code gives a product away (`gifts`), one unit goes
   in the cart as soon as there is something to pay for — «Gratis», one unit, removable; it goes out again with
   the last line to pay for, or with its code. **Only for brands that are paid with Vipps.** See
-  [README → Discount codes](README.md#discount-codes--the-brands-code-and-the-gift-it-brings-unreleased).
+  [README → Discount codes](README.md#discount-codes--the-brands-code-and-the-gift-it-brings).
 - **Who is told what came of a code depends on who asked for it.** A code the shopper **typed** always has its
   answer said — taken, or not and why; never in silence. The **page's own** code (`discountCode`,
   `?vio_discount=`), which nobody typed, shows only once it is taken: not taken (expired, unknown, used up), it
@@ -126,6 +131,11 @@ and *when*, and links there.
   for nothing and makes no extra call.
 - A host that draws its own cart from `vio:cart-updated` or from the lines: a line's `unitPrice` is still its
   list price — subtract `discount` (the line's, or the event's) to show what is paid.
+- **Check that Commerce has the discount-code release before naming a code on a page.** It is in QA from
+  2026-11-10; until it reaches production, a page with `discountCode` there sees nothing happen (the code is not
+  taken, silently) and sells at its prices.
+- `<vio-reel>` (from 0.38.0-beta.1) is in this version, but its backend is in staging only: keep it to QA pages
+  and the editor's preview for now. Pages without a `<vio-reel>` are not affected.
 
 ## 0.38.0-beta.1 — 2026-11-05 (beta)
 
@@ -252,7 +262,7 @@ in staging only, so this is for Replit QA and the editor's preview until it is r
   action. Each tap also dispatches **`vio:cta-click`** (bubbles, composed; React `onCtaClick`).
   **`Vio.trackCta({ cta, location, label, variant, … })`** sends the same event for a host's own
   buttons (`location: 'host' | 'card' | 'block'`, `cta_variant` for the button option being
-  tested). Ids and fields: [README → Button tracking](README.md#button-tracking-cta_click-unreleased).
+  tested). Ids and fields: [README → Button tracking](README.md#button-tracking-cta_click).
 
 ### ⚠️ Upgrade notes
 - **The collector must know `cta_click`** (and its context fields) before this ships: an older
@@ -551,7 +561,7 @@ in staging only, so this is for Replit QA and the editor's preview until it is r
   While marked, every analytics event carries **`client.internal: true`** and the collector's
   reads leave it out. **`Vio.analytics.setInternal(boolean)`** / `Vio.analytics.isInternal` for
   hosts; one `console.info` when marked. See
-  [README → Internal traffic](README.md#internal-traffic--mark-your-browser-as-a-tester-unreleased).
+  [README → Internal traffic](README.md#internal-traffic--mark-your-browser-as-a-tester).
 
 ### Changed
 - **Stripe.js (~300 KB) is downloaded only for a brand that uses Stripe.** It used to load on
@@ -564,7 +574,7 @@ in staging only, so this is for Replit QA and the editor's preview until it is r
   (ADR-0041). The impression is observed once the products have loaded (the 1 s dwell starts
   then); a failed fetch still counts it, without items. `Vio.analytics.observeImpression()` takes
   a `commerce` getter, read when the impression fires. See
-  [README → Impressions carry the products shown](README.md#impressions-carry-the-products-shown-unreleased).
+  [README → Impressions carry the products shown](README.md#impressions-carry-the-products-shown).
 - Events never carry more than 100 `commerce.items` (the collector rejects the whole event above
   its cap).
 

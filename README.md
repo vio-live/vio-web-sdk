@@ -548,7 +548,7 @@ redirect }` — which is what analytics listens to; a host with its own sink can
 listen to it too. With `dataLayer: true` it is pushed as GA4's `add_payment_info`
 with `payment_type`.
 
-### Impressions carry the products shown (unreleased)
+### Impressions carry the products shown
 
 `<vio-product-carousel>`'s **`component_impression`** (≥50% visible for ≥1 s, once
 per session and carousel) carries the products it shows in **`commerce.items`**
@@ -560,7 +560,7 @@ still counts its impression, without items. A host calling
 `Vio.analytics.observeImpression(el, context, { commerce: () => ({ items, currency }) })`
 does the same for its own elements: the getter is read when the impression fires.
 
-### Internal traffic — mark your browser as a tester (unreleased)
+### Internal traffic — mark your browser as a tester
 
 Our own visits (testers, the team, agents) must not count in the dashboard. Mark
 **each browser you test with** once:
@@ -591,7 +591,7 @@ To **undo** it, open any page with **`?vio_internal=0`**. Things to know:
   (`Vio.analytics.isInternal` reads it). `resolveInternal()` / `INTERNAL_KEY` are
   exported from `/core`.
 
-### Button tracking (`cta_click`) (unreleased)
+### Button tracking (`cta_click`)
 
 Which buttons shoppers use. Every tap on a button of the SDK's elements sends **one
 `cta_click`**, through the same pipeline as every other event (consent,
@@ -688,7 +688,7 @@ Name the button option you are testing with `variant` (`bar-kjop` vs
 `outline-velg`) and keep `cta` the same for buttons that do the same thing: the
 dashboard groups by `cta` and splits by `cta_variant` / `cta_label`.
 
-## Shoppable video — `<vio-reel>` (unreleased)
+## Shoppable video — `<vio-reel>`
 
 A **managed shoppable-video experience**: ordered videos with the products on
 screen and when they appear, edited in Vio (dashboard) or in the publisher's
@@ -1076,7 +1076,7 @@ tap, so a second payment cannot start. Events on `document`:
 | Event | Detail | When |
 |---|---|---|
 | `vio:payment-redirect-start` | `{ method, sponsorId, source }` | At the tap. **Cancelable**: `preventDefault()` and the SDK draws no overlay — draw your own |
-| `vio:payment-redirect-error` | `… , reason` | It could not start. The overlay goes; the checkout opens with Vipps preselected — unless Commerce refused it because of the cart's discount code: then the reason is said where the shopper is ([Discount codes](#discount-codes--the-brands-code-and-the-gift-it-brings-unreleased)) |
+| `vio:payment-redirect-error` | `… , reason` | It could not start. The overlay goes; the checkout opens with Vipps preselected — unless Commerce refused it because of the cart's discount code: then the reason is said where the shopper is ([Discount codes](#discount-codes--the-brands-code-and-the-gift-it-brings)) |
 | `vio:payment-redirect-cancel` | `… , reason` | `'express-off'` / `'not-started'`: the checkout opens instead (no error). `'back'`: the shopper came back with the browser's back button. `'cancelled'`: back through Vipps' own cancel (with `checkoutId`) |
 
 `source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
@@ -1151,7 +1151,7 @@ document.addEventListener('vio:cart-updated', (e) => {
 `items` are copies of the lines (`CartLineItem[]`). A host that draws its own cart or badge
 redraws it from this event; `<vio-cart>` and the badge wired to `Vio.cart`'s `change` need nothing.
 
-## Discount codes — the brand's code, and the gift it brings (unreleased)
+## Discount codes — the brand's code, and the gift it brings
 
 A brand's own discount code (its shop's coupon) on the cart: a percentage off one product or
 off the whole cart, or a product given away. Commerce takes **one code per cart**, asks the

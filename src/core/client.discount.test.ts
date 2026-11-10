@@ -33,16 +33,40 @@ const boot = (): BootstrapResponse => ({
   campaigns: [{ id: 4, name: 'Faves høst', status: 'active', isDefault: true, primarySponsor: faves, slots: [] }],
 })
 
+/** Another brand, in campaign 5 with Faves, on its own channel. */
+const TINT = 8
+const tint: Sponsor = { id: TINT, name: 'Tint', commerce: { apiKey: 'key-490', channelId: '490' } }
+/**
+ * What Vio's dashboard says per campaign and sponsor (`campaignId:sponsorId`
+ * → the code), as the bootstrap gives it: `discountCode` on every sponsor
+ * block — `null` where the dashboard names none.
+ */
+let dashboard: Record<string, string>
+const coded = (s: Sponsor, campaignId: number): Sponsor => ({ ...s, discountCode: dashboard[`${campaignId}:${s.id}`] ?? null })
+/** The surface with the campaigns' codes: 4 (the default, Faves) and 5 («Jul»: Faves, and Tint as a secondary). */
+const campaignBoot = (): BootstrapResponse => ({
+  campaign: { id: 4, name: 'Faves høst' },
+  primarySponsor: coded(faves, 4),
+  campaigns: [
+    { id: 4, name: 'Faves høst', status: 'active', isDefault: true, primarySponsor: coded(faves, 4), slots: [] },
+    { id: 5, name: 'Jul', status: 'active', primarySponsor: coded(faves, 5), secondarySponsors: [coded(tint, 5)], slots: [] },
+  ],
+})
+/** What `GET /v2/mobile/config` answers in this test. */
+let bootstrap: () => BootstrapResponse
+
 /** Product ids and their list prices. */
 const CREAM = 100
 const TINY = 101
 const MASK = 421306
-const PRICE: Record<number, number> = { [CREAM]: 349, [TINY]: 5, [MASK]: 52 }
+const LIPSTICK = 200
+const PRICE: Record<number, number> = { [CREAM]: 349, [TINY]: 5, [MASK]: 52, [LIPSTICK]: 199 }
 const GIFT_CODE = 'gratis_face_mask'
 /** The brand's coupons: a gift with a minimum purchase, and ten per cent on everything. */
 const CODES: Record<string, { percentage: number; products?: number[]; gifts?: number[]; minAmount?: number }> = {
   [GIFT_CODE]: { percentage: 100, products: [MASK], gifts: [MASK], minAmount: 10 },
   TI: { percentage: 10 },
+  TINT20: { percentage: 20 },
 }
 
 interface FakeLine {
@@ -65,6 +89,8 @@ let charged: number[]
 let gateway: {
   /** ApplyDiscount fails as a call (shopcart down). */
   applyThrows: boolean
+  /** DeleteAppliedDiscount fails as a call. */
+  removeThrows: boolean
   /** The brand's coupons that are over. */
   expired: Set<string>
   /** Products this channel cannot sell (an AddItem of them fails). */
@@ -185,6 +211,7 @@ async function graphql(body: { query: string; variables: Record<string, any> }, 
       })
     }
     case 'DeleteAppliedDiscount': {
+      if (gateway.removeThrows) return json({ errors: [{ message: 'shopcart is down' }] }, 502)
       const had = cartCodes.get(v.cartId) === v.code
       if (had) cartCodes.delete(v.cartId)
       return json({ data: { Discounts: { DeleteAppliedDiscount: { executed: had, message: had ? '' : 'COUPON_NOT_FOUND' } } } })
@@ -224,6 +251,11 @@ async function graphql(body: { query: string; variables: Record<string, any> }, 
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
+/** The page's elements that name a campaign (`vio-campaign`), as `document.querySelectorAll` finds them. */
+let pageElements: Array<{ getAttribute: (name: string) => string | null }>
+/** The facade's `visibilitychange` listener (it refreshes a bootstrap older than five minutes). */
+let visibilityListeners: Array<() => void>
+
 beforeAll(async () => {
   delete (globalThis as { __VIO_FACADE__?: unknown }).__VIO_FACADE__
   ;({ Vio } = await import('./client.js'))
@@ -237,6 +269,7 @@ beforeEach(() => {
   session = new Map()
   gateway = {
     applyThrows: false,
+    removeThrows: false,
     expired: new Set(),
     unavailable: new Set(),
     knowsCartDiscountCode: true,
@@ -245,8 +278,12 @@ beforeEach(() => {
     vippsDown: false,
   }
   resetGatewayFeatures()
+  dashboard = {}
+  bootstrap = boot
+  pageElements = []
+  visibilityListeners = []
   vi.stubGlobal('fetch', async (url: string, init?: { body?: string; headers?: Record<string, string> }) => {
-    if (url.includes('/v2/mobile/config')) return json(boot())
+    if (url.includes('/v2/mobile/config')) return json(bootstrap())
     if (url.endsWith('/v2/mobile/surface')) return json({ surface: { id: 1, name: 'S', privacyMode: 'standard' } })
     if (init?.body && String(init.body).includes('"query"')) {
       return graphql(JSON.parse(String(init.body)), String(init.headers?.Authorization ?? ''))
@@ -256,10 +293,14 @@ beforeEach(() => {
   vi.stubGlobal('document', {
     referrer: '',
     dispatchEvent: () => true,
-    querySelectorAll: () => [],
+    querySelectorAll: () => pageElements,
     visibilityState: 'visible',
-    addEventListener: () => {},
+    addEventListener: (type: string, fn: () => void) => {
+      if (type === 'visibilitychange') visibilityListeners.push(fn)
+    },
   })
+  // The facade installs its visibilitychange listener once per page: on this test's document.
+  ;(Vio as unknown as { visibilityHooked: boolean }).visibilityHooked = false
   vi.stubGlobal('location', { href: 'https://host.example/a', pathname: '/a', search: '', host: 'host.example' })
   vi.stubGlobal('localStorage', undefined)
   vi.stubGlobal('sessionStorage', {
@@ -951,5 +992,426 @@ describe('a page without discount codes', () => {
     await idle()
     expect(ops()).toEqual(['CreateCart', 'AddItem', 'GetCart', 'CreateCheckout', 'UpdateCheckout', 'CreatePaymentVipps'])
     expect(charged).toEqual([349])
+  })
+})
+
+// ── The campaign's code: set in Vio's dashboard, on the campaign, per sponsor ──
+
+describe('the campaign\'s code (bootstrap) — the page names none, the dashboard gives one per campaign and brand', () => {
+  const T0 = new Date('2026-11-10T10:00:00Z').getTime()
+  let clock = T0
+
+  beforeEach(() => {
+    bootstrap = campaignBoot
+    vi.useFakeTimers({ toFake: ['Date'] })
+    clock = T0
+    vi.setSystemTime(clock)
+  })
+
+  /** A line of `productId` added on a page of `campaignId`, for `sponsorId`'s cart. */
+  const addFrom = (productId: number, campaignId: number, sponsorId = FAVES) =>
+    Vio.cart.addManual({
+      productId,
+      sponsorId,
+      brand: sponsorId === FAVES ? 'Faves' : 'Tint',
+      name: `P${productId}`,
+      unitPrice: priceOf(productId),
+      currency: 'NOK',
+      imageUrl: '',
+      origin: { campaignId, slot: 'article-1' },
+    })
+  /** Until nothing of either brand's cart is in flight. */
+  async function idleBoth() {
+    for (let quiet = 0; quiet < 5; ) {
+      await Vio.cart.waitForCartMutations(FAVES)
+      await Vio.cart.waitForCartMutations(TINT)
+      await flush()
+      quiet = Vio.cart.discountBusy() ? 0 : quiet + 1
+    }
+  }
+  /** The tab comes back after six minutes: the bootstrap is fetched again — what the dashboard says now. */
+  async function tabBack() {
+    clock += 6 * 60_000
+    vi.setSystemTime(clock)
+    for (const fn of visibilityListeners) fn()
+    await flush()
+    await idleBoth()
+  }
+  const appliedCodes = () => calls.filter((c) => c.op === 'ApplyDiscount').map((c) => c.variables.code)
+  const cart = () => Vio.cart.getCart(FAVES)
+
+  it('a page of the campaign: the brand\'s code there goes on its cart by itself, with its gift — exactly as a page\'s own code', async () => {
+    dashboard = { '5:7': GIFT_CODE }
+    await ready({ campaignId: 5 })
+    expect(Configuration.get()).not.toHaveProperty('discountCode')
+    addFrom(CREAM, 5)
+    await idle()
+
+    expect(ops()).toEqual(['CreateCart', 'AddItem', 'ApplyDiscount', 'AddItem', 'GetCart'])
+    expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId: cartIdNow(), code: GIFT_CODE } })
+    expect(cart()).toMatchObject({ discountCode: GIFT_CODE, discountCampaignId: 5, gifts: [{ productId: MASK, added: true }] })
+    expect(linesNow()).toEqual([`${CREAM}×1`, `${MASK}×1`])
+    expect(Vio.cart.totalForSponsor(FAVES)).toBe(349)
+  })
+
+  it('the code of THAT campaign: the page\'s campaign gives its own, a page without one the default campaign\'s, an element\'s vio-campaign first', async () => {
+    dashboard = { '4:7': 'TI', '5:7': GIFT_CODE }
+    await ready()
+    addFrom(CREAM, 4)
+    await idle()
+    expect(appliedCodes()).toEqual(['TI'])
+    expect(cart()?.discountCampaignId).toBe(4)
+
+    calls = []
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+    expect(appliedCodes()).toEqual([GIFT_CODE])
+
+    // Vio.init says 4, but the page's element says 5: the element's campaign is the page's.
+    calls = []
+    pageElements = [{ getAttribute: (name) => (name === 'vio-campaign' ? '5' : null) }]
+    await ready({ campaignId: 4 })
+    addFrom(CREAM, 5)
+    await idle()
+    expect(appliedCodes()).toEqual([GIFT_CODE])
+    expect(cart()?.discountCampaignId).toBe(5)
+  })
+
+  it('only that brand\'s cart: another brand of the campaign without a code gets none — with its own, its own', async () => {
+    dashboard = { '5:7': 'TI' }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    addFrom(LIPSTICK, 5, TINT)
+    await idleBoth()
+    const tintCart = Vio.cart.getCart(TINT)?.cartId
+    expect(calls.filter((c) => c.op === 'ApplyDiscount').map((c) => c.variables.cartId)).toEqual([cartIdNow()])
+    expect(Vio.cart.getCart(TINT)).not.toHaveProperty('discountCode')
+    // Tint's cart is read as it always was: its GetCarts do not even ask about a code.
+    expect(calls.filter((c) => c.op === 'GetCart' && c.variables.cartId === tintCart).every((c) => !c.query.includes('discount_code'))).toBe(true)
+
+    calls = []
+    dashboard = { '5:7': 'TI', '5:8': 'TINT20' }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    addFrom(LIPSTICK, 5, TINT)
+    await idleBoth()
+    const applied = calls.filter((c) => c.op === 'ApplyDiscount')
+    expect(applied.map((c) => [c.key, c.variables.code])).toEqual(
+      expect.arrayContaining([
+        ['key-484', 'TI'],
+        ['key-490', 'TINT20'],
+      ]),
+    )
+    expect(applied).toHaveLength(2)
+    expect(Vio.cart.getCart(TINT)?.discountCode).toBe('TINT20')
+    expect(Vio.cart.getCart(FAVES)?.discountCode).toBe('TI')
+  })
+
+  it('the page\'s own code is the override, for every cart: Vio.init({ discountCode }) or ?vio_discount=', async () => {
+    dashboard = { '5:7': GIFT_CODE }
+    await ready({ campaignId: 5, discountCode: 'TI' })
+    addFrom(CREAM, 5)
+    await idle()
+    expect(appliedCodes()).toEqual(['TI'])
+    // The page's own code is not the campaign's: no campaign to follow.
+    expect(cart()).not.toHaveProperty('discountCampaignId')
+
+    calls = []
+    vi.stubGlobal('location', { href: 'https://host.example/a?vio_discount=TI', pathname: '/a', search: '?vio_discount=TI', host: 'host.example' })
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+    expect(appliedCodes()).toEqual(['TI'])
+  })
+
+  it('refused (the coupon is unknown in the brand\'s shop): asked once, in silence, and the purchase goes on at its prices', async () => {
+    dashboard = { '5:7': 'FINNESIKKE' }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+    await Vio.checkout.startVippsExpress(FAVES)
+    expect(appliedCodes()).toEqual(['FINNESIKKE'])
+    expect(charged).toEqual([349])
+    expect(cart()).not.toHaveProperty('discountCode')
+  })
+
+  it('paying: the campaign\'s code and its gift are on the cart before the checkout and the payment — waited for, as the page\'s own', async () => {
+    dashboard = { '5:7': GIFT_CODE }
+    await ready({ campaignId: 5 })
+    let open!: () => void
+    gateway.applyGate = new Promise<void>((resolve) => (open = resolve))
+    addFrom(CREAM, 5)
+    expect(Vio.cart.discountGiftExpected(FAVES)).toBe(true)
+    let started: unknown
+    const starting = Vio.checkout.startVippsExpress(FAVES).then((res) => (started = res))
+    await flush()
+    await flush()
+    expect(started).toBeUndefined()
+    expect(count('CreateCheckout')).toBe(0)
+
+    open()
+    gateway.applyGate = null
+    await starting
+    expect(started).toMatchObject({ payment_url: 'https://vipps.test/pay' })
+    expect(ops().indexOf('ApplyDiscount')).toBeLessThan(ops().indexOf('CreateCheckout'))
+    expect(ops().lastIndexOf('AddItem')).toBeLessThan(ops().indexOf('CreateCheckout'))
+    expect(serverLines()).toEqual([`${CREAM}×1`, `${MASK}×1`])
+    expect(charged).toEqual([349])
+  })
+
+  it('a brand with no code in the page\'s campaign promises no gift and waits for nothing', async () => {
+    dashboard = { '5:7': GIFT_CODE }
+    await ready({ campaignId: 5 })
+    expect(Vio.cart.discountGiftExpected(TINT)).toBe(false)
+    addFrom(LIPSTICK, 5, TINT)
+    await Vio.checkout.startVippsExpress(TINT)
+    expect(count('ApplyDiscount')).toBe(0)
+    expect(ops()).toEqual(['CreateCart', 'AddItem', 'GetCart', 'CreateCheckout', 'UpdateCheckout', 'CreatePaymentVipps'])
+  })
+
+  describe('dynamic: the cart follows what the dashboard says now', () => {
+    it('the code changes: at the next bootstrap the old one comes off the cart with its gift, and the new one goes on', async () => {
+      dashboard = { '5:7': GIFT_CODE }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      const cartId = cartIdNow()
+      expect(cartCodes.get(cartId)).toBe(GIFT_CODE)
+      calls = []
+
+      dashboard = { '5:7': 'TI' }
+      await tabBack()
+
+      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'ApplyDiscount', 'GetCart'])
+      expect(calls[0]).toMatchObject({ key: 'key-484', variables: { cartId, code: GIFT_CODE } })
+      expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId, code: 'TI' } })
+      expect(cartCodes.get(cartId)).toBe('TI')
+      expect(cart()).toMatchObject({ cartId, discountCode: 'TI', discountCampaignId: 5 })
+      expect(cart()).not.toHaveProperty('gifts')
+      // The gift went with its code; the cream is 10 % off now.
+      expect(linesNow()).toEqual([`${CREAM}×1`])
+      expect(serverLines()).toEqual([`${CREAM}×1`])
+      expect(lineOf(CREAM)).toMatchObject({ discount: 34.9 })
+      expect(Vio.cart.totalForSponsor(FAVES)).toBe(314.1)
+    })
+
+    it('the code is removed (null): it comes off with its gift, and the lines are read again at their prices', async () => {
+      dashboard = { '5:7': GIFT_CODE }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      dashboard = {}
+      await tabBack()
+
+      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'GetCart'])
+      expect(cartCodes.has(cartIdNow())).toBe(false)
+      expect(cart()).not.toHaveProperty('discountCode')
+      expect(cart()).not.toHaveProperty('discountCampaignId')
+      expect(linesNow()).toEqual([`${CREAM}×1`])
+      expect(Vio.cart.discountForSponsor(FAVES)).toBe(0)
+      // Without a code, every way to pay is back: the next payment charges the list price.
+      await Vio.checkout.startVippsExpress(FAVES)
+      expect(charged).toEqual([349])
+      expect(count('ApplyDiscount')).toBe(0)
+    })
+
+    it('a campaign that stops being the page\'s and the brand\'s (gone from the bootstrap): its code comes off', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      bootstrap = () => ({ ...campaignBoot(), campaigns: campaignBoot().campaigns!.filter((c) => c.id !== 5) })
+      await tabBack()
+
+      expect(ops()).toEqual(['DeleteAppliedDiscount', 'GetCart'])
+      expect(cart()).not.toHaveProperty('discountCode')
+    })
+
+    it('the campaign gives a code mid-visit: the cart that had none gets it at the refresh', async () => {
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      expect(count('ApplyDiscount')).toBe(0)
+      calls = []
+
+      dashboard = { '5:7': 'TI' }
+      await tabBack()
+      expect(ops()).toEqual(['ApplyDiscount', 'GetCart'])
+      expect(cart()).toMatchObject({ discountCode: 'TI', discountCampaignId: 5 })
+    })
+
+    it('a refresh that changes nothing asks nothing', async () => {
+      dashboard = { '5:7': GIFT_CODE }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      await tabBack()
+      expect(ops()).toEqual([])
+      expect(cart()?.discountCode).toBe(GIFT_CODE)
+    })
+
+    it('a code the shopper typed is theirs: the dashboard changing the campaign\'s does not touch it', async () => {
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      await expect(Vio.applyDiscountCode('TI')).resolves.toMatchObject({ status: 'applied' })
+      expect(cart()).not.toHaveProperty('discountCampaignId')
+      calls = []
+
+      dashboard = { '5:7': GIFT_CODE }
+      await tabBack()
+      expect(ops()).toEqual([])
+      expect(cart()?.discountCode).toBe('TI')
+    })
+
+    it('the campaign\'s code the shopper then types themselves becomes theirs: removed in the dashboard, it stays', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      expect(cart()?.discountCampaignId).toBe(5)
+      await expect(Vio.applyDiscountCode('TI')).resolves.toMatchObject({ status: 'applied' })
+      expect(cart()).not.toHaveProperty('discountCampaignId')
+      calls = []
+
+      dashboard = {}
+      await tabBack()
+      expect(ops()).toEqual([])
+      expect(cart()?.discountCode).toBe('TI')
+    })
+
+    it('the page\'s own code is not the campaign\'s to take off', async () => {
+      dashboard = { '5:7': GIFT_CODE }
+      await ready({ campaignId: 5, discountCode: 'TI' })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      dashboard = {}
+      await tabBack()
+      expect(ops()).toEqual([])
+      expect(cart()?.discountCode).toBe('TI')
+    })
+
+    it('Commerce says the code is not on its cart any more: the cart is read again, and the new one goes on', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      // Something else took it off the server cart.
+      cartCodes.delete(cartIdNow())
+      calls = []
+
+      dashboard = { '5:7': GIFT_CODE }
+      await tabBack()
+      expect(ops()).toEqual(['DeleteAppliedDiscount', 'GetCart', 'ApplyDiscount', 'AddItem', 'GetCart'])
+      expect(cart()).toMatchObject({ discountCode: GIFT_CODE, discountCampaignId: 5 })
+    })
+
+    it('a code that could not be taken off stays — and is not tried again on every change of the cart', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      gateway.removeThrows = true
+      calls = []
+
+      dashboard = { '5:7': GIFT_CODE }
+      await tabBack()
+      addFrom(CREAM, 5)
+      await idle()
+      await Vio.checkout.startVippsExpress(FAVES)
+      expect(count('DeleteAppliedDiscount')).toBe(1)
+      expect(count('ApplyDiscount')).toBe(0)
+      expect(cart()?.discountCode).toBe('TI')
+      // The purchase goes on with the code the cart has.
+      expect(charged).toEqual([628.2])
+    })
+
+    it('a later page of the visit (the dashboard changed meanwhile): the cart it opens with is put right when its bootstrap arrives', async () => {
+      const key = `surface-key-${++keySeq}`
+      dashboard = { '5:7': GIFT_CODE }
+      Vio.init({ apiKey: key, environment: 'testing', campaignId: 5 } as never)
+      Vio.cart.clearAllCarts()
+      Vio.checkout.close()
+      await Vio.bootstrap()
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      // The next page: the same surface, the code now changed in the dashboard.
+      dashboard = { '5:7': 'TI' }
+      Vio.init({ apiKey: key, environment: 'testing' } as never)
+      await Vio.bootstrap()
+      await idle()
+
+      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'ApplyDiscount', 'GetCart'])
+      expect(cart()).toMatchObject({ discountCode: 'TI', discountCampaignId: 5 })
+    })
+
+    it('a later page with a code of its own, while the campaigns give theirs: the cart it opens with is asked once — the page\'s', async () => {
+      const key = `surface-key-${++keySeq}`
+      Vio.init({ apiKey: key, environment: 'testing', campaignId: 5 } as never)
+      Vio.cart.clearAllCarts()
+      Vio.checkout.close()
+      await Vio.bootstrap()
+      addFrom(CREAM, 5)
+      await idle()
+      expect(count('ApplyDiscount')).toBe(0)
+      calls = []
+
+      dashboard = { '5:7': GIFT_CODE }
+      Vio.init({ apiKey: key, environment: 'testing', campaignId: 5, discountCode: 'TI' } as never)
+      await Vio.bootstrap()
+      await idle()
+
+      expect(ops()).toEqual(['ApplyDiscount', 'GetCart'])
+      expect(cart()).toMatchObject({ discountCode: 'TI' })
+      expect(cart()).not.toHaveProperty('discountCampaignId')
+    })
+
+    it('the dashboard changed it while the shopper pays: the payment is built on the new code', async () => {
+      dashboard = { '5:7': GIFT_CODE }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      dashboard = { '5:7': 'TI' }
+      clock += 6 * 60_000
+      vi.setSystemTime(clock)
+      for (const fn of visibilityListeners) fn()
+      await Vio.checkout.startVippsExpress(FAVES)
+
+      expect(before('ApplyDiscount', 'CreateCheckout')).toBe(true)
+      expect(cartCodes.get(cartIdNow())).toBe('TI')
+      expect(charged).toEqual([314.1])
+    })
+  })
+
+  it('no code in the bootstrap (null everywhere, or a Commerce that predates the field) nor on the page: the calls it always made', async () => {
+    for (const make of [campaignBoot, boot]) {
+      bootstrap = make
+      calls = []
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await Vio.cart.waitForCartMutations(FAVES)
+      await Vio.cart.refreshFromServer(FAVES)
+      await Vio.checkout.createCheckout(FAVES)
+      await idle()
+      await tabBack()
+
+      expect(ops()).toEqual(['CreateCart', 'AddItem', 'GetCart', 'GetCart', 'CreateCheckout', 'UpdateCheckout'])
+      expect(calls.filter((c) => c.op === 'GetCart').every((c) => !c.query.includes('discount_code'))).toBe(true)
+      expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
+      Vio.checkout.close()
+    }
   })
 })

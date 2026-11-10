@@ -21,6 +21,12 @@ import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
 import { syncDiscountParam, type DiscountCodeRemoval, type DiscountCodeResult } from './cart/discount-code.js'
+import {
+  bootstrapDiscountCodes,
+  campaignDiscountFor,
+  campaignDiscountNow,
+  type CampaignDiscount,
+} from './campaign-discount.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import type { CtaInput } from './analytics/cta.js'
@@ -142,6 +148,13 @@ class VioFacade {
   /** Last bootstrap failure — short backoff so cart mutations don't hammer a
    * dead endpoint on every call. */
   private bootstrapFailedAt = 0
+  /**
+   * The discount codes the campaigns give in the bootstrap held now, as one
+   * string (`bootstrapDiscountCodes`; `''`: none) — so a refresh that changed
+   * them is told from one that did not. `undefined` until the first bootstrap
+   * of this configuration.
+   */
+  private campaignCodes: string | undefined = undefined
   /** Bumped by every init(). A bootstrap started under an older configuration
    * (another key or environment) is still in flight after a re-init; its answer
    * belongs to that configuration and must not land in this one. */
@@ -201,6 +214,7 @@ class VioFacade {
     this.bootstrapRefreshFailedAt = 0
     this.seenChannels.clear()
     this.bootstrapFailedAt = 0
+    this.campaignCodes = undefined
     this.generation++
     // The surface (its privacy mode) is the key's: forgotten, and asked again
     // for the new one right away — so it is known by the time anything is
@@ -218,7 +232,8 @@ class VioFacade {
     // The page's discount code: `discountCode` of this config, else the
     // `?vio_discount=` of the URL (kept for the tab). The carts the page opens
     // with are asked for it now, without waiting; a page without a code asks
-    // nothing and does not even create its cart manager here.
+    // nothing and does not even create its cart manager here. (The code a
+    // CAMPAIGN gives a sponsor comes with the bootstrap: `adoptBootstrap`.)
     try {
       const remembered = syncDiscountParam()
       if (Configuration.get().discountCode ?? remembered) this.cart.ensureDiscountCodes()
@@ -319,7 +334,11 @@ class VioFacade {
     const scope = this.cartScope
     let manager = this.cartManagers.get(scope)
     if (!manager) {
-      const created = new CartManager(scope)
+      // The codes the page's campaigns give, from this facade's bootstrap — for the page's own connection only.
+      const created: CartManager = new CartManager(scope, {
+        campaignDiscount: (sponsorId) => this.campaignDiscountOf(created, sponsorId),
+        campaignDiscountNow: (sponsorId, campaignId) => this.campaignDiscountNowOf(created, sponsorId, campaignId),
+      })
       // Only the current connection's events reach the page's listeners.
       for (const type of ['change', 'error']) {
         created.addEventListener(type, (e) => {
@@ -329,8 +348,68 @@ class VioFacade {
       }
       this.cartManagers.set(scope, created)
       manager = created
+      // Carts opened after the bootstrap arrived: given the campaigns' codes as the others were.
+      // (Not after a re-init: the new configuration's bootstrap does it when it arrives.)
+      if (this.cachedBootstrap) {
+        void Promise.resolve().then(() => {
+          if (this.cachedBootstrap) this.settleCampaignCodes()
+        })
+      }
     }
     return manager
+  }
+
+  /**
+   * The code the page's campaign gives a sponsor's cart, and that campaign
+   * (`campaignDiscountFor`: the first of the page's campaigns — its elements'
+   * `vio-campaign` / `data-vio-campaign`, then `Vio.init({ campaignId })` —
+   * that is active and has the sponsor, else the default campaign when it
+   * has the sponsor). Nothing for a manager of another connection, before the
+   * bootstrap, or when no campaign gives any code (the page is not even read).
+   */
+  private campaignDiscountOf(manager: CartManager, sponsorId: number): CampaignDiscount | undefined {
+    try {
+      if (!this.campaignCodes || this.cartManagers.get(this.cartScope) !== manager) return undefined
+      return campaignDiscountFor(this.cachedBootstrap, sponsorId, this.pageCampaignCandidates(documentCampaignHints()))
+    } catch {
+      return undefined
+    }
+  }
+
+  /** What `campaignId` gives the sponsor now (`campaignDiscountNow`); `undefined` — cannot tell — before the bootstrap or for another connection's manager. */
+  private campaignDiscountNowOf(manager: CartManager, sponsorId: number, campaignId: number): string | null | undefined {
+    try {
+      if (!this.cachedBootstrap || this.cartManagers.get(this.cartScope) !== manager) return undefined
+      return campaignDiscountNow(this.cachedBootstrap, campaignId, sponsorId)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The campaigns' codes on the carts of the page's connection: each cart is
+   * given the one its page campaign gives its sponsor, and loses one its
+   * campaign no longer gives (`CartManager.ensureDiscountCodes`) — when the
+   * bootstrap held now has codes, or a cart carries a campaign's. Nothing at
+   * all (not even a cart manager) otherwise.
+   */
+  private settleCampaignCodes(): void {
+    try {
+      if (this.campaignCodes) {
+        this.cart.ensureDiscountCodes()
+        return
+      }
+      const manager = this.cartManagers.get(this.cartScope)
+      if (!manager) return
+      for (const cart of manager.getAllCarts().values()) {
+        if (cart.discountCampaignId !== undefined) {
+          manager.ensureDiscountCodes()
+          return
+        }
+      }
+    } catch {
+      /* the discount never breaks the page */
+    }
   }
 
   /**
@@ -509,6 +588,13 @@ class VioFacade {
       }
     } catch {
       /* the memory of channels is a convenience */
+    }
+    // The campaigns' discount codes (per campaign and sponsor): the carts follow
+    // them when this bootstrap is the configuration's first, or changed them.
+    const codes = bootstrapDiscountCodes(res)
+    if (codes !== this.campaignCodes) {
+      this.campaignCodes = codes
+      this.settleCampaignCodes()
     }
     this.hookVisibility()
   }

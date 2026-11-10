@@ -150,6 +150,45 @@ describe('where the field shows', () => {
     // Marked for button tracking, like every button of the cart.
     expect(applyButton(el).getAttribute('data-vio-cta')).toBe('discount_apply')
   })
+
+  describe('a code the CAMPAIGN gives (the bootstrap, set in the dashboard per sponsor)', () => {
+    const facade = Vio as unknown as { cachedBootstrap: unknown }
+    let kept: unknown
+    beforeEach(() => {
+      kept = facade.cachedBootstrap
+      facade.cachedBootstrap = {
+        campaign: { id: 5, name: 'Jul' },
+        campaigns: [
+          {
+            id: 5,
+            name: 'Jul',
+            status: 'active',
+            primarySponsor: { id: SPONSOR, name: 'Faves', discountCode: 'gratis_face_mask', commerce: { apiKey: 'k', channelId: '1' } },
+          },
+        ],
+      }
+    })
+    afterEach(() => {
+      facade.cachedBootstrap = kept
+    })
+
+    it('does not turn the field on: on the cart, only its «Rabatt» row and «Gratis» show — as the page\'s own code does', async () => {
+      page({ campaignId: 5 })
+      cartCode = 'gratis_face_mask'
+      const el = await cart([CREAM, MASK])
+      expect(field(el)).toBeNull()
+      expect(text(el.shadowRoot!.querySelector('.discount-row'))).toBe('Rabatt (gratis_face_mask) −52 Kr')
+      expect(el.shadowRoot!.textContent).toContain('Gratis')
+    })
+
+    it('with discountField: true the field shows it once taken — the code and «Fjern»', async () => {
+      page({ campaignId: 5, discountField: true })
+      cartCode = 'gratis_face_mask'
+      const el = await cart([CREAM, MASK])
+      expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('gratis_face_mask')
+      expect(text(removeButton(el))).toBe('Fjern')
+    })
+  })
 })
 
 describe('typing a code', () => {

@@ -17,34 +17,47 @@ and *when*, and links there.
 ## Unreleased
 
 ### Added
-- **Discount codes: the brand's own code on the cart, and the gift it brings.** A page names its campaign's
-  code — `Vio.init({ discountCode: 'gratis_face_mask' })`, or `?vio_discount=CODE` in its URL — and the SDK puts
-  it on the cart by itself, without the shopper typing anything: once the cart has lines, on every new cart, on
-  the cart the page opens with, and before a checkout or a payment is built on it (`Discounts.ApplyDiscount`,
-  one code per cart). When the code gives a product away (`gifts`), one unit goes in the cart as soon as there
-  is something to pay for — «Gratis», one unit, removable; it goes out again with the last line to pay for, or
-  with its code. A code that is not taken (expired, unknown, used up) is asked once per cart and says nothing:
-  the article keeps selling at its prices. **Only for brands that are paid with Vipps.** See
+- **Discount codes: the brand's own code on the cart, and the gift it brings.** A code is applied — and
+  validated — **before paying**, in the cart or the checkout: the shopper types it in the «Rabattkode» field
+  and sees what came of it there and then (the check at a payment's start is only a safety net). A page can
+  also name its campaign's code — `Vio.init({ discountCode: 'gratis_face_mask' })`, or `?vio_discount=CODE` in
+  its URL — and the SDK puts it on the cart by itself, without the shopper typing anything: once the cart has
+  lines, on every new cart, on the cart the page opens with, and before a checkout or a payment is built on it
+  (`Discounts.ApplyDiscount`, one code per cart). When the code gives a product away (`gifts`), one unit goes
+  in the cart as soon as there is something to pay for — «Gratis», one unit, removable; it goes out again with
+  the last line to pay for, or with its code. **Only for brands that are paid with Vipps.** See
   [README → Discount codes](README.md#discount-codes--the-brands-code-and-the-gift-it-brings-unreleased).
+- **Who is told what came of a code depends on who asked for it.** A code the shopper **typed** always has its
+  answer said — taken, or not and why; never in silence. The **page's own** code (`discountCode`,
+  `?vio_discount=`), which nobody typed, shows only once it is taken: not taken (expired, unknown, used up), it
+  is asked once per cart and nothing is said — not even that it was being checked — and the article keeps
+  selling at its prices.
 - **What a code takes off shows where the money is said.** A line the code takes something off has its list
   price struck through and then what it costs («Gratis» for a gift; a percentage on a product or on the whole
   cart shows its net price); a «Rabatt (CODE)» row sits between «Sum» (list prices) and «Totalt» (what is paid)
   in the cart, the checkout's summary and the receipt; «Betal … med Vipps» and the detail's «Betaler hele
   handlekurven · … · total» are what is paid.
-- **An optional «Rabattkode» field** — `Vio.init({ discountField: true })`, off by default — in `<vio-cart>` and
-  in the summary of `<vio-checkout>`: «Bruk», «Sjekker…» while Commerce asks the brand's shop (one to three
-  seconds; the rest of the cart does not wait, a second tap sends nothing), the applied code with «Fjern», and a
-  sentence per reason when a code is refused (`COUPON_NOT_FOUND`, `COUPON_EXPIRED`, `COUPON_USAGE_LIMIT`,
-  `COUPON_NOT_SUPPORTED`, `COUPON_MIN_AMOUNT`, `COUPON_OTHER_APPLIED`, `COUPON_UNAVAILABLE`).
+- **The «Rabattkode» field**, in `<vio-cart>` (over the totals and the buttons that pay) and in the summary of
+  `<vio-checkout>`: «Bruk», «Sjekker…» while Commerce asks the brand's shop (one to three seconds; the rest of
+  the cart does not wait, a second tap sends nothing), the applied code with «Fjern», and a sentence per reason
+  when a code is refused (`COUPON_NOT_FOUND`, `COUPON_EXPIRED`, `COUPON_USAGE_LIMIT`, `COUPON_NOT_SUPPORTED`,
+  `COUPON_MIN_AMOUNT`, `COUPON_OTHER_APPLIED`, `COUPON_UNAVAILABLE`) — the cart and its total as they were. It
+  shows **wherever discount codes are on for the page**: a page that names a `discountCode` (or was opened with
+  `?vio_discount=`), or `Vio.init({ discountField: true })` on a page with no code of its own.
+  `discountField: false` hides it; a page that says nothing about codes has none.
 - **From code**: `Vio.applyDiscountCode(code, sponsorId?)` and `Vio.removeDiscountCode(sponsorId?)` (never throw;
   the answer says `applied` / `pending` / `refused` with Commerce's `reason` / `failed`, and carries everything
-  Commerce answered per cart), `Vio.cart.discountCodeForSponsor()`, `discountBusy()`, `discountForSponsor()`,
+  Commerce answered per cart), `Vio.cart.discountCodeForSponsor()`, `discountBusy()` (with `asked`: someone
+  asked for the code by name, as opposed to the page's own going on by itself), `discountForSponsor()`,
   `totalForSponsor()`; a cart line keeps its list `unitPrice` and its `discount`, and `lineNetTotal`,
   `netUnitPrice`, `isGiftLine`, `cartDiscountTotal`, `cartNetTotal` are exported for a host that draws its own cart.
 - A payment Commerce refuses because of the cart's code (it is checked again right before charging:
   `GIFT_MAX_ONE_UNIT`, `CHECKOUT_AMOUNT_ZERO`, `DISCOUNT_UNAVAILABLE`, `COUPON_*`) says why, in the checkout, on
-  the cart or on the product page; a code that is no good any more comes off the cart with its gift, and the cart
-  is read again, so the next attempt pays.
+  the cart or on the product page — whoever put the code on the cart; a code that is no good any more comes off
+  the cart with its gift, and the cart is read again, so the next attempt pays.
+- A tap on a Vipps button while a typed code is still being checked waits for the answer; when the code is not
+  taken, **no payment is started** (the page would leave for Vipps with the answer unread): the reason is said,
+  and the next tap pays for the cart as it is.
 - `cta_click`: `discount_apply` and `discount_remove` (cart and checkout). New `::part` names: `cart-discount`,
   `cart-notice`, `cart-gift-note`, `summary-discount`, `summary-gift-note`, `confirm-discount`, `line-list-price`,
   `line-net-price`, `discount-field`, `discount-input`, `discount-apply`, `discount-code`, `discount-remove`,
@@ -96,7 +109,9 @@ and *when*, and links there.
   `price.discount` per line, `discount_code` on `GetCart` and `gifts` on `ApplyDiscount` (the SDK falls back on
   a gateway that predates `discount_code` or `gifts`, once per page load — a code is then applied, but a gift is
   not added); and the code must exist in the brand's shop. For a campaign with a gift:
-  `Vio.init({ …, discountCode: '<the code>' })` is all a page needs.
+  `Vio.init({ …, discountCode: '<the code>' })` is all a page needs — the «Rabattkode» field shows with it
+  (the code and «Fjern» once it is taken); add `discountField: false` for a page that wants the code applied
+  and no field.
 - A page with `discountCode` asks Commerce for the code once per cart (one `ApplyDiscount`, plus one `AddItem`
   for a gift and one `GetCart`); «Kjøp nå med Vipps» waits up to 1.2 s for it before leaving for Vipps, and
   leaves without the gift when the brand's shop has not answered by then.

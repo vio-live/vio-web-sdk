@@ -85,6 +85,20 @@ export interface CartLineItem {
   availableShippings?: unknown[]
 }
 
+/**
+ * A gift the cart's discount code brings (`ApplyDiscount` → `gifts`): one unit
+ * of that product — and variant, when the code names one — free. The SDK
+ * puts it in the cart when the cart has something to pay for.
+ */
+export interface CartGift {
+  productId: number
+  variantId?: number
+  /** The SDK put it in this cart: it is not put in twice, and it goes out again with the code or when nothing else is left. */
+  added?: boolean
+  /** Not to be put in this cart (again): the shopper took it out, or it could not be added. */
+  declined?: boolean
+}
+
 export interface SponsorCartState {
   sponsorId: number
   sponsorName?: string
@@ -112,4 +126,12 @@ export interface SponsorCartState {
    * backend cart is given the page's code again.
    */
   discountCode?: string
+  /** The gifts that code brings, and what became of each in this cart. Goes with `discountCode`. */
+  gifts?: CartGift[]
+  /**
+   * A code Commerce refused for this cart for a reason that does not change
+   * with what the cart holds (expired, unknown, used up, not for here): the
+   * page's own code is not asked for again on this cart.
+   */
+  discountRefusal?: { code: string; reason: string }
 }

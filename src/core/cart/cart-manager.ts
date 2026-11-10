@@ -20,7 +20,7 @@ import {
   primaryImageUrl,
   type Product,
 } from '../types.js'
-import type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
+import type { CartGift, CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './types.js'
 import { currentOriginPage, currentPrivacyMode, lineOriginWire } from './origin-wire.js'
 import { componentKindOf } from '../slots.js'
 import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
@@ -40,15 +40,28 @@ import {
   type CartKeyContext,
   type CartQueryOptions,
 } from '../api/cart-queries.js'
+import { Configuration } from '../configuration.js'
 import {
   commonDiscountReason,
+  discountGiftsOf,
   discountReasonOf,
+  isFinalCouponReason,
+  isGiftOf,
   normalizeDiscountCode,
+  rememberedDiscountCode,
   summarizeDiscountOutcomes,
   type CartDiscountOutcome,
   type DiscountCodeRemoval,
   type DiscountCodeResult,
+  type DiscountReason,
 } from './discount-code.js'
+
+/**
+ * How many times in a row the page's code is asked for on the same cart with
+ * the same lines when Commerce could not say (the call failed, or the
+ * brand's shop could not be asked). A refusal is asked once.
+ */
+const DISCOUNT_ASK_ATTEMPTS = 2
 
 /** Where the carts are kept: one entry per connection (see `cartStorageKey`). */
 export const CART_STORAGE_PREFIX = 'vio.cart.v1'
@@ -257,8 +270,16 @@ export class CartManager extends EventTarget {
    * load; `undefined` when nothing was said.
    */
   private askedDiscountCode: string | null | undefined = undefined
-  /** What Commerce last said about a code on a sponsor's backend cart. */
-  private discountAnswers = new Map<number, { cartId: string; code: string; outcome: CartDiscountOutcome }>()
+  /**
+   * What Commerce last said about a code on a sponsor's backend cart, the
+   * lines the cart had then, and how many times in a row it was asked that
+   * way: the page's own code is not asked for again on a cart that already
+   * answered for it (`shouldAskDiscount`).
+   */
+  private discountAnswers = new Map<
+    number,
+    { cartId: string; code: string; outcome: CartDiscountOutcome; lines: string; attempts: number }
+  >()
   /**
    * The discount call in flight per sponsor (an ApplyDiscount or a
    * DeleteAppliedDiscount): one at a time, and what `discountBusy` reads.
@@ -267,6 +288,15 @@ export class CartManager extends EventTarget {
     number,
     { kind: 'applying' | 'removing'; cartId: string; code: string; promise: Promise<unknown> }
   >()
+  /** `applyDiscountCode` calls in flight per sponsor — the shopper's own code: a payment waits for its answer. */
+  private typedAsks = new Map<number, number>()
+  /**
+   * Sponsors whose gifts are not put in the cart for now: a payment is being
+   * started on the cart as it is (`settleDiscountCode` ran out of time).
+   */
+  private giftHolds = new Set<number>()
+  /** The gifts of a sponsor's cart being settled (`reconcileGifts`): one at a time. */
+  private giftWork = new Map<number, Promise<boolean>>()
 
   /** The storage key of this connection's carts. */
   private readonly storageKey: string
@@ -552,6 +582,8 @@ export class CartManager extends EventTarget {
     }
     const res = last as { line_items?: unknown } | undefined
     if (res && Array.isArray(res.line_items)) this.applyBackendCart(sponsorId, res, seq)
+    // The new backend cart has no code: the page's goes on it again (not waited for).
+    this.checkDiscountCode(sponsorId)
   }
 
   /**
@@ -697,8 +729,17 @@ export class CartManager extends EventTarget {
     // an answer that does not name the field says nothing about it.
     if (backendCart.discount_code !== undefined) {
       const serverCode = normalizeDiscountCode(backendCart.discount_code)
-      if (serverCode) cart.discountCode = serverCode
-      else delete cart.discountCode
+      if (serverCode) {
+        // Another code than the one known here: its gifts are not that one's.
+        if (cart.discountCode && cart.discountCode !== serverCode) delete cart.gifts
+        cart.discountCode = serverCode
+      } else if (cart.discountCode || cart.gifts) {
+        delete cart.discountCode
+        // The gifts the SDK put in for the code would now be paid for: they
+        // go out once this answer's lines are in.
+        if (cart.gifts?.some((g) => g.added)) void Promise.resolve().then(() => this.removeAddedGifts(sponsorId))
+        else delete cart.gifts
+      }
     }
 
     // Lines the shopper removed while their AddItem was still in flight: they
@@ -938,6 +979,8 @@ export class CartManager extends EventTarget {
           if (resCart && Array.isArray(resCart.line_items)) {
             this.applyBackendCart(opts.sponsorId, resCart, seq, settling)
           }
+          // The cart has lines now: the page's discount code, if it has one (not waited for).
+          this.checkDiscountCode(opts.sponsorId)
         }
         // No cartId (no commerce key): the cart stays local-only; checkout is
         // blocked upstream, so no ghost-charge risk.
@@ -1020,6 +1063,9 @@ export class CartManager extends EventTarget {
     const addedOrigin = increase ? latestOrigin(item) : undefined
     if (target <= 0) {
       cart.items = cart.items.filter((i) => i !== item)
+      // A gift of the discount code the shopper takes out is not put back in this cart.
+      const gift = cart.gifts?.find((g) => isGiftOf(g, item))
+      if (gift) gift.declined = true
       // Choke point de la baja: sale acá y no en la UI para que también
       // cuente cuando el host llama removeItem() por API.
       if (this.active && typeof document !== 'undefined') {
@@ -1048,6 +1094,9 @@ export class CartManager extends EventTarget {
     } else {
       item.quantity = target
     }
+    // What is left is only the gifts the SDK put in for the discount code:
+    // they go too — a cart of gifts alone cannot be paid for.
+    if (target <= 0) this.dropOrphanGifts(sponsorId)
     if (cart.items.length === 0) this.cartsBySponsor.delete(sponsorId)
     this.persist()
     this.emit()
@@ -1156,6 +1205,8 @@ export class CartManager extends EventTarget {
               this.reconcileLineFromResponse(sponsorId, cartItemId, resCart, settling)
             }
           }
+          // Other quantities: a code that asked for more in the cart may be taken now (not waited for).
+          if (next === undefined) this.checkDiscountCode(sponsorId)
         } catch (err) {
           // Rejected: whatever was queued is moot — the server decides — with
           // one exception. A queued REMOVAL already happened for the shopper
@@ -1266,6 +1317,8 @@ export class CartManager extends EventTarget {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         this.updateFromBackendCart(sponsorId, backendCart as any, { authoritative: true })
         this.emitCartUpdated(sponsorId, 'server')
+        // The cart as the server has it carries no code and the page has one: asked for (not waited for).
+        this.checkDiscountCode(sponsorId)
       }
       return this.cartsBySponsor.get(sponsorId)
     }
@@ -1348,8 +1401,8 @@ export class CartManager extends EventTarget {
    * brand's shop about the code, so the answer can take a few seconds:
    * `discountBusy()` says so meanwhile (with `change`), nothing else in the
    * cart waits for it, and a second call for the same cart and code shares
-   * the first. A cart that took the code has its lines read again, so each
-   * says what the code takes off it.
+   * the first. A cart that took the code is given the gifts the code brings
+   * and has its lines read again, so each says what the code takes off it.
    *
    * Never throws: the answer says what happened (`DiscountCodeResult`, with
    * everything Commerce answered per cart), and a cart that did not take the
@@ -1361,10 +1414,21 @@ export class CartManager extends EventTarget {
     const before = this.askedDiscountCode
     // Wanted from now on: a backend cart born while Commerce answers gets it too.
     this.askedDiscountCode = normalized
+    const targets = this.discountTargets(sponsorId)
+    // The shopper's own code: a payment started meanwhile waits for the answer.
+    for (const id of targets) this.typedAsks.set(id, (this.typedAsks.get(id) ?? 0) + 1)
     const carts: CartDiscountOutcome[] = []
-    for (const id of this.discountTargets(sponsorId)) {
-      const outcome = await this.assertDiscountCode(id, normalized)
-      if (outcome) carts.push(outcome)
+    try {
+      for (const id of targets) {
+        const outcome = await this.assertDiscountCode(id, normalized)
+        if (outcome) carts.push(outcome)
+      }
+    } finally {
+      for (const id of targets) {
+        const left = (this.typedAsks.get(id) ?? 1) - 1
+        if (left > 0) this.typedAsks.set(id, left)
+        else this.typedAsks.delete(id)
+      }
     }
     const status = summarizeDiscountOutcomes(carts)
     // A code no cart took is not kept for the carts to come.
@@ -1378,8 +1442,9 @@ export class CartManager extends EventTarget {
   /**
    * Take the discount code off the carts (every sponsor's, or only
    * `sponsorId`'s) and give none to the carts to come for the rest of this
-   * page load — the page's configured code included. A cart it came off has
-   * its lines read again. Never throws.
+   * page load — the page's configured code included. A cart it came off
+   * loses the gifts the SDK put in it for the code, and has its lines read
+   * again. Never throws.
    */
   async removeDiscountCode(sponsorId?: number): Promise<DiscountCodeRemoval> {
     this.askedDiscountCode = null
@@ -1398,13 +1463,7 @@ export class CartManager extends EventTarget {
           carts.push({ sponsorId: id, code, status: 'refused', ...(answer.message ? { message: answer.message } : {}), answer })
           continue
         }
-        this.discountAnswers.delete(id)
-        const cart = this.cartsBySponsor.get(id)
-        if (cart && cart.cartId === live.cartId && cart.discountCode === code) {
-          delete cart.discountCode
-          this.persist()
-          this.emit()
-        }
+        this.forgetDiscount(id, live.cartId, code)
         carts.push({ sponsorId: id, code, status: 'removed', answer })
         // The lines no longer carry what the code took off them.
         await this.refreshFromServer(id)
@@ -1435,9 +1494,128 @@ export class CartManager extends EventTarget {
     return undefined
   }
 
-  /** The code this page wants on its carts: the one asked for from code, if any. */
+  /**
+   * The page's discount code — and the gifts it brings — on a sponsor's
+   * backend cart before something is built on it (a checkout, a payment):
+   * whatever discount call is in flight answers first, the code is asked for
+   * when the cart has lines, carries none yet and Commerce has not already
+   * answered for it (`shouldAskDiscount`), and its gifts are put in the cart.
+   * Resolves once the cart is as discounted as it is going to be.
+   *
+   * `budgetMs`: how long the page's OWN code may hold a payment back —
+   * Commerce asks the brand's shop, which takes seconds. Past it this
+   * resolves anyway and the cart is paid for as it is: the gifts are no
+   * longer put in it (`releaseGiftHold` when the payment did not start after
+   * all). A code the shopper typed is always waited for.
+   *
+   * Never throws, and asks nothing on a page without a code: when Commerce
+   * does not take it, the purchase goes on without it.
+   */
+  async settleDiscountCode(sponsorId: number, opts: { budgetMs?: number } = {}): Promise<void> {
+    // A new attempt to pay: whatever an earlier one held back may go in now.
+    this.giftHolds.delete(sponsorId)
+    const work = this.settleDiscount(sponsorId, false)
+    const budget = opts.budgetMs
+    if (!(typeof budget === 'number' && budget >= 0) || this.typedAsks.has(sponsorId)) return work
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const outOfTime = new Promise<'late'>((resolve) => {
+      timer = setTimeout(() => resolve('late'), budget)
+    })
+    const first = await Promise.race([work.then(() => 'done' as const), outOfTime])
+    clearTimeout(timer)
+    if (first === 'late') {
+      // The payment is built on the cart as it is now: nothing more goes in it.
+      this.giftHolds.add(sponsorId)
+      if (typeof console !== 'undefined') {
+        console.warn(
+          `[CartManager] the discount code of sponsor ${sponsorId}'s cart was not settled within ${budget}ms — the purchase goes on as the cart is`,
+        )
+      }
+    }
+  }
+
+  /**
+   * The payment `settleDiscountCode` let go ahead did not start after all:
+   * the gifts it held back may go in the cart now. No-op when nothing was held.
+   */
+  releaseGiftHold(sponsorId: number): void {
+    if (!this.giftHolds.delete(sponsorId)) return
+    this.checkDiscountCode(sponsorId)
+  }
+
+  /**
+   * Commerce would not start a payment because of the cart's discount (the
+   * code is checked again right before charging; `reason` is the word its
+   * error names — `discountReasonOf`). A code that is no good any more —
+   * over, unknown, used up, not for here, or asking for more than the cart
+   * holds — comes off the cart with the gifts the SDK put in for it, so the
+   * next attempt pays for the cart without it; and the cart is read again
+   * from the server whatever the reason. Never throws.
+   */
+  async discountRefusedAtPayment(sponsorId: number, reason: DiscountReason): Promise<void> {
+    try {
+      const cart = this.cartsBySponsor.get(sponsorId)
+      const code = cart?.discountCode
+      const dropsTheCode = isFinalCouponReason(reason) || reason === 'COUPON_MIN_AMOUNT'
+      if (cart?.cartId && code && dropsTheCode) {
+        const cartId = cart.cartId
+        if (isFinalCouponReason(reason)) cart.discountRefusal = { code, reason }
+        try {
+          const live = await this.liveCart(sponsorId)
+          if (live && live.cartId === cartId) {
+            await this.discountCall(sponsorId, { kind: 'removing', cartId, code }, () =>
+              gqlDeleteAppliedDiscount(cartId, code, live.opts),
+            )
+          }
+          // Off the backend cart (or never on it any more): forgotten here, with the gifts it brought.
+          this.forgetDiscount(sponsorId, cartId, code, { keepAnswer: true })
+        } catch (err) {
+          // Still on the backend cart: kept here too, so the next refusal tries again.
+          if (typeof console !== 'undefined') {
+            console.warn(`[CartManager] the refused discount code could not be taken off the cart of sponsor ${sponsorId}`, err)
+          }
+        }
+        // What Commerce said, as if it had answered an ApplyDiscount for the
+        // cart as it is now (its gift gone): the page's own code is not asked
+        // for again while that holds (`shouldAskDiscount`).
+        this.discountAnswers.set(sponsorId, {
+          cartId,
+          code,
+          outcome: { sponsorId, status: 'refused', reason, message: reason },
+          lines: this.discountLines(sponsorId),
+          attempts: 1,
+        })
+      }
+      await this.refreshFromServer(sponsorId)
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[CartManager] the cart of sponsor ${sponsorId} could not be put right after a refused discount`, err)
+      }
+    }
+  }
+
+  /**
+   * The page's code on the carts this page opened with — asked for, without
+   * waiting, on every backend cart with lines that carries none. `Vio.init`
+   * calls it when the page has a code.
+   */
+  ensureDiscountCodes(): void {
+    for (const id of [...this.cartsBySponsor.keys()]) this.checkDiscountCode(id)
+  }
+
+  /**
+   * The code this page wants on its carts: the one asked for from code on
+   * this page load (`null`: none at all), else the page's own —
+   * `Vio.init({ discountCode })`, else the `?vio_discount=` the tab remembers.
+   */
   private wantedDiscountCode(): string | undefined {
-    return this.askedDiscountCode ?? undefined
+    if (this.askedDiscountCode !== undefined) return this.askedDiscountCode ?? undefined
+    try {
+      const configured = Configuration.isInitialized ? Configuration.get().discountCode : undefined
+      return configured ?? rememberedDiscountCode()
+    } catch {
+      return undefined
+    }
   }
 
   /** A discount code is in play for this sponsor's cart: the page wants one, or the cart carries one. */
@@ -1450,21 +1628,110 @@ export class CartManager extends EventTarget {
   }
 
   /**
-   * `code` on a sponsor's backend cart — asked once its own mutations have
-   * settled (a cart being created has its id by then) — and its lines read
-   * again when the code is new to it. `undefined` when the sponsor has no
-   * backend cart. Never throws.
+   * `settleDiscountCode` for whoever does not wait for it: after the cart's
+   * lines changed on the server (an add, a quantity, a removal — a code that
+   * asks for a minimum may be taken now, a gift may be due), after the cart
+   * was read from the server, and when the page opens on a cart. Nothing at
+   * all on a page without a code whose cart carries none.
    */
-  private async assertDiscountCode(sponsorId: number, code: string): Promise<CartDiscountOutcome | undefined> {
+  private checkDiscountCode(sponsorId: number): void {
+    if (!this.wantedDiscountCode() && !this.cartsBySponsor.get(sponsorId)?.gifts?.length) return
+    void this.settleDiscount(sponsorId, true)
+  }
+
+  /**
+   * What `settleDiscountCode` and `checkDiscountCode` do. `refresh`: read the
+   * lines again when the code or a gift went on the cart (a caller that
+   * reads them itself right after says no).
+   */
+  private async settleDiscount(sponsorId: number, refresh: boolean): Promise<void> {
+    try {
+      for (;;) {
+        const inFlight = this.discountCalls.get(sponsorId)?.promise ?? this.giftWork.get(sponsorId)
+        if (!inFlight) break
+        await inFlight.then(
+          () => undefined,
+          () => undefined,
+        )
+      }
+      const cart = this.cartsBySponsor.get(sponsorId)
+      // Nothing to discount in an empty cart: a code that asks for a minimum would be refused there.
+      if (!cart || cart.items.length === 0) return
+      if (cart.discountCode) {
+        // One code per cart, and it has one: only a gift of it may be due.
+        if (!cart.gifts?.length) return
+        await this.waitForCartMutations(sponsorId)
+        const gifted = await this.reconcileGifts(sponsorId)
+        if (gifted && refresh) await this.refreshFromServer(sponsorId)
+        return
+      }
+      const code = this.wantedDiscountCode()
+      if (!code) return
+      await this.waitForCartMutations(sponsorId)
+      const now = this.cartsBySponsor.get(sponsorId)
+      if (!now?.cartId || now.items.length === 0 || now.discountCode) return
+      if (!this.shouldAskDiscount(sponsorId, now.cartId, code)) return
+      await this.assertDiscountCode(sponsorId, code, refresh)
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[CartManager] the page's discount code was not settled for sponsor ${sponsorId}`, err)
+      }
+    }
+  }
+
+  /**
+   * Whether the page's code is asked for (again) on this backend cart: yes
+   * when Commerce never answered for this cart and code. After an answer:
+   * never when it took it (if the code is gone since, someone took it off);
+   * never after a refusal that does not depend on the cart (remembered with
+   * the cart: `discountRefusal`); when the cart's lines changed since a
+   * refusal for the amount (`COUPON_MIN_AMOUNT`); when it could not say (the
+   * call failed, the brand's shop could not be asked) —
+   * `DISCOUNT_ASK_ATTEMPTS` times with the same lines; never after any other
+   * refusal.
+   */
+  private shouldAskDiscount(sponsorId: number, cartId: string, code: string): boolean {
+    if (this.cartsBySponsor.get(sponsorId)?.discountRefusal?.code === code) return false
+    const known = this.discountAnswers.get(sponsorId)
+    if (!known || known.cartId !== cartId || known.code !== code) return true
+    const { outcome } = known
+    if (outcome.status === 'applied') return false
+    const sameLines = known.lines === this.discountLines(sponsorId)
+    const couldNotSay =
+      outcome.status === 'failed' || outcome.reason === 'COUPON_UNAVAILABLE' || outcome.reason === 'DISCOUNT_UNAVAILABLE'
+    if (couldNotSay) return !sameLines || known.attempts < DISCOUNT_ASK_ATTEMPTS
+    if (outcome.reason === 'COUPON_MIN_AMOUNT') return !sameLines
+    return false
+  }
+
+  /** The lines of a sponsor's cart as a code is asked about them: products, variants and quantities. */
+  private discountLines(sponsorId: number): string {
+    return (this.cartsBySponsor.get(sponsorId)?.items ?? [])
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}`)
+      .sort()
+      .join('|')
+  }
+
+  /**
+   * `code` on a sponsor's backend cart — asked once its own mutations have
+   * settled (a cart being created has its id by then) — with the gifts it
+   * brings, and its lines read again when the code or a gift is new to it
+   * (unless `refresh` is false). `undefined` when the sponsor has no backend
+   * cart. Never throws.
+   */
+  private async assertDiscountCode(sponsorId: number, code: string, refresh = true): Promise<CartDiscountOutcome | undefined> {
     try {
       await this.waitForCartMutations(sponsorId)
       const live = await this.liveCart(sponsorId)
       if (!live) return undefined
       const before = this.cartsBySponsor.get(sponsorId)?.discountCode
       const outcome = await this.askDiscount(sponsorId, live.cartId, code, live.opts)
-      const cart = this.cartsBySponsor.get(sponsorId)
-      if (outcome.status === 'applied' && before !== code && cart?.cartId === live.cartId && cart.items.length > 0) {
-        await this.refreshFromServer(sponsorId)
+      if (outcome.status === 'applied') {
+        const gifted = await this.reconcileGifts(sponsorId)
+        const cart = this.cartsBySponsor.get(sponsorId)
+        if (refresh && (before !== code || gifted) && cart?.cartId === live.cartId && cart.items.length > 0) {
+          await this.refreshFromServer(sponsorId)
+        }
       }
       return outcome
     } catch (err) {
@@ -1480,7 +1747,7 @@ export class CartManager extends EventTarget {
    * the same cart and code is shared — a double tap is one request — and any
    * other discount call of that sponsor goes first. Resolves with the
    * outcome, never rejects; a cart that took the code remembers it
-   * (`discountCode`).
+   * (`discountCode`) and the gifts it brings (`gifts`).
    */
   private askDiscount(
     sponsorId: number,
@@ -1510,16 +1777,32 @@ export class CartManager extends EventTarget {
       } catch (err) {
         outcome = { sponsorId, status: 'failed', message: err instanceof Error ? err.message : String(err) }
       }
-      this.discountAnswers.set(sponsorId, { cartId, code, outcome })
+      const lines = this.discountLines(sponsorId)
+      const known = this.discountAnswers.get(sponsorId)
+      const again = !!known && known.cartId === cartId && known.code === code && known.lines === lines
+      this.discountAnswers.set(sponsorId, { cartId, code, outcome, lines, attempts: (again ? known.attempts : 0) + 1 })
       const cart = this.cartsBySponsor.get(sponsorId)
-      if (outcome.status === 'applied') {
-        // Still the same backend cart (it may have moved while Commerce answered).
-        if (cart && cart.cartId === cartId && cart.discountCode !== code) {
+      // Still the same backend cart (it may have moved while Commerce answered).
+      if (cart && cart.cartId === cartId) {
+        if (outcome.status === 'applied') {
+          // What became of a gift in this cart stays known when its code is taken again.
+          const previous = cart.gifts ?? []
+          const gifts = discountGiftsOf(outcome.answer).map((gift): CartGift => {
+            const was = previous.find((g) => g.productId === gift.productId && g.variantId === gift.variantId)
+            return { ...gift, ...(was?.added ? { added: true } : {}), ...(was?.declined ? { declined: true } : {}) }
+          })
           cart.discountCode = code
+          if (gifts.length > 0) cart.gifts = gifts
+          else delete cart.gifts
+          delete cart.discountRefusal
+          this.persist()
+        } else if (outcome.status === 'refused' && isFinalCouponReason(outcome.reason)) {
+          cart.discountRefusal = { code, reason: outcome.reason! }
           this.persist()
         }
-      } else if (typeof console !== 'undefined') {
-        // The purchase goes on without the discount: said here; the field that asked says it to the shopper.
+      }
+      if (outcome.status !== 'applied' && typeof console !== 'undefined') {
+        // The purchase goes on without the discount: said here; a field that asked says it to the shopper.
         console.warn(
           `[CartManager] discount code "${code}" not applied to the cart of sponsor ${sponsorId} (${outcome.status})`,
           outcome.message ?? '',
@@ -1557,6 +1840,156 @@ export class CartManager extends EventTarget {
       if (this.discountCalls.get(sponsorId) === entry) this.discountCalls.delete(sponsorId)
       this.emit()
     }
+  }
+
+  /**
+   * The code is off the backend cart: forgotten here too, with what Commerce
+   * said about it (unless `keepAnswer`: a refusal to remember) and the gifts
+   * the SDK put in the cart for it.
+   */
+  private forgetDiscount(sponsorId: number, cartId: string, code: string, opts: { keepAnswer?: boolean } = {}): void {
+    if (!opts.keepAnswer) this.discountAnswers.delete(sponsorId)
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart || cart.cartId !== cartId || cart.discountCode !== code) return
+    delete cart.discountCode
+    this.removeAddedGifts(sponsorId)
+    this.persist()
+    this.emit()
+  }
+
+  // MARK: - Gifts of the discount code
+
+  /**
+   * The gifts the cart's code brings, in the cart: one unit of each is added
+   * when the cart has something to pay for, the gift is not in it and was
+   * never put in or taken out of this cart; and the gifts the SDK put in go
+   * out again when nothing else is left (a cart of gifts alone cannot be
+   * paid for). One reconcile at a time per sponsor. Resolves with whether the
+   * cart's lines changed; never rejects.
+   */
+  private reconcileGifts(sponsorId: number): Promise<boolean> {
+    const inFlight = this.giftWork.get(sponsorId)
+    if (inFlight) return inFlight
+    const work = this.reconcileGiftsNow(sponsorId)
+    this.giftWork.set(sponsorId, work)
+    void work.then(() => {
+      if (this.giftWork.get(sponsorId) === work) this.giftWork.delete(sponsorId)
+    })
+    return work
+  }
+
+  private async reconcileGiftsNow(sponsorId: number): Promise<boolean> {
+    let changed = false
+    try {
+      const cart = this.cartsBySponsor.get(sponsorId)
+      if (!cart?.cartId || !cart.discountCode || !cart.gifts?.length) return false
+      // A payment is being started on the cart as it is: nothing goes in it now.
+      if (this.giftHolds.has(sponsorId)) return false
+      const cartId = cart.cartId
+      for (const gift of [...cart.gifts]) {
+        const now = this.cartsBySponsor.get(sponsorId)
+        if (!now || now.cartId !== cartId || !now.discountCode) break
+        if (gift.added || gift.declined) continue
+        const gifts = now.gifts ?? []
+        if (now.items.some((item) => isGiftOf(gift, item))) continue
+        // Something to pay for: a line that is no gift.
+        if (!now.items.some((item) => !gifts.some((g) => isGiftOf(g, item)))) continue
+        if (this.giftHolds.has(sponsorId)) break
+        changed = (await this.addGift(sponsorId, cartId, gift)) || changed
+      }
+      changed = this.dropOrphanGifts(sponsorId) || changed
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[CartManager] the gifts of the discount code were not settled for sponsor ${sponsorId}`, err)
+      }
+    }
+    return changed
+  }
+
+  /**
+   * One unit of a gift into the backend cart (AddItem), as a mutation of the
+   * cart like any other — whoever waits for the cart waits for it. When it
+   * cannot be added (the product is not sold on this channel, out of
+   * stock…) the purchase goes on without it: a line in the console, nothing
+   * on screen, and it is not tried again for this cart.
+   */
+  private async addGift(sponsorId: number, cartId: string, gift: CartGift): Promise<boolean> {
+    let added = false
+    const seq = this.nextSeq(sponsorId)
+    let settling: Promise<unknown> | undefined
+    const mutation = (async () => {
+      try {
+        const live = await this.liveCart(sponsorId)
+        // The cart moved to another backend cart meanwhile: its code — and this gift — go on that one.
+        if (!live || live.cartId !== cartId) return
+        const resCart = await gqlAddItem(
+          cartId,
+          [{ product_id: gift.productId, quantity: 1, variant_id: gift.variantId ?? null }],
+          live.opts,
+        )
+        if (resCart && Array.isArray(resCart.line_items)) this.applyBackendCart(sponsorId, resCart, seq, settling)
+        added = true
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn(
+            `[CartManager] the gift of the discount code (product ${gift.productId}) could not be added to the cart of sponsor ${sponsorId} — the purchase goes on without it`,
+            err,
+          )
+        }
+      }
+      const now = this.cartsBySponsor.get(sponsorId)
+      const entry = now?.gifts?.find((g) => g.productId === gift.productId && g.variantId === gift.variantId)
+      // Settled for this backend cart either way: in it, or not to be tried again.
+      if (entry && now?.cartId === cartId) {
+        if (added) entry.added = true
+        else entry.declined = true
+        this.persist()
+      }
+    })()
+    settling = mutation
+    this.trackMutation(sponsorId, mutation)
+    await mutation
+    return added
+  }
+
+  /**
+   * Only gifts the SDK put there are left in the cart: they go out too — a
+   * cart of gifts alone cannot be paid for — without `vio:removed-from-cart`
+   * (the shopper removed nothing). True when lines went.
+   */
+  private dropOrphanGifts(sponsorId: number): boolean {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const gifts = cart?.gifts ?? []
+    if (!cart || gifts.length === 0 || cart.items.length === 0) return false
+    const putInBySdk = (item: CartLineItem) => gifts.some((g) => g.added && isGiftOf(g, item))
+    if (!cart.items.every(putInBySdk)) return false
+    return this.removeLinesQuietly(sponsorId, [...cart.items])
+  }
+
+  /** The gifts the SDK put in the cart go out (the code that brought them is gone); the cart forgets its gifts. */
+  private removeAddedGifts(sponsorId: number): boolean {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    const gifts = cart?.gifts ?? []
+    if (!cart || gifts.length === 0) return false
+    const lines = cart.items.filter((item) => gifts.some((g) => g.added && isGiftOf(g, item)))
+    delete cart.gifts
+    return this.removeLinesQuietly(sponsorId, lines)
+  }
+
+  /** Lines out of the cart, here and on the backend, with `change` but without `vio:removed-from-cart`. */
+  private removeLinesQuietly(sponsorId: number, lines: CartLineItem[]): boolean {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    if (!cart || lines.length === 0) return false
+    cart.items = cart.items.filter((item) => !lines.includes(item))
+    if (cart.items.length === 0) this.cartsBySponsor.delete(sponsorId)
+    this.persist()
+    this.emit()
+    if (cart.cartId) {
+      for (const line of lines) {
+        if (line.cartItemId) this.syncQuantity(sponsorId, cart.cartId, line.cartItemId, 0, undefined, cart.channelId)
+      }
+    }
+    return true
   }
 
   // MARK: - Read accessors

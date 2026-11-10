@@ -161,17 +161,23 @@ export type {
   AddProductOptions,
   AddManualOptions,
 } from './cart/cart-manager.js'
-export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
-// The discount code of a cart (one per backend cart): `Vio.applyDiscountCode()` / `Vio.removeDiscountCode()`.
+export type { CartGift, CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
+// The discount code of a cart (one per backend cart): `Vio.init({ discountCode })` / `?vio_discount=` /
+// `Vio.applyDiscountCode()` / `Vio.removeDiscountCode()`, and the reasons Commerce gives.
 export {
   normalizeDiscountCode,
   discountReasonOf,
+  discountReasonOfError,
+  discountParam,
   DISCOUNT_CODE_MAX_LENGTH,
+  DISCOUNT_PARAM,
+  DISCOUNT_SESSION_KEY,
   COUPON_REASONS,
   DISCOUNT_PAYMENT_REASONS,
   type CartDiscountOutcome,
   type DiscountCodeResult,
   type DiscountCodeRemoval,
+  type DiscountGift,
   type DiscountReason,
   type CouponReason,
   type DiscountPaymentReason,

@@ -12,10 +12,17 @@
  * `message`; a payment Commerce would not start because of the discount
  * names one in its error. `discountReasonOf` reads it out of either.
  *
- * Pure; never throws.
+ * A page can name the code for its carts without the shopper typing it:
+ * `Vio.init({ discountCode })`, or `?vio_discount=CODE` in its URL — kept for
+ * the tab (`sessionStorage`), so it survives the pages of the visit and the
+ * way back from the payment; `?vio_discount=` (empty) forgets it.
+ *
+ * Never throws; the URL and the storage are taken as arguments (defaults:
+ * the real ones), like `analytics/internal-traffic.ts`.
  */
 
 import type { DiscountAnswer } from '../api/cart-queries.js'
+import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 
 /** Longest code the SDK sends — anything longer is not a code a shopper or a campaign was given. */
 export const DISCOUNT_CODE_MAX_LENGTH = 64
@@ -87,6 +94,89 @@ export function discountReasonOf(text: unknown): DiscountReason | undefined {
 }
 
 /**
+ * The reason an error names — a payment Commerce would not start. The
+ * gateway answers such a refusal with a GraphQL error whose
+ * `extensions.code` is the reason and whose text ends with it
+ * (`Payment Vipps not initialize: … [GIFT_MAX_ONE_UNIT]`), and
+ * `executeCartGraphQL` attaches the envelope's errors to what it throws: the
+ * code is read first, then the texts (the envelope's, the error's own). A
+ * plain text is read as `discountReasonOf` reads it.
+ */
+export function discountReasonOfError(err: unknown): DiscountReason | undefined {
+  if (typeof err === 'string') return discountReasonOf(err)
+  if (!err || typeof err !== 'object') return undefined
+  const { message, graphql } = err as {
+    message?: unknown
+    graphql?: { errors?: Array<{ message?: unknown; extensions?: { code?: unknown } | null } | null> | null } | null
+  }
+  const errors = Array.isArray(graphql?.errors) ? graphql.errors : []
+  for (const e of errors) {
+    const reason = discountReasonOf(e?.extensions?.code)
+    if (reason) return reason
+  }
+  for (const e of errors) {
+    const reason = discountReasonOf(e?.message)
+    if (reason) return reason
+  }
+  return discountReasonOf(message)
+}
+
+/**
+ * A refusal that stays what it is whatever the cart holds — the code does
+ * not exist, is over, is used up or is of a kind that cannot be used here.
+ * (`COUPON_MIN_AMOUNT` changes with the cart, `COUPON_OTHER_APPLIED` with the
+ * other code, and `COUPON_UNAVAILABLE` says nothing about the code.)
+ */
+export function isFinalCouponReason(reason: unknown): boolean {
+  return (
+    reason === 'COUPON_NOT_FOUND' ||
+    reason === 'COUPON_EXPIRED' ||
+    reason === 'COUPON_USAGE_LIMIT' ||
+    reason === 'COUPON_NOT_SUPPORTED'
+  )
+}
+
+/**
+ * A gift a code brings (`ApplyDiscount` → `gifts`): one unit of that product
+ * — and variant, when the code names one — in the cart, free.
+ */
+export interface DiscountGift {
+  productId: number
+  variantId?: number
+}
+
+function positiveInt(value: unknown): number | undefined {
+  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : undefined
+}
+
+/**
+ * The gifts of an `ApplyDiscount` answer: each product once, with its
+ * variant when it names one. The answer's quantity is not kept — a gift is
+ * one unit. `[]` when the answer has none (null, empty, or a gateway that
+ * does not say).
+ */
+export function discountGiftsOf(answer: unknown): DiscountGift[] {
+  const list = (answer as { gifts?: unknown } | null | undefined)?.gifts
+  if (!Array.isArray(list)) return []
+  const out: DiscountGift[] = []
+  for (const entry of list) {
+    const productId = positiveInt((entry as { product_id?: unknown } | null)?.product_id)
+    if (!productId) continue
+    const variantId = positiveInt((entry as { variant_id?: unknown } | null)?.variant_id)
+    if (out.some((g) => g.productId === productId && g.variantId === variantId)) continue
+    out.push(variantId ? { productId, variantId } : { productId })
+  }
+  return out
+}
+
+/** Whether a cart line is that gift: its product, and its variant when the gift names one. */
+export function isGiftOf(gift: DiscountGift, line: { productId?: unknown; variantId?: unknown } | null | undefined): boolean {
+  if (!line || positiveInt(line.productId) !== gift.productId) return false
+  return gift.variantId === undefined || positiveInt(line.variantId) === gift.variantId
+}
+
+/**
  * What came of asking for a code on ONE sponsor's backend cart:
  * `applied` — Commerce has it on the cart; `refused` — Commerce said no
  * (`reason` when it is one of the known ones; `message` is its own text,
@@ -149,4 +239,53 @@ export function commonDiscountReason(outcomes: ReadonlyArray<CartDiscountOutcome
   const reasons = new Set(outcomes.filter((o) => o.status === 'refused').map((o) => o.reason))
   if (reasons.size !== 1) return undefined
   return [...reasons][0]
+}
+
+// ── The page's code: `?vio_discount=` ───────────────────────────────────────
+
+/** The URL parameter that names a discount code for the page's carts. */
+export const DISCOUNT_PARAM = 'vio_discount'
+/** Where the tab remembers the code its URL named (`sessionStorage`: this visit, not the browser for good). */
+export const DISCOUNT_SESSION_KEY = 'vio.discount.v1'
+
+/**
+ * What `vio_discount` says in a query string: the code; `null` when the
+ * parameter is there and empty (forget the code); `undefined` when it is not
+ * there, or names something that is not a code.
+ */
+export function discountParam(search: unknown): string | null | undefined {
+  try {
+    const params = new URLSearchParams(typeof search === 'string' ? search : '')
+    if (!params.has(DISCOUNT_PARAM)) return undefined
+    const raw = params.get(DISCOUNT_PARAM) ?? ''
+    if (!raw.trim()) return null
+    return normalizeDiscountCode(raw)
+  } catch {
+    return undefined
+  }
+}
+
+function currentSearch(): string {
+  try {
+    return typeof location !== 'undefined' && typeof location.search === 'string' ? location.search : ''
+  } catch {
+    return ''
+  }
+}
+
+/** The code this tab remembers from a URL, if any. */
+export function rememberedDiscountCode(): string | undefined {
+  return normalizeDiscountCode(storageGet('session', DISCOUNT_SESSION_KEY))
+}
+
+/**
+ * Read the page's URL: a `vio_discount` code is remembered for the tab, an
+ * empty one forgets it, anything else leaves what was remembered. Returns
+ * the code the tab remembers after that. `Vio.init` calls it.
+ */
+export function syncDiscountParam(search: unknown = currentSearch()): string | undefined {
+  const param = discountParam(search)
+  if (param === null) storageRemove('session', DISCOUNT_SESSION_KEY)
+  else if (param) storageSet('session', DISCOUNT_SESSION_KEY, param)
+  return rememberedDiscountCode()
 }

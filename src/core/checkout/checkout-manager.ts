@@ -13,6 +13,7 @@
 import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
+import { discountReasonOfError } from '../cart/discount-code.js'
 import {
   checkoutSponsorOf,
   rememberCheckoutSponsor,
@@ -597,6 +598,15 @@ export function usesStripe(methods: unknown): boolean {
   })
 }
 
+/**
+ * How long the page's own discount code may hold a payment back: Commerce
+ * asks the brand's shop about it (one to three seconds) and its gift is one
+ * more AddItem — Vipps Express from the product leaves right after the add,
+ * so both are still on their way then. Past this the payment is started on
+ * the cart as it is, without the gift.
+ */
+export const DISCOUNT_SETTLE_BUDGET_MS = 1200
+
 /** What the lines add up to (unit price × quantity). */
 function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
   return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
@@ -814,6 +824,9 @@ export class CheckoutManager extends EventTarget {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
     await this.cartManager.waitForCartMutations(sponsorId)
+    // The page's discount code goes on the cart before the checkout is built
+    // on it (nothing is asked when the page has none).
+    await this.settleDiscount(sponsorId)
     // And on the cart the SERVER has: the checkout takes every line of the
     // backend cart, so the page shows those lines before anything is built on
     // them (another tab may have added or paid; see CartManager.refreshFromServer).
@@ -863,6 +876,47 @@ export class CheckoutManager extends EventTarget {
       }
     }
     return checkout
+  }
+
+  /**
+   * The page's discount code — and the gift it brings — on the sponsor's cart
+   * before a checkout or a payment is built on it
+   * (`CartManager.settleDiscountCode`): asked for when the cart does not
+   * carry it yet, and waited for `DISCOUNT_SETTLE_BUDGET_MS` at most (the
+   * shopper's own typed code: until it answers). Never costs a checkout —
+   * without the code the purchase goes on without it — and a cart manager
+   * without discounts (a test's stub) has nothing to settle.
+   */
+  private async settleDiscount(sponsorId: number): Promise<void> {
+    try {
+      const settle = (this.cartManager as Partial<CartManager>).settleDiscountCode
+      if (typeof settle === 'function') await settle.call(this.cartManager, sponsorId, { budgetMs: DISCOUNT_SETTLE_BUDGET_MS })
+    } catch {
+      /* the purchase goes on without the discount */
+    }
+  }
+
+  /**
+   * A payment that did not start. When Commerce refused it because of the
+   * cart's discount — the code is checked again right before charging, and a
+   * gift has its own rules — the cart is put right for the next attempt
+   * (`CartManager.discountRefusedAtPayment`: a code that is no good comes
+   * off, the cart is read again); and whatever gift was held back while the
+   * payment was being started may go in the cart now. Not waited for, and
+   * never throws: the caller shows the error meanwhile.
+   */
+  private afterPaymentNotStarted(sponsorId: number | undefined, err?: unknown): void {
+    if (!sponsorId) return
+    try {
+      const cart = this.cartManager as Partial<CartManager>
+      const reason = err === undefined ? undefined : discountReasonOfError(err)
+      if (reason && typeof cart.discountRefusedAtPayment === 'function') {
+        void cart.discountRefusedAtPayment.call(this.cartManager, sponsorId, reason)
+      }
+      if (typeof cart.releaseGiftHold === 'function') cart.releaseGiftHold.call(this.cartManager, sponsorId)
+    } catch {
+      /* the error the caller shows is the payment's */
+    }
   }
 
   /**
@@ -1205,6 +1259,10 @@ export class CheckoutManager extends EventTarget {
     // it: the provider's page shows every line of the backend cart, so the
     // page shows them first (see CartManager.refreshFromServer).
     await this.cartManager.waitForCartMutations(spId)
+    // The page's discount code first — Vipps Express leaves from the product
+    // or the cart without ever showing a checkout — so the lines read next
+    // are the discounted ones, and so is what the provider charges.
+    await this.settleDiscount(spId)
     await this.cartManager.refreshFromServer(spId)
     // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
     this.assertPayableCart(spId)
@@ -1375,6 +1433,23 @@ export class CheckoutManager extends EventTarget {
    * Vipps charges for.
    */
   async startVippsPayment(
+    sponsorId?: number,
+    formData?: unknown,
+    options: { express?: boolean } = {},
+  ): Promise<any> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    try {
+      const res = await this.startVippsPaymentNow(sponsorId, formData, options)
+      // Express refused without an error: no payment was created, the checkout opens instead.
+      if (!res?.payment_url) this.afterPaymentNotStarted(spId)
+      return res
+    } catch (err) {
+      this.afterPaymentNotStarted(spId, err)
+      throw err
+    }
+  }
+
+  private async startVippsPaymentNow(
     sponsorId?: number,
     formData?: unknown,
     options: { express?: boolean } = {},

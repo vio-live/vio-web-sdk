@@ -10,6 +10,7 @@
  */
 
 import { toCampaignId } from './slots.js'
+import { normalizeDiscountCode } from './cart/discount-code.js'
 
 export type Environment = 'development' | 'testing' | 'production'
 
@@ -48,6 +49,16 @@ export interface VioConfig {
    * `data-vio-campaign` on any ancestor, or `vio-campaign` on the element.
    */
   campaignId?: number
+  /**
+   * The discount code of this page's campaign, when the page knows it: the
+   * SDK puts it on the cart by itself — the shopper types nothing — once the
+   * cart has lines, on every new cart, and before a checkout or a payment is
+   * built on it. Commerce takes one code per cart; when it does not take
+   * this one the purchase goes on without it. Wins over a `?vio_discount=`
+   * in the URL. Only for brands that are paid with Vipps (README → Discount
+   * codes).
+   */
+  discountCode?: string
   /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
   debug?: boolean
   /**
@@ -95,6 +106,8 @@ export interface ResolvedConfig {
   contentId?: string | number
   contentTitle?: string
   campaignId?: number
+  /** The page's discount code as it is sent (trimmed); absent when none was given or it was not a code. */
+  discountCode?: string
   debug: boolean
   privacyMode?: 'standard' | 'minimal'
   apiBase: string
@@ -146,6 +159,7 @@ class ConfigurationSingleton {
       contentId: input.contentId,
       contentTitle: input.contentTitle,
       campaignId: toCampaignId(input.campaignId),
+      ...(normalizeDiscountCode(input.discountCode) ? { discountCode: normalizeDiscountCode(input.discountCode) } : {}),
       debug: input.debug === true,
       // Only the two words the backend knows; anything else is "not said".
       privacyMode:

@@ -20,7 +20,7 @@ import { Configuration, type VioConfig } from './configuration.js'
 import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
-import type { DiscountCodeRemoval, DiscountCodeResult } from './cart/discount-code.js'
+import { syncDiscountParam, type DiscountCodeRemoval, type DiscountCodeResult } from './cart/discount-code.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import type { CtaInput } from './analytics/cta.js'
@@ -212,6 +212,16 @@ class VioFacade {
     // marks or clears this browser now, whether or not it starts analytics.
     try {
       this.analytics.syncInternal(true)
+    } catch {
+      /* never breaks init */
+    }
+    // The page's discount code: `discountCode` of this config, else the
+    // `?vio_discount=` of the URL (kept for the tab). The carts the page opens
+    // with are asked for it now, without waiting; a page without a code asks
+    // nothing and does not even create its cart manager here.
+    try {
+      const remembered = syncDiscountParam()
+      if (Configuration.get().discountCode ?? remembered) this.cart.ensureDiscountCodes()
     } catch {
       /* never breaks init */
     }

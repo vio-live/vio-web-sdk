@@ -21,7 +21,8 @@ import { defineConfig } from 'vitest/config'
  */
 export default defineConfig({
   test: {
-    include: ['src/**/*.{test,spec}.ts'],
+    // examples/: the QA page's URL reader (examples/qa-config.ts).
+    include: ['src/**/*.{test,spec}.ts', 'examples/**/*.{test,spec}.ts'],
     environment: 'node',
   },
 })

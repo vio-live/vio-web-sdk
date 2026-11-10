@@ -1,142 +1,163 @@
 /**
- * Demo wire-up.
+ * QA en local — el SDK de esta rama contra QA, configurado por la URL.
  *
- * Boots the SDK, seeds the carousel with mock products, and connects
- * the existing UI components to the new `Vio.cart` + `Vio.checkout`
- * managers (multi-sponsor capable, with localStorage persistence).
+ *   npm run dev   →   http://127.0.0.1:5173/?env=testing&campaignId=18&discountCode=qa_gave&discountField=true
  *
- * Run with: `npm run dev` from project root.
+ * Parámetros (todos opcionales salvo la key):
+ *   apiKey         la key PÚBLICA de la surface (X-Api-Key), nunca la de gestión.
+ *                  Sin ella: VITE_VIO_API_KEY de `.env.local`.
+ *   env            testing (por defecto, QA) | production | development
+ *   campaignId     la campaña del artículo: la página es de esa campaña y se pintan
+ *                  los productos del canal de su marca (los que tienen stock, hasta 12)
+ *   discountCode   el código de la campaña, aplicado solo (`Vio.init({ discountCode })`)
+ *   discountField  true | false — enseñar / ocultar el campo «Rabattkode»
+ *                  (sin él: lo que haga el SDK, que lo enseña cuando hay código)
+ *   productIds     1,2,3 — estos productos en vez de los del canal
+ *   vio_discount   el código por la URL, como en cualquier página (`discountCode` gana)
+ *
+ * Los tres caminos de Vipps:
+ *   1. Ficha con carrito vacío: «Tøm handlekurven», abrir un producto, «Kjøp nå med Vipps».
+ *   2. Carrito, Vipps Express: añadir un producto, «Handlekurv», el botón de Vipps.
+ *   3. Checkout, Vipps estándar: en el carrito «Til kassen» → Vipps → el formulario →
+ *      «Betal … med Vipps».
+ *
+ * Ojo:
+ *   - La vuelta de Vipps: el SDK hace https la URL de retorno
+ *     (https://127.0.0.1:5173/…), que el servidor de desarrollo no sirve. Para ver el
+ *     recibo, cambia https por http en la barra (o sirve la página por un túnel https).
+ *   - CORS: si QA rechaza 127.0.0.1, pon en `.env.local`
+ *     VITE_VIO_API_BASE=/proxy-vio y VITE_VIO_GRAPHQL_BASE=/proxy-graphql
+ *     (vite.config.ts los manda a QA). Se ignoran con env=production.
  */
 
 import { Vio } from '../src/index'
-import '../src/ui/index' // registers <vio-*> custom elements — without this
-                           // the demo's markup is just inert unknown tags.
+import '../src/ui/index' // registra los <vio-*>
 import type { VioCart } from '../src/ui/components/vio-cart'
 import type { VioCheckout } from '../src/ui/components/vio-checkout'
-import type { CartChangeDetail } from '../src/core/cart/cart-manager'
+import type { PaymentMethod } from '../src/core/checkout/types'
+import { describeQaConfig, readQaConfig } from './qa-config'
 
-// Init — env-aware. Demo uses mock key if not provided.
-Vio.init({
-  apiKey: (import.meta.env.VITE_VIO_API_KEY as string | undefined) ?? 'demo_api_key_xxx',
-  environment: 'development',
-  // Stripe publishable key — required for Apple Pay (Payment Request).
-  // Without it the Apple Pay button is hidden gracefully. Use Stripe's
-  // public test key for trying locally (works in Safari with Apple Pay):
-  //   pk_test_TYooMQauvdEDq54NiTphI7jx
-  stripePublishableKey: import.meta.env.VITE_VIO_STRIPE_PK as string | undefined,
+const env = import.meta.env as Record<string, string | undefined>
+const qa = readQaConfig(location.search, {
+  VITE_VIO_API_KEY: env.VITE_VIO_API_KEY,
+  VITE_VIO_API_BASE: env.VITE_VIO_API_BASE,
+  VITE_VIO_GRAPHQL_BASE: env.VITE_VIO_GRAPHQL_BASE,
+  VITE_VIO_STRIPE_PK: env.VITE_VIO_STRIPE_PK,
 })
+const { campaignId, productIds } = qa
 
-interface DemoProduct {
-  id: number
-  brand: string
-  name: string
-  unitPrice: number
-  retailer: string  // display retailer (Norwegian convention: separate from brand)
-  imageUrl: string
+/** Cuántos productos del canal se pintan. */
+const MAX_PRODUCTS = 12
+
+const statusEl = document.getElementById('qa-status')!
+const hintEl = document.getElementById('qa-hint')!
+const productsEl = document.getElementById('qa-products')!
+const say = (el: HTMLElement, text: string) => {
+  el.textContent = text
+  el.hidden = !text
 }
 
-/** Sponsor id → display name. Real ids come from the bootstrap response. */
-const SPONSORS: Record<string, { id: number; name: string }> = {
-  cos:      { id: 101, name: 'COS' },
-  stylein:  { id: 102, name: 'STYLEIN' },
-  nelly:    { id: 103, name: 'NELLY.COM' },
-  villoid:  { id: 104, name: 'VILLOID' },
-  bikbok:   { id: 105, name: 'BIK BOK' },
-  adidas:   { id: 106, name: 'ADIDAS' },
-  nike:     { id: 107, name: 'NIKE' },
-  zalando:  { id: 108, name: 'ZALANDO' },
+if (!qa.init) {
+  say(hintEl, 'Falta la key: ?apiKey=<key pública de la surface>, o VITE_VIO_API_KEY en .env.local.')
+} else {
+  Vio.init(qa.init)
+  say(statusEl, describeQaConfig(qa))
+  wireCartAndCheckout()
+  void paintProducts()
 }
 
-/** Mock products — fashion editorial vibe. Real images come via GraphQL later. */
-const PRODUCTS: Array<DemoProduct & { sponsorSlug: keyof typeof SPONSORS }> = [
-  { id: 1001, brand: 'COS',         name: 'Cropped Cardigan Butter Yellow', unitPrice: 990,  retailer: 'COS',       imageUrl: 'https://picsum.photos/seed/cos-cardigan-yellow/600/600',     sponsorSlug: 'cos' },
-  { id: 1002, brand: 'STYLEIN',     name: 'Tove Jacket – Oyster',           unitPrice: 5500, retailer: 'STYLEIN',   imageUrl: 'https://picsum.photos/seed/stylein-tove-jacket/600/600',     sponsorSlug: 'stylein' },
-  { id: 1003, brand: 'NEW BALANCE', name: 'New Balance 530',                unitPrice: 1500, retailer: 'NELLY.COM', imageUrl: 'https://picsum.photos/seed/nb-530-sneaker/600/600',          sponsorSlug: 'nelly' },
-  { id: 1004, brand: 'HOLZWEILER',  name: 'Elena Polo Lt Yellow Stripe',    unitPrice: 1899, retailer: 'VILLOID',   imageUrl: 'https://picsum.photos/seed/holzweiler-elena-polo/600/600',   sponsorSlug: 'villoid' },
-  { id: 1005, brand: 'BIK BOK',     name: 'Daydream Tubetop Bikini',        unitPrice: 199,  retailer: 'BIK BOK',   imageUrl: 'https://picsum.photos/seed/bikbok-daydream-bikini/600/600',  sponsorSlug: 'bikbok' },
-  { id: 1006, brand: 'ADIDAS',      name: 'Samba OG Black/White',           unitPrice: 1199, retailer: 'ADIDAS',    imageUrl: 'https://picsum.photos/seed/adidas-samba-og/600/600',         sponsorSlug: 'adidas' },
-  { id: 1007, brand: 'NIKE',        name: 'Air Force 1 ’07',                unitPrice: 1299, retailer: 'NIKE',      imageUrl: 'https://picsum.photos/seed/nike-airforce-one/600/600',       sponsorSlug: 'nike' },
-  { id: 1008, brand: 'ASICS',       name: 'Gel-1130 Cream',                 unitPrice: 1399, retailer: 'ZALANDO',   imageUrl: 'https://picsum.photos/seed/asics-gel-1130/600/600',          sponsorSlug: 'zalando' },
-]
-
-// Helper for the carousel-card retailer display.
-const NOK = (n: number) => `${n.toLocaleString('no-NO').replace(/,/g, ' ')} kr`
-
-// Build product cards into the carousel slot.
-const carousel = document.getElementById('carousel')!
-for (const p of PRODUCTS) {
-  const el = document.createElement('vio-product')
-  el.setAttribute('brand', p.brand)
-  el.setAttribute('name', p.name)
-  el.setAttribute('price', NOK(p.unitPrice))
-  el.setAttribute('retailer', p.retailer)
-  el.setAttribute('image-url', p.imageUrl)
-  el.setAttribute('product-id', String(p.id))
-  el.setAttribute('sponsor-id', String(SPONSORS[p.sponsorSlug]!.id))
-  carousel.appendChild(el)
-}
-
-// Wire cart trigger to open the drawer.
-const cart = document.getElementById('cart') as VioCart
-const checkout = document.getElementById('checkout') as VioCheckout
-const trigger = document.getElementById('open-cart')!
-const countEl = document.getElementById('cart-count')!
-
-trigger.addEventListener('click', () => cart.show())
-
-// Mirror the badge count from the CartManager itself.
-function syncBadge(): void {
-  countEl.textContent = String(Vio.cart.itemCount)
-}
-Vio.cart.addEventListener('change', (e: Event) => {
-  const detail = (e as CustomEvent<CartChangeDetail>).detail
-  countEl.textContent = String(detail.itemCount)
-})
-syncBadge()
-
-// Cart drawer → "Til kassen" → open checkout for that sponsor.
-cart.addEventListener('vio:checkout-open', (e: Event) => {
-  const ev = e as CustomEvent<{ sponsorId: number }>
-  cart.close()
+/** Los productos a pintar: los de `productIds`, o los del canal de la marca de la campaña. */
+async function paintProducts(): Promise<void> {
   try {
-    Vio.checkout.open(ev.detail.sponsorId)
+    await Vio.bootstrap()
   } catch (err) {
-    console.warn('[demo] checkout.open failed:', err)
+    say(hintEl, `El bootstrap falló (¿key o env equivocados?): ${err instanceof Error ? err.message : String(err)}`)
     return
   }
-  // Small delay so the cart slide-out completes before the checkout slide-in.
-  setTimeout(() => checkout.show(), 200)
-})
+  const campaign = Vio.campaignForSlot(null, campaignId ? { campaignId } : undefined)
+  if (campaignId && campaign?.id !== campaignId) {
+    say(hintEl, `La campaña ${campaignId} no está en el bootstrap de esta key (¿key de otra surface, o campaña no activa?).`)
+    return
+  }
+  const sponsorId = campaign?.primarySponsor?.id
+  let ids = productIds
+  if (ids.length === 0 && sponsorId) {
+    try {
+      ids = await channelProducts(sponsorId)
+    } catch (err) {
+      say(hintEl, `No se pudieron listar los productos del canal: ${err instanceof Error ? err.message : String(err)}. Pasa ?productIds=…`)
+      return
+    }
+  }
+  if (ids.length === 0) {
+    say(hintEl, 'No hay productos que pintar: pasa ?campaignId=… (con productos en stock en su canal) o ?productIds=1,2,3')
+    return
+  }
+  const carousel = document.createElement('vio-product-carousel')
+  carousel.setAttribute('heading', campaign?.name ? `Shop · ${campaign.name}` : 'Shop')
+  carousel.setAttribute('product-ids', ids.join(','))
+  if (sponsorId) carousel.setAttribute('sponsor-id', String(sponsorId))
+  if (campaignId) carousel.setAttribute('vio-campaign', String(campaignId))
+  productsEl.replaceChildren(carousel)
+}
 
-// Product card click → add to Vio.cart for demo.
-document.addEventListener('vio:product-click', (e: Event) => {
-  const ev = e as CustomEvent<{ productId: string; sponsorId: string }>
-  const productIdNum = parseInt(ev.detail.productId, 10)
-  const product = PRODUCTS.find((p) => p.id === productIdNum)
-  if (!product) return
-  const sponsor = SPONSORS[product.sponsorSlug]!
-  Vio.cart.addManual({
-    productId: product.id,
-    sponsorId: sponsor.id,
-    sponsorName: sponsor.name,
-    brand: product.brand,
-    name: product.name,
-    unitPrice: product.unitPrice,
-    currency: 'NOK',
-    imageUrl: product.imageUrl,
-    quantity: 1,
-  })
-  cart.show()
-})
-
-// Payment selection logging (real flow lands when Stripe / Klarna / Vipps wire up).
-Vio.checkout.addEventListener('payment-select', (e: Event) => {
-  const ev = e as CustomEvent<{ method: string; state: { sponsorId: number; subtotal: number; currency: string } }>
-  console.log('[demo] payment-select', ev.detail)
-  alert(
-    `Payment method: ${ev.detail.method}\n` +
-      `Sponsor: ${ev.detail.state.sponsorId}\n` +
-      `Total: ${NOK(ev.detail.state.subtotal)}\n\n` +
-      `(Real flow will hook Stripe Payment Request / Klarna / Vipps in next iteration.)`,
+/**
+ * Los productos con stock del canal de la marca (una campaña = un canal), con la
+ * key del canal: `Channel.GetProducts`, por la vía de escape del cliente del SDK.
+ */
+async function channelProducts(sponsorId: number): Promise<number[]> {
+  const client = Vio.commerceFor(sponsorId, campaignId ? { campaignId } : undefined)
+  const data = await client.raw.request<{ Channel: { GetProducts: Array<{ id: number; quantity: number | null }> } }>(
+    /* GraphQL */ `
+      query QaChannelProducts {
+        Channel {
+          GetProducts(useCache: true) {
+            id
+            quantity
+          }
+        }
+      }
+    `,
   )
-})
+  return (data?.Channel?.GetProducts ?? [])
+    .filter((p) => (p.quantity ?? 0) > 0)
+    .map((p) => p.id)
+    .slice(0, MAX_PRODUCTS)
+}
+
+/** El carrito, el checkout y lo que los abre: lo que haría un host. */
+function wireCartAndCheckout(): void {
+  const cart = document.getElementById('cart') as VioCart
+  const checkout = document.getElementById('checkout') as VioCheckout
+  const countEl = document.getElementById('cart-count')!
+
+  document.getElementById('open-cart')!.addEventListener('click', () => cart.show())
+  document.getElementById('clear-cart')!.addEventListener('click', () => Vio.cart.clearAllCarts())
+
+  const syncBadge = () => {
+    countEl.textContent = String(Vio.cart.itemCount)
+  }
+  Vio.cart.addEventListener('change', syncBadge)
+  syncBadge()
+
+  // El carrito («Til kassen», Vipps sin Express) y la ficha piden el checkout con este evento.
+  document.addEventListener('vio:checkout-open', (e: Event) => {
+    const detail = (e as CustomEvent<{ sponsorId: number; paymentMethod?: string; express?: boolean }>).detail
+    cart.close()
+    try {
+      Vio.checkout.open(detail.sponsorId)
+      if (detail.paymentMethod) Vio.checkout.selectPaymentMethod(detail.paymentMethod as PaymentMethod)
+    } catch (err) {
+      console.warn('[qa] checkout.open falló:', err)
+      return
+    }
+    checkout.express = detail.express === true
+    // Que el carrito termine de salir antes de que entre el checkout.
+    setTimeout(() => checkout.show(), 200)
+  })
+
+  // Para seguir el flujo en la consola.
+  for (const name of ['vio:payment-redirect-start', 'vio:payment-redirect-error', 'vio:payment-redirect-cancel', 'vio:payment-success']) {
+    document.addEventListener(name, (e) => console.info(`[qa] ${name}`, (e as CustomEvent).detail))
+  }
+}

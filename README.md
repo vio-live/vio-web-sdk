@@ -1158,6 +1158,11 @@ off the whole cart, or a product given away. Commerce takes **one code per cart*
 brand's shop about it when it is applied (one to three seconds) and checks it again right
 before a payment.
 
+**A campaign's code is set in Vio's dashboard, on the campaign, per brand** — the page names
+nothing: the SDK puts it on that brand's cart by itself and follows the dashboard when it
+changes ([below](#the-campaigns-code--set-in-the-dashboard-the-shopper-types-nothing)).
+`Vio.init({ discountCode })` remains as an override.
+
 **A code is applied — and validated — before paying**, in the cart or the checkout: the
 shopper types it in the «Rabattkode» field, taps «Bruk» and sees what came of it there and
 then. Taken: the discount or the «Gratis» gift, and a lower total, above the button that
@@ -1170,7 +1175,7 @@ shopper finds out about their code.
 | The code | Taken | Not taken |
 |---|---|---|
 | **Typed by the shopper** (the field's «Bruk», or a host's own field through `Vio.applyDiscountCode()`) | shown: the code with «Fjern», the discount, the new total | **always said**, with why — never in silence |
-| **The page's own** (`discountCode`, `?vio_discount=`) — nobody typed it | shown the same way | **nothing is said**: the purchase goes on at its prices (a visitor who typed nothing never reads «invalid code») |
+| **The campaign's** (set in the dashboard) **or the page's own** (`discountCode`, `?vio_discount=`) — nobody typed it | shown the same way | **nothing is said**: the purchase goes on at its prices (a visitor who typed nothing never reads «invalid code») |
 | Either, **refused when the payment is started** (the safety net) | — | said, with why; the cart is read again |
 
 > **Only for brands that are paid with Vipps.** Commerce works the discounted amount out for
@@ -1182,23 +1187,68 @@ shopper finds out about their code.
 > code went on is unchosen. When the code comes off they are back. Without a code — or for a
 > brand that only takes Vipps — nothing changes.
 
-### The page names the code — the shopper types nothing
+### The campaign's code — set in the dashboard, the shopper types nothing
+
+**The recommended way.** The code lives on the campaign, in Vio's dashboard, **per sponsor**:
+each brand of the campaign with its own (the coupon as the brand created it in its shop), and
+the same brand may carry one code in one campaign and another — or none — in the next. The
+page names no code at all:
+
+```ts
+Vio.init({ apiKey: '…', environment: 'production', campaignId: 4 }) // nothing about codes
+```
+
+The bootstrap (`GET /v2/mobile/config`) gives it: `discountCode` on every sponsor block of
+`campaigns[]` (`primarySponsor`, `secondarySponsors[]`), and on the top-level ones for the
+default campaign; `null` is no code (a Commerce that predates the field does not send it: the
+same). **Which campaign's code a sponsor's cart gets** is the page's campaign — the one the
+SDK already takes as the page's: the campaigns its elements name (`vio-campaign`, an
+ancestor's `data-vio-campaign`, in document order), then `Vio.init({ campaignId })` — the
+first of them that is active and that the sponsor takes part in; when none of them has the
+sponsor (or the page names none), the surface's default campaign, when the sponsor is in it.
+**Only that sponsor's cart** gets it: one brand's code never goes on another brand's cart, and
+a brand without a code in the campaign gets none.
+
+It goes on exactly as a page's own code does ([below](#what-the-sdk-does-with-a-code-nobody-typed)):
+by itself, in silence when it is not taken, with its gift, waited for before Vipps — and **with
+a code on the cart, only Vipps**. Unlike a page's own code it **does not turn the «Rabattkode»
+field on**: the cart shows the «Rabatt (CODE)» row, «Gratis» and the new total; the field shows
+only with `discountField: true` (then with the code and «Fjern» once it is taken).
+
+**It follows the dashboard.** The bootstrap is read again when the tab comes back after five
+minutes, and on every page load. When it gives the sponsor **another code** in the campaign a
+cart's code came from, that cart's old code comes off — with the gift the SDK put in for it —
+and the new one goes on (the cart keeps following its campaign); when it gives **none** (the
+code removed, the campaign paused, ended or gone), the code comes off with its gift and the
+lines are read again at their prices. A cart without a code gets one the campaign gives
+mid-visit. Only what the SDK put on from a campaign moves: a code the shopper **typed** (even
+the campaign's very code) and the page's own (`discountCode`, `?vio_discount=`) are never
+touched, and a cart keeps the campaign's code on the other pages of the visit while that
+campaign still gives it. A refresh that changes no code asks nothing.
+
+### A code of the page's own — the override
 
 ```ts
 Vio.init({
   apiKey: '…',
   environment: 'production',
   campaignId: 4,
-  discountCode: 'gratis_face_mask', // the campaign's code, as the brand created it in its shop
+  discountCode: 'gratis_face_mask', // for EVERY sponsor's cart, over the campaign's
 })
 ```
 
 …or `?vio_discount=CODE` in the page's URL, for a page whose config cannot be changed. It is
 kept for the tab (`sessionStorage`, so it survives the pages of the visit and the way back
-from Vipps); `?vio_discount=` (empty) forgets it; `discountCode` wins when both are there.
-Naming a code turns discount codes on for the page, so the «Rabattkode» field shows too
+from Vipps); `?vio_discount=` (empty) forgets it; `discountCode` wins when both are there, and
+either wins over the campaign's (for a cart that has no code yet). Use it to try a code, or for
+a page that is not a campaign's; the campaign's code needs nothing on the page. Naming a code
+turns discount codes on for the page, so the «Rabattkode» field shows too
 ([below](#the-rabattkode-field--where-a-code-is-typed-and-validated)); `discountField: false`
-keeps the page's code and hides the field. What the SDK does with the page's code:
+keeps the page's code and hides the field.
+
+### What the SDK does with a code nobody typed
+
+The campaign's and the page's own alike:
 
 - **Puts it on the cart by itself**, through the same call a field makes: once the cart has
   lines (a code with a minimum purchase would be refused on an empty cart), on every new cart
@@ -1223,7 +1273,8 @@ keeps the page's code and hides the field. What the SDK does with the page's cod
   checked, it stays empty until the code is taken. A code that asks for more in the cart
   (`COUPON_MIN_AMOUNT`) is asked again when the cart's lines change; a shop that could not
   be asked, twice at most.
-- **A page without a code asks nothing**: not one request more than before.
+- **A page without a code asks nothing** — no code of its own and none in the bootstrap for
+  that cart's sponsor: not one request more than before.
 
 ### What the shopper sees
 
@@ -1254,12 +1305,12 @@ In `<vio-cart>` — over the totals and the buttons that pay; its Vipps button g
 Express, without a checkout in between — and in the summary of `<vio-checkout>`. It shows
 **wherever discount codes are on for the page**:
 
-| `Vio.init({ … })` | The field | The page's own code |
+| `Vio.init({ … })` | The field | The code applied by itself |
 |---|---|---|
-| `discountCode: 'KODE'` (or a `?vio_discount=KODE` link) | **shown** | applied by itself |
-| `discountCode: 'KODE', discountField: false` | hidden | applied by itself |
-| `discountField: true` | **shown** | none: the shopper types the brand's |
-| neither | none — the cart is the one it always was | none |
+| `discountCode: 'KODE'` (or a `?vio_discount=KODE` link) | **shown** | the page's, on every cart |
+| `discountCode: 'KODE', discountField: false` | hidden | the page's, on every cart |
+| `discountField: true` | **shown** | the campaign's, when it gives the brand one; else none — the shopper types the brand's |
+| neither | none | the campaign's, when it gives the brand one (its «Rabatt» row shows); else none — the cart is the one it always was |
 
 Its states: empty («Rabattkode» + «Bruk»); being checked («Sjekker…» — the field waits, the
 rest of the cart does not, and a second tap sends nothing); applied (the code + «Fjern»,
@@ -1268,8 +1319,9 @@ and nothing else changed: one sentence per reason Commerce gives (`COUPON_NOT_FO
 `COUPON_EXPIRED` · `COUPON_USAGE_LIMIT` · `COUPON_NOT_SUPPORTED` · `COUPON_MIN_AMOUNT` ·
 `COUPON_OTHER_APPLIED` · `COUPON_UNAVAILABLE`) and a generic one for anything else.
 
-A code typed here always has its answer said. The page's own code shows in the field only
-once it is taken (the code + «Fjern», so the shopper can take it off and type another);
+A code typed here always has its answer said. The page's own code — or the campaign's, with
+`discountField: true` — shows in the field only once it is taken (the code + «Fjern», so the
+shopper can take it off and type another);
 while it is being asked the field stays empty and usable, and when it is refused nothing is
 said. A payment always waits for a code the shopper typed.
 
@@ -1308,7 +1360,15 @@ load, on a gateway that predates a field): `Discounts.ApplyDiscount(cart_id, cod
 `DeleteAppliedDiscount`; `price.discount` on every cart and checkout line (the amount off
 the line, taxes included); `discount_code` on `GetCart`; and a payment refused for the
 discount as a GraphQL error whose `extensions.code` is the reason (`GIFT_MAX_ONE_UNIT`,
-`CHECKOUT_AMOUNT_ZERO`, `DISCOUNT_UNAVAILABLE`, `COUPON_*`).
+`CHECKOUT_AMOUNT_ZERO`, `DISCOUNT_UNAVAILABLE`, `COUPON_*`). **And from the campaigns
+service**, for the campaign's code: `discountCode: string | null` on every sponsor block of
+`GET /v2/mobile/config` (`campaigns[].primarySponsor`, `campaigns[].secondarySponsors[]`, and
+the top-level `primarySponsor` / `secondarySponsors`). A bootstrap without the field is a
+campaign without codes: nothing happens.
+
+`Vio.cart.getCart(sponsorId).discountCampaignId` is the campaign whose code the SDK put on that
+cart (absent for a typed code, the page's own, or one the server cart already had) — the cart
+follows that campaign as described above.
 
 ## Headless / SSR
 

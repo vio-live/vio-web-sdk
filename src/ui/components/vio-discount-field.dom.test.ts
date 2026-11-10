@@ -1,0 +1,370 @@
+// @vitest-environment jsdom
+/**
+ * The «Rabattkode» field of the cart and of the checkout's summary
+ * (`Vio.init({ discountField: true })`; off by default): the shopper types
+ * the brand's code, sees it applied, takes it off. Commerce asks the brand's
+ * shop about a code — one to three seconds — so the field waits while the
+ * rest of the cart does not, and a second tap sends nothing. A refusal says
+ * why in the shopper's words; a code the PAGE asked for is refused in silence.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mount, unmountAll, settle } from '../test-harness.js'
+import { Vio } from '../../core/client.js'
+import { Configuration } from '../../core/configuration.js'
+import { VioCheckout } from './vio-checkout.js'
+import type { DiscountCodeResult } from '../../core/cart/discount-code.js'
+
+const SPONSOR = 5
+const CREAM = { id: 'c', productId: 100, sponsorId: SPONSOR, brand: 'Faves', name: 'Krem', quantity: 1, unitPrice: 349, currency: 'NOK', imageUrl: '' }
+const MASK = { id: 'm', productId: 421306, sponsorId: SPONSOR, brand: 'Faves', name: 'Face mask', quantity: 1, unitPrice: 52, discount: 52, currency: 'NOK', imageUrl: '' }
+
+type El = HTMLElement & Record<string, any>
+
+const applied = (code: string): DiscountCodeResult => ({ status: 'applied', code, carts: [{ sponsorId: SPONSOR, status: 'applied' }] })
+const refusedWith = (code: string, reason?: string): DiscountCodeResult =>
+  ({ status: 'refused', code, ...(reason ? { reason } : {}), carts: [{ sponsorId: SPONSOR, status: 'refused' }] }) as DiscountCodeResult
+
+function deferred<T>() {
+  let resolve!: (v: T) => void
+  const promise = new Promise<T>((r) => (resolve = r))
+  return { promise, resolve }
+}
+
+/** What the cart manager says about the code of the sponsor's cart, as the test sets it. */
+let cartCode: string | undefined
+let busy: { kind: 'applying' | 'removing'; code: string; sponsorId: number } | undefined
+let apply: ReturnType<typeof vi.fn>
+let remove: ReturnType<typeof vi.fn>
+
+const page = (config: Record<string, unknown> = { discountField: true }) => Configuration.init({ apiKey: 'surface-key', ...config } as never)
+
+beforeEach(() => {
+  cartCode = undefined
+  busy = undefined
+  apply = vi.fn(async (code: string) => applied(code))
+  remove = vi.fn(async () => ({ removed: true, carts: [{ sponsorId: SPONSOR, code: 'KODE', status: 'removed' }] }))
+  vi.spyOn(Vio.cart, 'applyDiscountCode').mockImplementation(apply as never)
+  vi.spyOn(Vio.cart, 'removeDiscountCode').mockImplementation(remove as never)
+  vi.spyOn(Vio.cart, 'discountCodeForSponsor').mockImplementation(() => cartCode)
+  vi.spyOn(Vio.cart, 'discountBusy').mockImplementation(() => busy)
+  vi.spyOn(Vio.cart, 'refreshFromServer').mockResolvedValue(undefined as any)
+  vi.spyOn(Vio.checkout, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Vipps' }] as any)
+  vi.spyOn(console, 'info').mockImplementation(() => {})
+})
+
+afterEach(() => {
+  unmountAll()
+  ;(Vio.checkout as any).state = null
+  Configuration.reset()
+  vi.restoreAllMocks()
+})
+
+async function cart(items: Array<Record<string, unknown>> = [CREAM]): Promise<El> {
+  const el = await mount<El>('vio-cart')
+  el.carts = new Map([[SPONSOR, { sponsorId: SPONSOR, currency: 'NOK', items, ...(cartCode ? { discountCode: cartCode } : {}) }]])
+  el.itemCount = items.length
+  el.availableMethods = ['Vipps']
+  el.open = true
+  await settle(el)
+  return el
+}
+
+const field = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLElement>('.discount-field')
+const input = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLInputElement>('.discount-input')!
+const applyButton = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLButtonElement>('.discount-apply')!
+const removeButton = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLButtonElement>('.discount-remove')!
+const errorText = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLElement>('.discount-error')?.textContent?.trim()
+const text = (node: Element | null | undefined) => (node?.textContent ?? '').replace(/\s+/g, ' ').trim()
+
+async function type(el: El, value: string) {
+  const box = input(el)
+  box.value = value
+  box.dispatchEvent(new Event('input', { bubbles: true }))
+  await settle(el)
+}
+/** The cart says `change`, as it does when a code goes on or comes off. */
+async function cartChanged(el: El) {
+  Vio.cart.dispatchEvent(new CustomEvent('change', { detail: { cartsBySponsor: el.carts ?? new Map(), itemCount: 1 } }))
+  await settle(el)
+}
+
+describe('off unless the page asks for it', () => {
+  it('no field in the cart — not even with a code on the cart, whose «Rabatt» row still shows', async () => {
+    page({})
+    cartCode = 'gratis_face_mask'
+    const el = await cart([CREAM, MASK])
+    expect(field(el)).toBeNull()
+    expect(text(el.shadowRoot!.querySelector('.discount-row'))).toBe('Rabatt (gratis_face_mask) −52 Kr')
+  })
+
+  it('no field before Vio.init either', async () => {
+    const el = await cart()
+    expect(field(el)).toBeNull()
+  })
+
+  it('with discountField: an input named «Rabattkode» and «Bruk», first thing in the footer', async () => {
+    page()
+    const el = await cart()
+    expect(field(el)?.tagName).toBe('FORM')
+    expect(input(el).placeholder).toBe('Rabattkode')
+    expect(text(el.shadowRoot!.querySelector('label[for="vio-discount-code"]'))).toBe('Rabattkode')
+    expect(text(applyButton(el))).toBe('Bruk')
+    // Nothing typed: nothing to send.
+    expect(applyButton(el).disabled).toBe(true)
+    expect(el.shadowRoot!.querySelector('.footer')!.firstElementChild).toBe(field(el))
+    // Marked for button tracking, like every button of the cart.
+    expect(applyButton(el).getAttribute('data-vio-cta')).toBe('discount_apply')
+  })
+})
+
+describe('typing a code', () => {
+  beforeEach(() => page())
+
+  it('«Bruk» sends it for the cart\'s sponsor; taken: the field shows the code and «Fjern»', async () => {
+    const el = await cart()
+    await type(el, '  SOMMER10 ')
+    expect(applyButton(el).disabled).toBe(false)
+    applyButton(el).click()
+    await settle(el)
+    expect(apply).toHaveBeenCalledTimes(1)
+    expect(apply).toHaveBeenCalledWith('SOMMER10', SPONSOR)
+
+    // The cart says the code is on it.
+    cartCode = 'SOMMER10'
+    await cartChanged(el)
+    expect(field(el)?.classList.contains('is-applied')).toBe(true)
+    expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('SOMMER10')
+    expect(text(removeButton(el))).toBe('Fjern')
+    expect(removeButton(el).getAttribute('aria-label')).toBe('Fjern rabattkoden')
+    expect(removeButton(el).getAttribute('data-vio-cta')).toBe('discount_remove')
+    // The code never rides along as the button's tracked label.
+    expect(removeButton(el).getAttribute('data-vio-cta-label')).toBe('Fjern')
+    expect(errorText(el)).toBeUndefined()
+  })
+
+  it('Enter in the field sends it too', async () => {
+    const el = await cart()
+    await type(el, 'SOMMER10')
+    field(el)!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle(el)
+    expect(apply).toHaveBeenCalledWith('SOMMER10', SPONSOR)
+  })
+
+  it('while the brand\'s shop is asked: the field waits («Sjekker…»), a second tap sends nothing, and the cart goes on', async () => {
+    const answer = deferred<DiscountCodeResult>()
+    apply.mockImplementation(() => answer.promise)
+    const adjust = vi.spyOn(Vio.cart, 'adjustQuantity').mockImplementation(() => {})
+    const el = await cart()
+    await type(el, 'SOMMER10')
+    applyButton(el).click()
+    await settle(el)
+
+    expect(text(applyButton(el))).toBe('Sjekker…')
+    expect(applyButton(el).disabled).toBe(true)
+    expect(applyButton(el).getAttribute('aria-busy')).toBe('true')
+    expect(input(el).disabled).toBe(true)
+    expect(input(el).value).toBe('SOMMER10')
+    applyButton(el).click()
+    field(el)!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle(el)
+    expect(apply).toHaveBeenCalledTimes(1)
+
+    // Nothing else in the cart waits for it.
+    const plus = el.shadowRoot!.querySelector<HTMLButtonElement>('[data-vio-cta="quantity_plus"]')!
+    expect(plus.disabled).toBe(false)
+    plus.click()
+    expect(adjust).toHaveBeenCalledWith('c', SPONSOR, 1)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.checkout-btn')!.disabled).toBe(false)
+
+    cartCode = 'SOMMER10'
+    answer.resolve(applied('SOMMER10'))
+    await settle(el)
+    await settle(el)
+    expect(field(el)?.classList.contains('is-applied')).toBe(true)
+  })
+
+  it('refused: the field again, with why — one sentence per reason, never Commerce\'s own words', async () => {
+    const said: Record<string, string> = {
+      COUPON_NOT_FOUND: 'Rabattkoden finnes ikke.',
+      COUPON_EXPIRED: 'Rabattkoden er ikke lenger gyldig.',
+      COUPON_USAGE_LIMIT: 'Rabattkoden er brukt opp.',
+      COUPON_NOT_SUPPORTED: 'Rabattkoden kan ikke brukes her.',
+      COUPON_MIN_AMOUNT: 'Handlekurven er under minstebeløpet for rabattkoden.',
+      COUPON_OTHER_APPLIED: 'Du har allerede en rabattkode. Fjern den først.',
+      COUPON_UNAVAILABLE: 'Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.',
+    }
+    const el = await cart()
+    for (const [reason, sentence] of Object.entries(said)) {
+      apply.mockResolvedValueOnce(refusedWith('FEIL', reason))
+      await type(el, 'FEIL')
+      applyButton(el).click()
+      await settle(el)
+      await settle(el)
+      expect(errorText(el), reason).toBe(sentence)
+      expect(el.shadowRoot!.querySelector('.discount-error')!.getAttribute('role')).toBe('alert')
+      // The code stays in the field, to be corrected; the field is marked.
+      expect(input(el).value).toBe('FEIL')
+      expect(input(el).getAttribute('aria-invalid')).toBe('true')
+      expect(input(el).disabled).toBe(false)
+    }
+  })
+
+  it('a refusal in words the SDK does not know, or something that is not a code: the generic sentence', async () => {
+    const el = await cart()
+    apply.mockResolvedValueOnce(refusedWith('FEIL'))
+    await type(el, 'FEIL')
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(errorText(el)).toBe('Rabattkoden kunne ikke brukes.')
+  })
+
+  it('it could not be asked (network, timeout): try again — and typing clears what was said', async () => {
+    const el = await cart()
+    apply.mockResolvedValueOnce({ status: 'failed', code: 'KODE', carts: [{ sponsorId: SPONSOR, status: 'failed' }] })
+    await type(el, 'KODE')
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(errorText(el)).toBe('Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.')
+
+    apply.mockRejectedValueOnce(new Error('offline'))
+    applyButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(errorText(el)).toBe('Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.')
+
+    await type(el, 'KODE2')
+    expect(errorText(el)).toBeUndefined()
+    expect(input(el).getAttribute('aria-invalid')).toBe('false')
+  })
+})
+
+describe('a code on the cart', () => {
+  beforeEach(() => page())
+
+  it('«Fjern» takes it off the sponsor\'s cart; while it does, «Fjerner…», once', async () => {
+    cartCode = 'SOMMER10'
+    const answer = deferred<unknown>()
+    remove.mockImplementation(() => answer.promise)
+    const el = await cart()
+    removeButton(el).click()
+    await settle(el)
+    expect(remove).toHaveBeenCalledWith(SPONSOR)
+    expect(text(removeButton(el))).toBe('Fjerner…')
+    expect(removeButton(el).disabled).toBe(true)
+    removeButton(el).click()
+    expect(remove).toHaveBeenCalledTimes(1)
+
+    cartCode = undefined
+    answer.resolve({ removed: true, carts: [{ sponsorId: SPONSOR, code: 'SOMMER10', status: 'removed' }] })
+    await settle(el)
+    await settle(el)
+    // Back to an empty field.
+    expect(field(el)?.tagName).toBe('FORM')
+    expect(input(el).value).toBe('')
+  })
+
+  it('it could not be taken off: it stays, and the field says so', async () => {
+    cartCode = 'SOMMER10'
+    remove.mockResolvedValueOnce({ removed: false, carts: [{ sponsorId: SPONSOR, code: 'SOMMER10', status: 'failed' }] })
+    const el = await cart()
+    removeButton(el).click()
+    await settle(el)
+    await settle(el)
+    expect(field(el)?.classList.contains('is-applied')).toBe(true)
+    expect(errorText(el)).toBe('Rabattkoden kunne ikke fjernes. Prøv igjen.')
+  })
+})
+
+describe('the page\'s own code (discountCode) and the field', () => {
+  it('while the page\'s code is being put on the cart, the field shows it as being checked', async () => {
+    page({ discountField: true, discountCode: 'gratis_face_mask' })
+    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+    const el = await cart()
+    expect(input(el).value).toBe('gratis_face_mask')
+    expect(input(el).disabled).toBe(true)
+    expect(text(applyButton(el))).toBe('Sjekker…')
+
+    // Taken: the code and «Fjern», as if it had been typed.
+    busy = undefined
+    cartCode = 'gratis_face_mask'
+    await cartChanged(el)
+    expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('gratis_face_mask')
+  })
+
+  it('refused (the coupon is over): the field is simply empty — the shopper typed nothing, so nothing is said', async () => {
+    page({ discountField: true, discountCode: 'gratis_face_mask' })
+    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+    const el = await cart()
+    busy = undefined
+    await cartChanged(el)
+    expect(field(el)?.tagName).toBe('FORM')
+    expect(input(el).value).toBe('')
+    expect(errorText(el)).toBeUndefined()
+    expect(el.shadowRoot!.querySelector('.cart-notice')).toBeNull()
+  })
+
+  it('discountCode without the field: nothing of it on screen, taken or refused', async () => {
+    page({ discountCode: 'gratis_face_mask' })
+    busy = { kind: 'applying', code: 'gratis_face_mask', sponsorId: SPONSOR }
+    const el = await cart()
+    expect(field(el)).toBeNull()
+    busy = undefined
+    await cartChanged(el)
+    expect(field(el)).toBeNull()
+    expect(el.shadowRoot!.querySelector('.discount-error, .cart-notice, .discount-row')).toBeNull()
+  })
+})
+
+describe('the checkout\'s summary', () => {
+  const manager = Vio.checkout as any
+
+  async function checkout(): Promise<El> {
+    const proto = VioCheckout.prototype as any
+    for (const m of ['refreshApplePay', 'refreshKlarna', 'loadAvailableShippings']) vi.spyOn(proto, m).mockResolvedValue(undefined)
+    vi.spyOn(manager, 'items', 'get').mockReturnValue([CREAM])
+    vi.spyOn(manager, 'resumeKlarnaReturn').mockResolvedValue(undefined)
+    vi.spyOn(manager, 'getVippsExpressEnabled').mockResolvedValue(false)
+    vi.spyOn(Vio.cart, 'getAllCarts').mockReturnValue(new Map([[SPONSOR, {} as any]]))
+    vi.spyOn(manager, 'open').mockImplementation((...args: unknown[]) => {
+      manager.state = { sponsorId: args[0], session: 1, subtotal: 349, currency: 'NOK' }
+      manager.emit()
+      return manager.state
+    })
+    const el = await mount<El>('vio-checkout')
+    manager.open(SPONSOR)
+    el.show()
+    for (let i = 0; i < 6; i++) await settle(el)
+    return el
+  }
+
+  it('no field unless the page asks for it', async () => {
+    page({})
+    const el = await checkout()
+    expect(field(el)).toBeNull()
+  })
+
+  it('with discountField: the field between the lines and «Sum», for the cart this checkout pays', async () => {
+    page()
+    const el = await checkout()
+    expect(field(el)?.closest('.order-summary')).not.toBeNull()
+    expect(field(el)!.nextElementSibling?.textContent).toContain('Sum')
+    await type(el, 'SOMMER10')
+    applyButton(el).click()
+    await settle(el)
+    expect(apply).toHaveBeenCalledWith('SOMMER10', SPONSOR)
+  })
+
+  it('it follows the cart: a code that goes on elsewhere (the cart\'s own field, the page) shows here, with «Fjern»', async () => {
+    page()
+    const el = await checkout()
+    expect(field(el)?.tagName).toBe('FORM')
+    cartCode = 'SOMMER10'
+    await cartChanged(el)
+    expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('SOMMER10')
+    removeButton(el).click()
+    await settle(el)
+    expect(remove).toHaveBeenCalledWith(SPONSOR)
+  })
+})

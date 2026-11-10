@@ -64,6 +64,7 @@ import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } 
 import { isGiftOnlyCart } from '../../core/cart/discount.js'
 import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
 import { DISCOUNT_TEXT } from '../discount-texts.js'
+import { DiscountField, discountFieldStyles } from '../discount-field.js'
 import { receiptFromCheckout } from '../../core/checkout/checkout-receipt.js'
 import { checkoutSponsorOf, rememberedCheckoutSponsor, type CheckoutSponsor } from '../../core/sponsor-identity.js'
 import {
@@ -300,6 +301,16 @@ export class VioCheckout extends LitElement {
   }
   /** In-flight guard for loadAvailablePaymentMethods. */
   private loadingPaymentMethods = false
+  /**
+   * The «Rabattkode» field of the summary (`Vio.init({ discountField: true })`),
+   * about the cart this checkout pays. It follows the cart: a code that goes
+   * on or comes off — here, in the cart's own field, or by the page — draws
+   * the summary again.
+   */
+  private readonly discountField = new DiscountField({
+    host: this,
+    sponsorIds: () => (this.checkoutState?.sponsorId ? [this.checkoutState.sponsorId] : []),
+  })
   /**
    * Keyboard and focus while open: Escape closes — not while a payment is
    * in flight — Tab stays inside, focus returns to the opener.
@@ -1088,12 +1099,18 @@ export class VioCheckout extends LitElement {
       font-size: 13px;
       line-height: 1.35;
     }
+    /* The «Rabattkode» field sits between the lines and the rows. */
+    .order-summary .discount-field { margin-top: var(--vio-space-md, 16px); }
+    .order-summary .discount-field + .order-row,
+    .order-summary .discount-error + .order-row { margin-top: 0 !important; }
   `,
     discountStyles,
+    discountFieldStyles,
   ]
 
   override connectedCallback(): void {
     super.connectedCallback()
+    this.discountField.connect()
     void this.loadVippsButton()
     this.checkoutState = Vio.checkout.currentState
     this.items = Vio.checkout.items
@@ -1735,6 +1752,7 @@ export class VioCheckout extends LitElement {
   override disconnectedCallback(): void {
     this.stopCtaClicks?.()
     this.stopCtaClicks = null
+    this.discountField.disconnect()
     Vio.checkout.removeEventListener('change', this.boundOnCheckoutChange)
     Vio.checkout.removeEventListener('payment-complete', this.boundOnPaymentComplete)
     Vio.checkout.removeEventListener('payment-error', this.boundOnPaymentError)
@@ -4760,6 +4778,7 @@ export class VioCheckout extends LitElement {
                       </div>
                     `,
                   )}
+                  ${this.discountField.render()}
                   <div class="order-row" style="margin-top: 16px;">
                     <span>Sum</span><span>${this.orderTotal()}</span>
                   </div>

@@ -34,6 +34,7 @@ import { cartDiscountTotal, cartNetTotal, isGiftLine, isGiftOnlyCart } from '../
 import { discountReasonOfError } from '../../core/cart/discount-code.js'
 import { discountRow, discountStyles, renderLinePrice } from '../discount.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
+import { DiscountField, discountFieldStyles } from '../discount-field.js'
 
 /** Stripe wordmark, inlined so the published article needs no asset path. */
 const STRIPE_LOGO_SRC =
@@ -153,6 +154,17 @@ export class VioCart extends LitElement {
     dragZones: '.handle, .header',
     scroller: () => this.renderRoot.querySelector<HTMLElement>('.body'),
     close: () => this.close(),
+  })
+
+  /**
+   * The «Rabattkode» field (`Vio.init({ discountField: true })`): one for the
+   * drawer, about every cart in it. The drawer is drawn again on every cart
+   * change, and the field with it.
+   */
+  private readonly discountField = new DiscountField({
+    host: this,
+    sponsorIds: () => [...this.carts.values()].filter((c) => c.items.length > 0).map((c) => c.sponsorId),
+    followsCart: true,
   })
 
   private boundOnCartChange = (e: Event): void => {
@@ -575,6 +587,7 @@ export class VioCart extends LitElement {
   `,
     highlightsStyles('cart'),
     discountStyles,
+    discountFieldStyles,
   ]
 
   override connectedCallback(): void {
@@ -1098,6 +1111,7 @@ export class VioCart extends LitElement {
                 )}
               </div>
               <div class="footer">
+                ${this.discountField.render()}
                 <div class="subtotal-row">
                   <span class="subtotal-label">${this.subtotalLabel}</span>
                   <span class="subtotal-value">

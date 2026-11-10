@@ -412,6 +412,18 @@ describe('where the page\'s code comes from', () => {
     page({ discountCode: '  GAVE ' })
     expect(Configuration.get().discountCode).toBe('GAVE')
   })
+
+  it('the «Rabattkode» field is off unless the config says discountField: true — a config without either is the one it always was', async () => {
+    page()
+    expect(Configuration.get()).not.toHaveProperty('discountField')
+    expect(Configuration.get()).not.toHaveProperty('discountCode')
+    Configuration.init({ apiKey: 'surface-key', discountField: true })
+    expect(Configuration.get().discountField).toBe(true)
+    for (const notTrue of [false, 'true', 1, undefined]) {
+      Configuration.init({ apiKey: 'surface-key', discountField: notTrue as never })
+      expect(Configuration.get()).not.toHaveProperty('discountField')
+    }
+  })
 })
 
 describe('a page without a discount code', () => {

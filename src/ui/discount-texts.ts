@@ -33,6 +33,22 @@ export const DISCOUNT_TEXT = {
   /** After a code that is no good any more came off the cart at the payment. */
   cartUpdated: 'Handlekurven er oppdatert – prøv igjen.',
 
+  // ── The «Rabattkode» field (`Vio.init({ discountField: true })`) ──────────
+  /** The field's name: its label and its placeholder. */
+  fieldLabel: 'Rabattkode',
+  /** The button that sends the code. */
+  fieldApply: 'Bruk',
+  /** The same button while Commerce asks the brand's shop (one to three seconds). */
+  fieldApplying: 'Sjekker…',
+  /** Beside the code that is on the cart: takes it off. */
+  fieldRemove: 'Fjern',
+  /** The same button while the code is being taken off. */
+  fieldRemoving: 'Fjerner…',
+  /** What the «Fjern» button is, read out. */
+  fieldRemoveLabel: 'Fjern rabattkoden',
+  /** The code could not be taken off. */
+  fieldRemoveFailed: 'Rabattkoden kunne ikke fjernes. Prøv igjen.',
+
   // ── Why a code was refused ────────────────────────────────────────────────
   couponNotFound: 'Rabattkoden finnes ikke.',
   couponExpired: 'Rabattkoden er ikke lenger gyldig.',

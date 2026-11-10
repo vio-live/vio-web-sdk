@@ -59,6 +59,14 @@ export interface VioConfig {
    * codes).
    */
   discountCode?: string
+  /**
+   * Show a «Rabattkode» field in the cart and in the checkout's summary, for
+   * the shopper to type the brand's code (and to take the code off again).
+   * Off by default: a page that only names its campaign's code
+   * (`discountCode`) shows no field, and says nothing when that code is not
+   * taken. Only for brands that are paid with Vipps.
+   */
+  discountField?: boolean
   /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */
   debug?: boolean
   /**
@@ -108,6 +116,8 @@ export interface ResolvedConfig {
   campaignId?: number
   /** The page's discount code as it is sent (trimmed); absent when none was given or it was not a code. */
   discountCode?: string
+  /** `true` when the page asked for the «Rabattkode» field; absent otherwise. */
+  discountField?: boolean
   debug: boolean
   privacyMode?: 'standard' | 'minimal'
   apiBase: string
@@ -160,6 +170,7 @@ class ConfigurationSingleton {
       contentTitle: input.contentTitle,
       campaignId: toCampaignId(input.campaignId),
       ...(normalizeDiscountCode(input.discountCode) ? { discountCode: normalizeDiscountCode(input.discountCode) } : {}),
+      ...(input.discountField === true ? { discountField: true } : {}),
       debug: input.debug === true,
       // Only the two words the backend knows; anything else is "not said".
       privacyMode:

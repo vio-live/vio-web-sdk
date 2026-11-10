@@ -27,7 +27,9 @@ import { CONTENT_TITLE_MAX_LENGTH, originAndPath } from '../content.js'
 import { normalizeLayoutOrigin } from '../detail-layout.js'
 import {
   addItem as gqlAddItem,
+  applyDiscount as gqlApplyDiscount,
   createCart as gqlCreateCart,
+  deleteAppliedDiscount as gqlDeleteAppliedDiscount,
   deleteItem as gqlDeleteItem,
   getCart as gqlGetCart,
   getCartGraphQLOptions,
@@ -38,6 +40,15 @@ import {
   type CartKeyContext,
   type CartQueryOptions,
 } from '../api/cart-queries.js'
+import {
+  commonDiscountReason,
+  discountReasonOf,
+  normalizeDiscountCode,
+  summarizeDiscountOutcomes,
+  type CartDiscountOutcome,
+  type DiscountCodeRemoval,
+  type DiscountCodeResult,
+} from './discount-code.js'
 
 /** Where the carts are kept: one entry per connection (see `cartStorageKey`). */
 export const CART_STORAGE_PREFIX = 'vio.cart.v1'
@@ -239,6 +250,23 @@ export class CartManager extends EventTarget {
   private rebuildEpoch = new Map<number, number>()
   /** The lines to give the next backend cart of a sponsor, after its channel went away. */
   private carryOver = new Map<number, CarriedLine[]>()
+  /**
+   * The discount code asked for from code on this page load
+   * (`applyDiscountCode`): it also goes on the backend carts created from now
+   * on. `null` after `removeDiscountCode()` — no code at all for this page
+   * load; `undefined` when nothing was said.
+   */
+  private askedDiscountCode: string | null | undefined = undefined
+  /** What Commerce last said about a code on a sponsor's backend cart. */
+  private discountAnswers = new Map<number, { cartId: string; code: string; outcome: CartDiscountOutcome }>()
+  /**
+   * The discount call in flight per sponsor (an ApplyDiscount or a
+   * DeleteAppliedDiscount): one at a time, and what `discountBusy` reads.
+   */
+  private discountCalls = new Map<
+    number,
+    { kind: 'applying' | 'removing'; cartId: string; code: string; promise: Promise<unknown> }
+  >()
 
   /** The storage key of this connection's carts. */
   private readonly storageKey: string
@@ -475,6 +503,9 @@ export class CartManager extends EventTarget {
       .map((item) => ({ productId: item.productId, variantId: item.variantId, origins: lineOrigins(item) }))
     delete cart.cartId
     delete cart.channelId
+    // The code was on the backend cart that is gone; the next one is given the page's again.
+    delete cart.discountCode
+    this.discountAnswers.delete(sponsorId)
     for (const item of cart.items) delete item.cartItemId
     for (const key of [...this.qtySyncs.keys()]) {
       if (key.startsWith(`${sponsorId}:`)) this.qtySyncs.delete(key)
@@ -628,6 +659,8 @@ export class CartManager extends EventTarget {
       subtotal?: number
       shipping?: number
       available_shipping_countries?: string[]
+      /** The code the cart carries — only in an answer that was asked for it (`getCart` with `discountCode`). */
+      discount_code?: string | null
       line_items?: Array<{
         id: string
         product_id: number
@@ -659,6 +692,13 @@ export class CartManager extends EventTarget {
     if (backendCart.shipping != null) cart.shipping = backendCart.shipping
     if (backendCart.available_shipping_countries) {
       cart.availableShippingCountries = backendCart.available_shipping_countries
+    }
+    // The code the server cart carries, when this answer says (null: none) —
+    // an answer that does not name the field says nothing about it.
+    if (backendCart.discount_code !== undefined) {
+      const serverCode = normalizeDiscountCode(backendCart.discount_code)
+      if (serverCode) cart.discountCode = serverCode
+      else delete cart.discountCode
     }
 
     // Lines the shopper removed while their AddItem was still in flight: they
@@ -1153,6 +1193,8 @@ export class CartManager extends EventTarget {
   }
 
   clearSponsorCart(sponsorId: number): void {
+    // What Commerce said about a code was about the cart that goes.
+    this.discountAnswers.delete(sponsorId)
     if (this.cartsBySponsor.delete(sponsorId)) {
       this.persist()
       this.emit()
@@ -1160,6 +1202,7 @@ export class CartManager extends EventTarget {
   }
 
   clearAllCarts(): void {
+    this.discountAnswers.clear()
     if (this.cartsBySponsor.size === 0) return
     this.cartsBySponsor.clear()
     this.persist()
@@ -1170,9 +1213,21 @@ export class CartManager extends EventTarget {
   async fetchCartFromBackend(sponsorId: number): Promise<unknown> {
     const live = await this.liveCart(sponsorId)
     if (!live) return null
-    const resCart = await gqlGetCart(live.cartId, live.opts)
+    const resCart = await this.readBackendCart(sponsorId, live)
     if (resCart) this.updateFromBackendCart(sponsorId, resCart)
     return resCart
+  }
+
+  /**
+   * GetCart — as it always was for a cart without a discount code; with a
+   * code in play (the page wants one, or the cart carries one) the answer
+   * also says which code the server cart has.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readBackendCart(sponsorId: number, live: { cartId: string; opts: CartQueryOptions }): Promise<any> {
+    return this.discountInPlay(sponsorId)
+      ? gqlGetCart(live.cartId, live.opts, { discountCode: true })
+      : gqlGetCart(live.cartId, live.opts)
   }
 
   /**
@@ -1197,7 +1252,7 @@ export class CartManager extends EventTarget {
       try {
         const live = await this.liveCart(sponsorId)
         if (!live) return this.cartsBySponsor.get(sponsorId)
-        resCart = await gqlGetCart(live.cartId, live.opts)
+        resCart = await this.readBackendCart(sponsorId, live)
       } catch (err) {
         if (typeof console !== 'undefined') {
           console.warn('[CartManager] GetCart before the checkout failed — the local cart stands', err)
@@ -1280,6 +1335,228 @@ export class CartManager extends EventTarget {
       this.updateFromBackendCart(sponsorId, resCart)
     }
     return resCart
+  }
+
+  // MARK: - Discount code (one per backend cart)
+
+  /**
+   * Put a discount code on the carts: on every sponsor's backend cart (or only
+   * `sponsorId`'s) now, and — kept for this page load — on the backend carts
+   * to come. This is what a "discount code" field calls. Commerce takes one
+   * code per cart: the same code again is fine, another one while a code is
+   * on the cart is refused (`removeDiscountCode()` first). It asks the
+   * brand's shop about the code, so the answer can take a few seconds:
+   * `discountBusy()` says so meanwhile (with `change`), nothing else in the
+   * cart waits for it, and a second call for the same cart and code shares
+   * the first. A cart that took the code has its lines read again, so each
+   * says what the code takes off it.
+   *
+   * Never throws: the answer says what happened (`DiscountCodeResult`, with
+   * everything Commerce answered per cart), and a cart that did not take the
+   * code is as it was.
+   */
+  async applyDiscountCode(code: string, sponsorId?: number): Promise<DiscountCodeResult> {
+    const normalized = normalizeDiscountCode(code)
+    if (!normalized) return { status: 'refused', code: '', carts: [] }
+    const before = this.askedDiscountCode
+    // Wanted from now on: a backend cart born while Commerce answers gets it too.
+    this.askedDiscountCode = normalized
+    const carts: CartDiscountOutcome[] = []
+    for (const id of this.discountTargets(sponsorId)) {
+      const outcome = await this.assertDiscountCode(id, normalized)
+      if (outcome) carts.push(outcome)
+    }
+    const status = summarizeDiscountOutcomes(carts)
+    // A code no cart took is not kept for the carts to come.
+    if ((status === 'refused' || status === 'failed') && this.askedDiscountCode === normalized) {
+      this.askedDiscountCode = before
+    }
+    const reason = commonDiscountReason(carts)
+    return { status, code: normalized, ...(reason ? { reason } : {}), carts }
+  }
+
+  /**
+   * Take the discount code off the carts (every sponsor's, or only
+   * `sponsorId`'s) and give none to the carts to come for the rest of this
+   * page load — the page's configured code included. A cart it came off has
+   * its lines read again. Never throws.
+   */
+  async removeDiscountCode(sponsorId?: number): Promise<DiscountCodeRemoval> {
+    this.askedDiscountCode = null
+    const carts: DiscountCodeRemoval['carts'] = []
+    for (const id of this.discountTargets(sponsorId)) {
+      const code = this.cartsBySponsor.get(id)?.discountCode
+      if (!code) continue
+      try {
+        const live = await this.liveCart(id)
+        // The backend cart is gone (or was rebuilt without the code): nothing to take off.
+        if (!live || this.cartsBySponsor.get(id)?.discountCode !== code) continue
+        const answer = await this.discountCall(id, { kind: 'removing', cartId: live.cartId, code }, () =>
+          gqlDeleteAppliedDiscount(live.cartId, code, live.opts),
+        )
+        if (!answer.executed) {
+          carts.push({ sponsorId: id, code, status: 'refused', ...(answer.message ? { message: answer.message } : {}), answer })
+          continue
+        }
+        this.discountAnswers.delete(id)
+        const cart = this.cartsBySponsor.get(id)
+        if (cart && cart.cartId === live.cartId && cart.discountCode === code) {
+          delete cart.discountCode
+          this.persist()
+          this.emit()
+        }
+        carts.push({ sponsorId: id, code, status: 'removed', answer })
+        // The lines no longer carry what the code took off them.
+        await this.refreshFromServer(id)
+      } catch (err) {
+        if (typeof console !== 'undefined') {
+          console.warn(`[CartManager] the discount code could not be removed from the cart of sponsor ${id}`, err)
+        }
+        carts.push({ sponsorId: id, code, status: 'failed', message: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    return { removed: carts.some((c) => c.status === 'removed'), carts }
+  }
+
+  /** The discount code a sponsor's backend cart carries, once Commerce took it. */
+  discountCodeForSponsor(sponsorId: number): string | undefined {
+    return this.cartsBySponsor.get(sponsorId)?.discountCode
+  }
+
+  /**
+   * A discount code is being put on a cart (`applying`) or taken off it
+   * (`removing`) right now — `sponsorId`'s cart, or any. `change` is said
+   * when it starts and when it ends.
+   */
+  discountBusy(sponsorId?: number): { kind: 'applying' | 'removing'; code: string; sponsorId: number } | undefined {
+    for (const [id, call] of this.discountCalls) {
+      if (sponsorId === undefined || id === sponsorId) return { kind: call.kind, code: call.code, sponsorId: id }
+    }
+    return undefined
+  }
+
+  /** The code this page wants on its carts: the one asked for from code, if any. */
+  private wantedDiscountCode(): string | undefined {
+    return this.askedDiscountCode ?? undefined
+  }
+
+  /** A discount code is in play for this sponsor's cart: the page wants one, or the cart carries one. */
+  private discountInPlay(sponsorId: number): boolean {
+    return !!(this.wantedDiscountCode() || this.cartsBySponsor.get(sponsorId)?.discountCode)
+  }
+
+  private discountTargets(sponsorId?: number): number[] {
+    return sponsorId !== undefined ? [sponsorId] : [...this.cartsBySponsor.keys()]
+  }
+
+  /**
+   * `code` on a sponsor's backend cart — asked once its own mutations have
+   * settled (a cart being created has its id by then) — and its lines read
+   * again when the code is new to it. `undefined` when the sponsor has no
+   * backend cart. Never throws.
+   */
+  private async assertDiscountCode(sponsorId: number, code: string): Promise<CartDiscountOutcome | undefined> {
+    try {
+      await this.waitForCartMutations(sponsorId)
+      const live = await this.liveCart(sponsorId)
+      if (!live) return undefined
+      const before = this.cartsBySponsor.get(sponsorId)?.discountCode
+      const outcome = await this.askDiscount(sponsorId, live.cartId, code, live.opts)
+      const cart = this.cartsBySponsor.get(sponsorId)
+      if (outcome.status === 'applied' && before !== code && cart?.cartId === live.cartId && cart.items.length > 0) {
+        await this.refreshFromServer(sponsorId)
+      }
+      return outcome
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn(`[CartManager] the discount code could not be put on the cart of sponsor ${sponsorId}`, err)
+      }
+      return { sponsorId, status: 'failed', message: err instanceof Error ? err.message : String(err) }
+    }
+  }
+
+  /**
+   * ONE `ApplyDiscount` for a backend cart and a code. A call in flight for
+   * the same cart and code is shared — a double tap is one request — and any
+   * other discount call of that sponsor goes first. Resolves with the
+   * outcome, never rejects; a cart that took the code remembers it
+   * (`discountCode`).
+   */
+  private askDiscount(
+    sponsorId: number,
+    cartId: string,
+    code: string,
+    opts: CartQueryOptions,
+  ): Promise<CartDiscountOutcome> {
+    const same = this.discountCalls.get(sponsorId)
+    if (same && same.kind === 'applying' && same.cartId === cartId && same.code === code) {
+      return same.promise as Promise<CartDiscountOutcome>
+    }
+    return this.discountCall(sponsorId, { kind: 'applying', cartId, code }, async (): Promise<CartDiscountOutcome> => {
+      let outcome: CartDiscountOutcome
+      try {
+        const answer = await gqlApplyDiscount(cartId, code, opts)
+        if (answer.executed) outcome = { sponsorId, status: 'applied', answer }
+        else {
+          const reason = discountReasonOf(answer.message)
+          outcome = {
+            sponsorId,
+            status: 'refused',
+            ...(reason ? { reason } : {}),
+            ...(answer.message ? { message: answer.message } : {}),
+            answer,
+          }
+        }
+      } catch (err) {
+        outcome = { sponsorId, status: 'failed', message: err instanceof Error ? err.message : String(err) }
+      }
+      this.discountAnswers.set(sponsorId, { cartId, code, outcome })
+      const cart = this.cartsBySponsor.get(sponsorId)
+      if (outcome.status === 'applied') {
+        // Still the same backend cart (it may have moved while Commerce answered).
+        if (cart && cart.cartId === cartId && cart.discountCode !== code) {
+          cart.discountCode = code
+          this.persist()
+        }
+      } else if (typeof console !== 'undefined') {
+        // The purchase goes on without the discount: said here; the field that asked says it to the shopper.
+        console.warn(
+          `[CartManager] discount code "${code}" not applied to the cart of sponsor ${sponsorId} (${outcome.status})`,
+          outcome.message ?? '',
+        )
+      }
+      return outcome
+    })
+  }
+
+  /**
+   * Runs one discount call (apply or remove) for a sponsor's cart: one at a
+   * time per sponsor — whatever is in flight goes first — and `discountBusy`
+   * says it is going on, with `change` at its start and at its end.
+   */
+  private async discountCall<T>(
+    sponsorId: number,
+    what: { kind: 'applying' | 'removing'; cartId: string; code: string },
+    run: () => Promise<T>,
+  ): Promise<T> {
+    for (;;) {
+      const inFlight = this.discountCalls.get(sponsorId)
+      if (!inFlight) break
+      await inFlight.promise.then(
+        () => undefined,
+        () => undefined,
+      )
+    }
+    const promise = run()
+    const entry = { ...what, promise }
+    this.discountCalls.set(sponsorId, entry)
+    this.emit()
+    try {
+      return await promise
+    } finally {
+      if (this.discountCalls.get(sponsorId) === entry) this.discountCalls.delete(sponsorId)
+      this.emit()
+    }
   }
 
   // MARK: - Read accessors

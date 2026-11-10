@@ -105,4 +105,11 @@ export interface SponsorCartState {
   subtotal?: number
   shipping?: number
   availableShippingCountries?: string[]
+  /**
+   * The discount code on the backend cart — Commerce takes one per cart
+   * (`Vio.applyDiscountCode`, or the page's `discountCode`). Set once
+   * Commerce took it, gone when it is removed or the backend cart is; a new
+   * backend cart is given the page's code again.
+   */
+  discountCode?: string
 }

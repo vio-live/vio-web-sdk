@@ -14,7 +14,12 @@
  * call to `withGatewayFeature`, not a new copy of the retry.
  */
 
-export type GatewayFeature = 'buyer_ref' | 'line_origin' | 'checkout_attribution'
+export type GatewayFeature =
+  | 'buyer_ref'
+  | 'line_origin'
+  | 'checkout_attribution'
+  | 'cart_discount_code'
+  | 'discount_gifts'
 
 /**
  * What the gateway's validation error names when it does not know the
@@ -29,6 +34,10 @@ const FEATURE_TOKENS: Readonly<Record<GatewayFeature, readonly string[]>> = {
   buyer_ref: ['buyer_ref'],
   line_origin: ['origin', 'CartLineOriginInput'],
   checkout_attribution: ['attribution', 'CheckoutAttributionInput', 'CheckoutAttributionEntryInput'],
+  // `discount_code` on the CART read model (GetCart); the checkout has had one of its own for long.
+  cart_discount_code: ['discount_code'],
+  // `gifts` on the answer of ApplyDiscount: the products a code gives away.
+  discount_gifts: ['gifts'],
 }
 
 /** The names a feature goes by on the gateway: its field or argument, then its input types (tests). */

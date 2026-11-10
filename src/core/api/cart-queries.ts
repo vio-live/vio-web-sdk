@@ -296,7 +296,8 @@ export const UPDATE_ITEM_MUTATION = updateItemMutation(false)
 /** `UpdateItem` with the `origin` of the added units (`CartLineOriginInput`, snake_case fields — see `lineOriginWire`). */
 export const UPDATE_ITEM_WITH_ORIGIN_MUTATION = updateItemMutation(true)
 
-export const GET_CART_QUERY = `
+/** With `discount_code` — the discount code the cart carries (gateway-features `cart_discount_code`) — or without it, as before discounts. */
+const getCartQuery = (withDiscountCode: boolean) => `
 query GetCart($cartId: String!) {
   Cart {
     GetCart(cart_id: $cartId) {
@@ -363,11 +364,14 @@ query GetCart($cartId: String!) {
       subtotal
       shipping
       currency
-      available_shipping_countries
+      available_shipping_countries${withDiscountCode ? '\n      discount_code' : ''}
     }
   }
 }
-`;
+`
+export const GET_CART_QUERY = getCartQuery(false)
+/** `GetCart` that also asks which discount code the cart carries — only sent for a cart with a code in play. */
+export const GET_CART_WITH_DISCOUNT_CODE_QUERY = getCartQuery(true)
 
 export const GET_LINE_ITEMS_BY_SUPPLIER_QUERY = `
 query GetLineItemsBySupplier($cartId: String!) {
@@ -1264,9 +1268,117 @@ export async function updateItem(
   return json?.data?.Cart?.UpdateItem
 }
 
-export async function getCart(cartId: string, options?: CartQueryOptions): Promise<any> {
-  const json = await executeCartGraphQL(GET_CART_QUERY, { cartId }, options)
+/**
+ * `GetCart`. With `extra.discountCode` the answer also says which discount
+ * code the cart carries (`discount_code`, null when none) — asked only for a
+ * cart with a code in play, so a page without discounts sends exactly the
+ * query it always did; a gateway that predates the field gets that same
+ * query, once per page load — see gateway-features.
+ */
+export async function getCart(
+  cartId: string,
+  options?: CartQueryOptions,
+  extra: { discountCode?: boolean } = {},
+): Promise<any> {
+  const json = extra.discountCode
+    ? await withGatewayFeature('cart_discount_code', (supported) =>
+        executeCartGraphQL(supported ? GET_CART_WITH_DISCOUNT_CODE_QUERY : GET_CART_QUERY, { cartId }, options),
+      )
+    : await executeCartGraphQL(GET_CART_QUERY, { cartId }, options)
   return json?.data?.Cart?.GetCart
+}
+
+// ── Discount code: one per backend cart ─────────────────────────────────────
+
+/**
+ * `Discounts.ApplyDiscount`: puts a discount code on a cart. The same code
+ * again is taken again; another one is refused. With `gifts` — the products
+ * the code gives away, for the client to put in the cart (gateway-features
+ * `discount_gifts`) — or without them, for a gateway that predates the field.
+ */
+const applyDiscountMutation = (withGifts: boolean) => `
+mutation ApplyDiscount($cartId: String!, $code: String!) {
+  Discounts {
+    ApplyDiscount(cart_id: $cartId, code: $code) {
+      executed
+      message${
+        withGifts
+          ? `
+      gifts {
+        product_id
+        variant_id
+        quantity
+      }`
+          : ''
+      }
+    }
+  }
+}
+`
+export const APPLY_DISCOUNT_MUTATION = applyDiscountMutation(true)
+/** The same mutation for a gateway that predates `gifts`. */
+export const APPLY_DISCOUNT_MUTATION_LEGACY = applyDiscountMutation(false)
+
+/** `Discounts.DeleteAppliedDiscount`: takes a discount code off a cart. */
+export const DELETE_APPLIED_DISCOUNT_MUTATION = `
+mutation DeleteAppliedDiscount($cartId: String!, $code: String!) {
+  Discounts {
+    DeleteAppliedDiscount(cart_id: $cartId, code: $code) {
+      executed
+      message
+    }
+  }
+}
+`
+
+/**
+ * What Commerce answers to a discount mutation: whether it did it, and its
+ * own word about it — on a refusal a stable one (`COUPON_EXPIRED`…, see
+ * cart/discount-code.ts). `gifts` (ApplyDiscount): the products the code
+ * gives away — the client puts one unit of each in the cart; null or empty
+ * when there are none. Everything else the answer carries is kept as it
+ * came, so a field added to the selection later reaches the caller.
+ */
+export interface DiscountAnswer {
+  executed: boolean
+  message: string
+  gifts?: Array<{ product_id: number; variant_id?: number | null; quantity?: number | null }> | null
+  [field: string]: unknown
+}
+
+function discountAnswerOf(answer: unknown): DiscountAnswer {
+  const a = answer && typeof answer === 'object' ? (answer as Record<string, unknown>) : {}
+  return { ...a, executed: a.executed === true, message: typeof a.message === 'string' ? a.message : '' }
+}
+
+/**
+ * Put `code` on the backend cart. Commerce asks the brand's shop about the
+ * code, so the answer can take a few seconds. Resolves with it —
+ * `executed: false` when the code was refused (unknown, expired, another
+ * code already on the cart…); rejects only when the call itself failed.
+ */
+export async function applyDiscount(
+  cartId: string,
+  code: string,
+  options?: CartQueryOptions,
+): Promise<DiscountAnswer> {
+  // A gateway without `gifts` refuses the whole mutation at validation —
+  // nothing ran — so it is sent again without them, once per page load. An
+  // ApplyDiscount that ran is never repeated here.
+  const json = await withGatewayFeature('discount_gifts', (supported) =>
+    executeCartGraphQL(supported ? APPLY_DISCOUNT_MUTATION : APPLY_DISCOUNT_MUTATION_LEGACY, { cartId, code }, options),
+  )
+  return discountAnswerOf(json?.data?.Discounts?.ApplyDiscount)
+}
+
+/** Take `code` off the backend cart. Same answer shape as `applyDiscount`. */
+export async function deleteAppliedDiscount(
+  cartId: string,
+  code: string,
+  options?: CartQueryOptions,
+): Promise<DiscountAnswer> {
+  const json = await executeCartGraphQL(DELETE_APPLIED_DISCOUNT_MUTATION, { cartId, code }, options)
+  return discountAnswerOf(json?.data?.Discounts?.DeleteAppliedDiscount)
 }
 
 export async function getLineItemsBySupplier(

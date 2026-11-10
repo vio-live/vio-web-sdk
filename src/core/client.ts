@@ -20,6 +20,7 @@ import { Configuration, type VioConfig } from './configuration.js'
 import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
+import type { DiscountCodeRemoval, DiscountCodeResult } from './cart/discount-code.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
 import { AnalyticsManager, resolveCampaignId } from './analytics/analytics-manager.js'
 import type { CtaInput } from './analytics/cta.js'
@@ -365,6 +366,29 @@ class VioFacade {
     const manager = this.currentCartManager()
     manager.setActive(true)
     manager.announce()
+  }
+
+  /**
+   * Put a discount code on the carts — every sponsor's, or only
+   * `sponsorId`'s. Commerce takes ONE code per backend cart; the code is kept
+   * for this page load and goes on the carts created from now on. This is the
+   * call a host's own "discount code" field makes. Resolves with what
+   * happened (`applied` / `pending` — no backend cart yet — / `refused` /
+   * `failed`) and never throws: a cart that did not take the code is as it
+   * was, and the purchase goes on without it. `Vio.cart.applyDiscountCode`
+   * is the same call.
+   */
+  applyDiscountCode(code: string, sponsorId?: number): Promise<DiscountCodeResult> {
+    return this.cart.applyDiscountCode(code, sponsorId)
+  }
+
+  /**
+   * Take the discount code off the carts (every sponsor's, or only
+   * `sponsorId`'s) and give none to new carts for the rest of this page load.
+   * Never throws. `Vio.cart.removeDiscountCode` is the same call.
+   */
+  removeDiscountCode(sponsorId?: number): Promise<DiscountCodeRemoval> {
+    return this.cart.removeDiscountCode(sponsorId)
   }
 
   /** Checkout flow manager. Subscribes to cart state via the CartManager; asks here for the order's attribution. */

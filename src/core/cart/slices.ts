@@ -9,13 +9,16 @@
  * per campaign: its items (quantities from the origins, merged per product +
  * variant), its value with two decimals, and `slot` / `contentId` /
  * `sponsorId` only when they are the same for the whole slice. A cart with
- * one campaign is one slice. Pure; never throws on odd lines.
+ * one campaign is one slice. Prices and values are what the units cost once
+ * the cart's discount code is counted (cart/discount.ts). Pure; never throws
+ * on odd lines.
  */
 
 import type { AnalyticsItemInput } from '../analytics/analytics-manager.js'
 import { lineOrigins } from './cart-manager.js'
 import { normalizeLayoutOrigin } from '../detail-layout.js'
 import type { CartLineItem, CartOrigin } from './types.js'
+import { netUnitPrice } from './discount.js'
 
 /** An item of a slice — the analytics item shape (ids as given, normalized on the wire). */
 export type VioItem = AnalyticsItemInput
@@ -58,7 +61,8 @@ export function cartSlicesFrom(
   for (const line of lines) {
     if (!line || typeof line !== 'object') continue
     const sponsorId = Number(line.sponsorId)
-    const unitPrice = Number(line.unitPrice) || 0
+    // What a unit costs once the cart's discount code is counted (a gift: 0); the list price without one.
+    const unitPrice = netUnitPrice(line) || 0
     for (const origin of lineOrigins(line)) {
       let campaignId = origin.campaignId
       if (campaignId === undefined) {
@@ -164,7 +168,8 @@ export function lineItemsByLayout(lines: ReadonlyArray<CartLineItem>): VioItem[]
       name: line.name,
       brand: line.brand,
       variantId: line.variantId,
-      price: line.unitPrice,
+      // The unit's price once the cart's discount code is counted; the list price without one.
+      price: line.discount ? netUnitPrice(line) : line.unitPrice,
       quantity: line.quantity,
     }
     const origins = lineOrigins(line)

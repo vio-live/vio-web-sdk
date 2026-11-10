@@ -65,8 +65,19 @@ export interface CartLineItem {
   brand: string
   /** Display product name. */
   name: string
-  /** Numeric unit price (inclusive of taxes when available). */
+  /**
+   * Numeric unit price (inclusive of taxes when available) — the LIST price:
+   * it does not change with a discount code.
+   */
   unitPrice: number
+  /**
+   * What the cart's discount code takes off this LINE — all its units — in
+   * major units, taxes included (Commerce's `price.discount`). Absent without
+   * one. What the line costs is `unitPrice × quantity − discount`
+   * (`lineNetTotal`, cart/discount.ts); a line whose discount is its whole
+   * price is a gift.
+   */
+  discount?: number
   /** Currency code (e.g. "NOK"). */
   currency: string
   /** Display image URL. */
@@ -83,6 +94,20 @@ export interface CartLineItem {
   shipping?: unknown
   /** Shipping options offered by the backend for this line. */
   availableShippings?: unknown[]
+}
+
+/**
+ * A gift the cart's discount code brings (`ApplyDiscount` → `gifts`): one unit
+ * of that product — and variant, when the code names one — free. The SDK
+ * puts it in the cart when the cart has something to pay for.
+ */
+export interface CartGift {
+  productId: number
+  variantId?: number
+  /** The SDK put it in this cart: it is not put in twice, and it goes out again with the code or when nothing else is left. */
+  added?: boolean
+  /** Not to be put in this cart (again): the shopper took it out, or it could not be added. */
+  declined?: boolean
 }
 
 export interface SponsorCartState {
@@ -105,4 +130,19 @@ export interface SponsorCartState {
   subtotal?: number
   shipping?: number
   availableShippingCountries?: string[]
+  /**
+   * The discount code on the backend cart — Commerce takes one per cart
+   * (`Vio.applyDiscountCode`, or the page's `discountCode`). Set once
+   * Commerce took it, gone when it is removed or the backend cart is; a new
+   * backend cart is given the page's code again.
+   */
+  discountCode?: string
+  /** The gifts that code brings, and what became of each in this cart. Goes with `discountCode`. */
+  gifts?: CartGift[]
+  /**
+   * A code Commerce refused for this cart for a reason that does not change
+   * with what the cart holds (expired, unknown, used up, not for here): the
+   * page's own code is not asked for again on this cart.
+   */
+  discountRefusal?: { code: string; reason: string }
 }

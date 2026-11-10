@@ -132,6 +132,13 @@ export {
   UPDATE_ITEM_MUTATION,
   UPDATE_ITEM_WITH_ORIGIN_MUTATION,
   GET_CART_QUERY,
+  GET_CART_WITH_DISCOUNT_CODE_QUERY,
+  applyDiscount,
+  deleteAppliedDiscount,
+  APPLY_DISCOUNT_MUTATION,
+  APPLY_DISCOUNT_MUTATION_LEGACY,
+  DELETE_APPLIED_DISCOUNT_MUTATION,
+  type DiscountAnswer,
   GET_LINE_ITEMS_BY_SUPPLIER_QUERY,
   UPDATE_SHIPPINGS_BY_SUPPLIER_MUTATION,
   CREATE_CHECKOUT_MUTATION,
@@ -154,7 +161,41 @@ export type {
   AddProductOptions,
   AddManualOptions,
 } from './cart/cart-manager.js'
-export type { CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
+export type { CartGift, CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
+// The discount code of a cart (one per backend cart): `Vio.init({ discountCode })` / `?vio_discount=` /
+// `Vio.applyDiscountCode()` / `Vio.removeDiscountCode()`, and the reasons Commerce gives.
+export {
+  normalizeDiscountCode,
+  discountReasonOf,
+  discountReasonOfError,
+  discountParam,
+  DISCOUNT_CODE_MAX_LENGTH,
+  DISCOUNT_PARAM,
+  DISCOUNT_SESSION_KEY,
+  COUPON_REASONS,
+  DISCOUNT_PAYMENT_REASONS,
+  type CartDiscountOutcome,
+  type DiscountCodeResult,
+  type DiscountCodeRemoval,
+  type DiscountSettlement,
+  type DiscountGift,
+  type DiscountReason,
+  type CouponReason,
+  type DiscountPaymentReason,
+} from './cart/discount-code.js'
+// What a line costs once the cart's discount code is counted (pure helpers, for a host that draws its own cart).
+export {
+  lineListTotal,
+  lineDiscount,
+  lineNetTotal,
+  netUnitPrice,
+  isGiftLine,
+  cartListTotal,
+  cartDiscountTotal,
+  cartNetTotal,
+  isGiftOnlyCart,
+  type DiscountedLine,
+} from './cart/discount.js'
 // Origins: where each unit of a line came from (pure helpers, for hosts and tests).
 export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
 // The cart split per campaign — the rule behind begin_checkout / purchase and `Vio.cartSlices()`.

@@ -31,8 +31,19 @@ export interface CheckoutState {
   address?: CheckoutAddress
   /** Selected payment method. */
   paymentMethod?: PaymentMethod
-  /** Subtotal at open time (numeric). */
+  /**
+   * The cart's lines at their list prices (numeric) — it follows the cart
+   * while the checkout is open.
+   */
   subtotal: number
+  /**
+   * What the cart's discount code takes off those lines; absent without one.
+   * `subtotal - discount` is what the lines cost — what the summary's
+   * «Totalt» and the Vipps payment are worked out from. (Apple Pay and Klarna
+   * work their own amounts out of `subtotal`: discount codes are for brands
+   * paid with Vipps.)
+   */
+  discount?: number
   /** Currency code. */
   currency: string
   /** Backend checkout id (Vio Commerce CreateCheckout). */

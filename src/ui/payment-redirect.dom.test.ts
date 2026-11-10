@@ -30,6 +30,17 @@ describe('beginPaymentRedirect', () => {
     expect(overlay()?.getAttribute('role')).toBe('status')
   })
 
+  it('a status shows as the overlay\'s first line instead of «Åpner Vipps …»', () => {
+    beginPaymentRedirect({ method: 'vipps', sponsorId: 4, source: 'detail' }, { status: 'Legger til gave …' })
+    expect(overlay()?.textContent).toContain('Legger til gave …')
+    expect(overlay()?.textContent).not.toContain('Åpner Vipps')
+  })
+
+  it('an empty status falls back to «Åpner Vipps …»', () => {
+    beginPaymentRedirect({ method: 'vipps', source: 'detail' }, { status: '' })
+    expect(overlay()?.textContent).toContain('Åpner Vipps')
+  })
+
   it('a host that prevents the start draws its own loader: the SDK draws none', () => {
     const takeOver = (e: Event) => e.preventDefault()
     document.addEventListener('vio:payment-redirect-start', takeOver)

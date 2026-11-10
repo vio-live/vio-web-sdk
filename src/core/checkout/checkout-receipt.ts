@@ -17,9 +17,11 @@
  */
 
 import type { CartLineItem } from '../cart/types.js'
+import { cartDiscountTotal, cartNetTotal, serverLineDiscount } from '../cart/discount.js'
 
 /** What the receipt prints, as the checkout says it. */
 export interface CheckoutReceipt {
+  /** The lines, each with its list price and what the discount code took off it (`discount`). */
   items: CartLineItem[]
   /** Empty when the checkout names none. */
   currency: string
@@ -27,6 +29,8 @@ export interface CheckoutReceipt {
   total: number
   /** Only when the purchase had a shipping; a free one has `price: 0` («Gratis»). */
   shipping?: { name: string; price: number }
+  /** Only when a discount code took something off: how much, and the code when the checkout names it. */
+  discount?: { amount: number; code?: string }
   email?: string
 }
 
@@ -53,8 +57,12 @@ function imageOf(image: unknown): string {
 /**
  * The receipt of `checkout` (a `GetCheckout` answer), or `null` when it has
  * no lines to print. Lines read as the cart reads them (title — variant,
- * price incl. taxes); the shipping row carries the lines' shipping names and
- * the shipping total, and is left out when the purchase had no shipping.
+ * list price incl. taxes, and what the discount code took off the line); the
+ * shipping row carries the lines' shipping names and the shipping total, and
+ * is left out when the purchase had no shipping; the discount is what the
+ * lines say (else the checkout's `totals.discounts`), with the checkout's
+ * code. The total is the checkout's own (`totals.total`, already less the
+ * discount); without one, the lines' net plus the shipping.
  */
 export function receiptFromCheckout(checkout: unknown, sponsorId: number): CheckoutReceipt | null {
   const c = (checkout ?? {}) as Record<string, any>
@@ -68,6 +76,9 @@ export function receiptFromCheckout(checkout: unknown, sponsorId: number): Check
     const title = text(li?.title)
     const variant = text(li?.variant_title)
     const id = li?.id != null ? String(li.id) : `line-${index}`
+    const unitPrice = amount(li?.price?.amount_incl_taxes) ?? amount(li?.price?.amount) ?? 0
+    const quantity = Number(li?.quantity) || 0
+    const discount = serverLineDiscount(li?.price?.discount, unitPrice, quantity)
     return {
       id,
       cartItemId: id,
@@ -76,13 +87,19 @@ export function receiptFromCheckout(checkout: unknown, sponsorId: number): Check
       ...(li?.variant_id != null && Number.isFinite(Number(li.variant_id)) ? { variantId: Number(li.variant_id) } : {}),
       brand: text(li?.brand),
       name: title && variant ? `${title} — ${variant}` : title || variant,
-      unitPrice: amount(li?.price?.amount_incl_taxes) ?? amount(li?.price?.amount) ?? 0,
+      unitPrice,
+      ...(discount > 0 ? { discount } : {}),
       currency: text(li?.price?.currency_code) || currency,
       imageUrl: imageOf(li?.image),
-      quantity: Number(li?.quantity) || 0,
+      quantity,
     }
   })
-  const itemsTotal = items.reduce((sum, it) => sum + it.unitPrice * it.quantity, 0)
+  // What the lines cost: their list prices less what the discount code took off each.
+  const itemsTotal = cartNetTotal(items)
+  const lineDiscounts = cartDiscountTotal(items)
+  // The lines say it per line; the checkout's own figure only when they do not.
+  const discounted = lineDiscounts > 0 ? lineDiscounts : Math.max(0, amount(totals.discounts) ?? 0)
+  const code = text(c.discount_code)
 
   const shipped = lines.map((li) => li?.shipping).filter((s) => s && typeof s === 'object')
   const names = [...new Set(shipped.map((s) => text(s.name)).filter(Boolean))]
@@ -101,6 +118,7 @@ export function receiptFromCheckout(checkout: unknown, sponsorId: number): Check
     currency,
     total: charged !== null && charged > 0 ? charged : itemsTotal + (shipping?.price ?? 0),
     ...(shipping ? { shipping } : {}),
+    ...(discounted > 0 ? { discount: { amount: discounted, ...(code ? { code } : {}) } } : {}),
     ...(email ? { email } : {}),
   }
 }

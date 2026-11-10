@@ -57,6 +57,7 @@ import { layoutToken, normalizeLayoutOrigin } from '../detail-layout.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CheckoutReference } from '../api/cart-queries.js'
 import { receiptFromCheckout } from '../checkout/checkout-receipt.js'
+import { lineNetTotal } from '../cart/discount.js'
 import type { BootstrapCampaignEntry, BootstrapResponse } from '../types.js'
 import type { CheckoutSponsor } from '../sponsor-identity.js'
 
@@ -1416,13 +1417,17 @@ export class AnalyticsManager extends EventTarget {
     return this.commerceOf(this.cartLines(sponsorId))
   }
 
-  /** Lines → commerce payload (items, value = sum of the items, currency); `null` without lines. */
+  /**
+   * Lines → commerce payload (items, value = sum of the items, currency);
+   * `null` without lines. What a discount code takes off a line is off its
+   * item's price and off the value: a gift is worth 0.
+   */
   private commerceOf(items: CartLineItem[]): AnalyticsCommerce | null {
     if (items.length === 0) return null
     return {
       // One item per line and detail layout (0.34), each saying its layout.
       items: withLineLayouts(lineItemsByLayout(items)),
-      value: items.reduce((sum, i) => sum + i.unitPrice * (i.quantity ?? 1), 0),
+      value: items.reduce((sum, i) => sum + lineNetTotal({ ...i, quantity: i.quantity ?? 1 }), 0),
       currency: items[0]?.currency ?? this.lastCartSnapshot?.currency,
     }
   }

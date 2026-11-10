@@ -84,7 +84,7 @@ describe("the checkout is built on the server's cart", () => {
 
 /** A cart that can say `change`, as the real manager does. */
 class FakeCart extends EventTarget {
-  items: Array<{ id: string; productId: number; quantity: number; unitPrice: number }> = [
+  items: Array<{ id: string; productId: number; quantity: number; unitPrice: number; discount?: number }> = [
     { id: 'a', productId: 146, quantity: 1, unitPrice: 100 },
   ]
   waitForCartMutations = async () => {}
@@ -133,3 +133,41 @@ describe('the open checkout follows its cart', () => {
     expect(m.currentState).toBeNull()
   })
 })
+
+describe('the open checkout follows the discount code of its cart', () => {
+  it('a code goes on the cart under the open checkout: same lines, same subtotal — and the discount is said, once', () => {
+    const cart = new FakeCart()
+    const m = new CheckoutManager(cart as never)
+    m.open(5)
+    expect(m.currentState).not.toHaveProperty('discount')
+    const changes = vi.fn()
+    m.addEventListener('change', changes)
+
+    cart.items = [{ id: 'a', productId: 146, quantity: 1, unitPrice: 100, discount: 10 }]
+    cart.changed()
+    expect(changes).toHaveBeenCalledTimes(1)
+    expect(m.currentState).toMatchObject({ subtotal: 100, discount: 10 })
+
+    // An echo of the same cart says nothing.
+    cart.changed()
+    expect(changes).toHaveBeenCalledTimes(1)
+  })
+
+  it('the code\'s gift arrives, then the code goes: the discount follows, and leaves the state when there is none', () => {
+    const cart = new FakeCart()
+    const m = new CheckoutManager(cart as never)
+    m.open(5)
+    cart.items = [
+      { id: 'a', productId: 146, quantity: 1, unitPrice: 100 },
+      { id: 'g', productId: 421306, quantity: 1, unitPrice: 52, discount: 52 },
+    ]
+    cart.changed()
+    expect(m.currentState).toMatchObject({ subtotal: 152, discount: 52 })
+
+    cart.items = [{ id: 'a', productId: 146, quantity: 1, unitPrice: 100 }]
+    cart.changed()
+    expect(m.currentState).toMatchObject({ subtotal: 100 })
+    expect(m.currentState).not.toHaveProperty('discount')
+  })
+})
+

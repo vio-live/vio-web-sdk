@@ -16,6 +16,10 @@ import { ensureVippsButton } from '../../core/checkout/payments/vipps-button.js'
 import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-redirect.js'
 import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
+import { cartNetTotal, isGiftOnlyCart } from '../../core/cart/discount.js'
+import { discountReasonOfError } from '../../core/cart/discount-code.js'
+import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
+import { renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
@@ -346,7 +350,12 @@ export class VioProductDetail extends LitElement {
    * handle» (Mote & Livsstil, 2026-10-28: an add closed the detail and said
    * nothing). Outlives the detail: the brand and attribution of the add.
    */
-  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown> } | null = null
+  /**
+   * The toast after an add. With `notice` it says why the purchase could not
+   * go on instead — the cart holds only a discount code's gift, or Vipps
+   * refused the payment because of the code.
+   */
+  @state() private addedToast: { sponsorId: number; detail: Record<string, unknown>; notice?: string } | null = null
   private addedToastTimer: ReturnType<typeof setTimeout> | null = null
   /** Apple Pay actually usable (real Stripe + registered domain) — set on load. */
   @state() private applePayOk = false
@@ -1330,6 +1339,9 @@ export class VioProductDetail extends LitElement {
     }
     .added-toast-text { font-size: 14px; font-weight: 600; }
     .added-toast-text::before { content: '✓ '; color: #2e7d32; }
+    /* A notice is no confirmation: no tick, and one button. */
+    .added-toast.is-notice .added-toast-text::before { content: none; }
+    .added-toast.is-notice .added-toast-actions { grid-template-columns: 1fr; }
     .added-toast-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .added-toast-actions button {
       min-height: 44px;
@@ -1359,6 +1371,7 @@ export class VioProductDetail extends LitElement {
     }
   `,
     highlightsStyles('detail'),
+    vippsOnlyStyles,
   ]
 
   /** Stops reporting the taps on the buttons (`vio:cta-click`). */
@@ -2254,13 +2267,33 @@ export class VioProductDetail extends LitElement {
     this.addedToast = null
   }
 
+  /**
+   * The toast as a notice: the purchase could not go on, and why. Shown even
+   * with `no-added-toast` — it is not the «added» confirmation a host may
+   * draw itself, and nothing else on the page would say it.
+   */
+  private showNoticeToast(notice: string): void {
+    this.addedToast = {
+      sponsorId: this.sponsorId,
+      detail: { sponsorId: this.sponsorId, express: false, ...this.attribution(), ...sponsorDetail(this.sponsorId) },
+      notice,
+    }
+    if (this.addedToastTimer) clearTimeout(this.addedToastTimer)
+    this.addedToastTimer = setTimeout(() => this.hideAddedToast(), ADDED_TOAST_MS)
+  }
+
   /** «Til kassen»: the checkout of the brand just added to — the host opens it on `vio:checkout-open`, as from the cart. */
   private toastToCheckout(): void {
     const toast = this.addedToast
     this.hideAddedToast()
     if (!toast) return
     const cart = Vio.cart.getCart(toast.sponsorId)
-    const total = (cart?.items ?? []).reduce((sum, i) => sum + i.unitPrice * i.quantity, 0)
+    const total = cartNetTotal(cart?.items)
+    // Only a discount code's gift in the cart: nothing to pay for — said, instead of a checkout that would not open.
+    if (cart && isGiftOnlyCart(cart.items)) {
+      this.showNoticeToast(DISCOUNT_TEXT.giftOnly)
+      return
+    }
     // Nothing to pay for (removed meanwhile, or 0 kr): no checkout.
     if (!cart || cart.items.length === 0 || !(total > 0)) return
     this.dispatchEvent(new CustomEvent('vio:checkout-open', { bubbles: true, composed: true, detail: toast.detail }))
@@ -2268,6 +2301,16 @@ export class VioProductDetail extends LitElement {
 
   private renderAddedToast() {
     if (!this.addedToast) return nothing
+    if (this.addedToast.notice) {
+      return html`
+        <div class="added-toast is-notice" part="added-toast" role="alert">
+          <div class="added-toast-text">${this.addedToast.notice}</div>
+          <div class="added-toast-actions">
+            <button class="added-toast-continue" part="added-toast-continue" @click=${this.hideAddedToast}>Fortsett å handle</button>
+          </div>
+        </div>
+      `
+    }
     return html`
       <div class="added-toast" part="added-toast" role="status" aria-live="polite">
         <div class="added-toast-text">Lagt i handlekurven</div>
@@ -2286,7 +2329,7 @@ export class VioProductDetail extends LitElement {
    * loads immediately. Reuses the working Klarna Payments flow (no express SDK).
    */
   private async buyWithKlarna(): Promise<void> {
-    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
     if (!this.requireSelection()) return
     this.adding = true
     try {
@@ -2364,8 +2407,13 @@ export class VioProductDetail extends LitElement {
       this.openCheckoutWithVipps()
       return
     }
-    // The overlay first, then the close: no empty moment, no second tap.
-    const redirect = beginPaymentRedirect({ method: 'vipps', sponsorId: this.sponsorId, source: 'detail' })
+    // The overlay first, then the close: no empty moment, no second tap. When
+    // the page's code brings a gift, the SDK adds it before Vipps opens (the
+    // payment waits for it): the overlay says «Legger til gave …» meanwhile.
+    const redirect = beginPaymentRedirect(
+      { method: 'vipps', sponsorId: this.sponsorId, source: 'detail' },
+      { status: Vio.cart.discountGiftExpected(this.sponsorId) ? DISCOUNT_TEXT.preparingGift : undefined },
+    )
     this.addCurrentToCart()
     this.close()
     void this.startVippsExpressOrCheckout(redirect)
@@ -2378,6 +2426,15 @@ export class VioProductDetail extends LitElement {
    */
   private vippsGoesStraightToApp(): boolean {
     return this.vippsExpress && !this.cartHasLines()
+  }
+
+  /**
+   * This brand's cart carries a discount code: Vipps is the only way to pay
+   * (Apple Pay, Stripe and Klarna would charge list prices — see
+   * `renderVippsOnlyNote`). Their buttons are off until the code comes off.
+   */
+  private discountOnCart(): boolean {
+    return !!Vio.cart.getCart(this.sponsorId)?.discountCode
   }
 
   /** This brand's cart already has lines. */
@@ -2402,9 +2459,8 @@ export class VioProductDetail extends LitElement {
     const items = cart?.items ?? []
     if (items.length === 0) return null
     const units = items.reduce((n, i) => n + (Number(i.quantity) || 0), 0) + this.quantity
-    const total =
-      items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0) +
-      this.unitPrice * this.quantity
+    // The cart's lines as they are paid for (a discount code counted) plus this product at its price.
+    const total = cartNetTotal(items) + this.unitPrice * this.quantity
     return { units, total, currency: cart?.currency || this.currency }
   }
 
@@ -2438,6 +2494,16 @@ export class VioProductDetail extends LitElement {
         console.warn('[VioProductDetail] Vipps Express not started:', err)
       }
       redirect.fail(err instanceof Error ? err.message : String(err))
+      // Refused because of the cart's discount code — or the cart holds only
+      // the code's gift, which is nothing to pay for: said here (the panel is
+      // closed by now); the checkout would only refuse the same payment.
+      const reason =
+        discountReasonOfError(err) ??
+        (isGiftOnlyCart(Vio.cart.getCart(this.sponsorId)?.items) ? ('CHECKOUT_AMOUNT_ZERO' as const) : undefined)
+      if (reason) {
+        this.showNoticeToast(discountPaymentText(reason))
+        return
+      }
     }
     if (!fallback) return
     this.openCheckoutWithVipps()
@@ -2461,7 +2527,7 @@ export class VioProductDetail extends LitElement {
 
   /** Buy with Stripe — opens the checkout with Stripe preselected. */
   private buyWithStripe(): void {
-    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
     if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
@@ -2511,7 +2577,7 @@ export class VioProductDetail extends LitElement {
    * that total.
    */
   private buyWithApplePay(): void {
-    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle) return
+    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle || this.discountOnCart()) return
     if (!this.requireSelection()) return
     if (!(this.unitPrice > 0)) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
@@ -3140,7 +3206,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-applepay"
                   data-vio-cta="apple_pay"
                   @click=${this.buyWithApplePay}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                   aria-label="Kjøp nå med Apple Pay"
                 >
                   <span>Kjøp nå med</span>
@@ -3155,7 +3222,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-stripe"
                   data-vio-cta="stripe"
                   @click=${this.buyWithStripe}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                   aria-label="Kjøp nå med Stripe"
                   style="width: 100%; margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #635bff; color: #fff; border: none; padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;"
                 >
@@ -3175,7 +3243,8 @@ export class VioProductDetail extends LitElement {
                   data-vio-cta="klarna"
                   data-vio-cta-label="Kjøp nå med Klarna"
                   @click=${this.buyWithKlarna}
-                  ?disabled=${this.adding}
+                  ?disabled=${this.adding || this.discountOnCart()}
+                  ?data-discount-off=${this.discountOnCart()}
                 >
                   <span>Kjøp nå med</span>
                   <img
@@ -3185,6 +3254,13 @@ export class VioProductDetail extends LitElement {
                   />
                 </button>
               `
+            : ''}
+          ${this.availableQuantity > 0 &&
+          this.discountOnCart() &&
+          ((this.hasPrice && this.applePayOk && this.methodEnabled('apple-pay', 'applepay')) ||
+            this.methodEnabled('stripe') ||
+            this.methodEnabled('klarna'))
+            ? renderVippsOnlyNote()
             : ''}
 
           ${this.renderSellerNote()}

@@ -132,7 +132,13 @@ function onPageShow(e: PageTransitionEvent): void {
  * unless the host took over, shows the overlay. Call `fail` or `abort` on the
  * handle when the page is not going to leave after all; leaving needs nothing.
  */
-export function beginPaymentRedirect(detail: PaymentRedirectDetail): PaymentRedirectHandle {
+export function beginPaymentRedirect(
+  detail: PaymentRedirectDetail,
+  opts: {
+    /** The overlay's first line instead of «Åpner … » — e.g. «Legger til gave …» while the SDK readies the cart. */
+    status?: string
+  } = {},
+): PaymentRedirectHandle {
   if (current && !current.settled) {
     // A second hand-over replaces the first (the first is over: same page, one payment).
     current.settled = true
@@ -153,7 +159,8 @@ export function beginPaymentRedirect(detail: PaymentRedirectDetail): PaymentRedi
     const label = LABEL[detail.method] ?? detail.method
     const text = document.createElement('div')
     text.className = 'vio-redirect-text'
-    text.textContent = `Åpner ${label} …`
+    // «Legger til gave …» (the gift being added) when the caller asks for it; otherwise «Åpner Vipps …».
+    text.textContent = opts.status || `Åpner ${label} …`
     const hint = document.createElement('div')
     hint.className = 'vio-redirect-hint'
     hint.textContent = `Kom du tilbake fra ${label} uten å betale?`

@@ -6,6 +6,7 @@ import {
   PAYMENT_START_FAILED_MESSAGE,
   errorText,
   friendlyPaymentError,
+  paymentErrorText,
 } from './checkout-errors.js'
 
 /** The two messages a QA tester saw on screen, as they came (2026-10-09). */
@@ -60,5 +61,41 @@ describe('errorText', () => {
     expect(errorText(new Error('boom'))).toBe('boom')
     expect(errorText('plain')).toBe('plain')
     expect(errorText(42)).toBe('42')
+  })
+})
+
+describe('a payment refused because of the cart\'s discount code', () => {
+  /** What `executeCartGraphQL` throws for the gateway's answer (HTTP 400, the code in `extensions.code` and at the end of the text). */
+  const refused = (code: string, text = `Payment Vipps not initialize: the payment was refused [${code}]`) =>
+    Object.assign(new Error(text), { graphql: { hasData: false, errors: [{ message: text, extensions: { code } }] } })
+
+  it('friendlyPaymentError reads the word at the end of the text', () => {
+    expect(friendlyPaymentError('Payment Vipps not initialize: a gift line has 2 units [GIFT_MAX_ONE_UNIT]', 'vipps')).toBe(
+      'Du kan bare få én gave per bestilling. Reduser antallet og prøv igjen.',
+    )
+    expect(friendlyPaymentError('Payment Vipps not initialize: nothing to pay [CHECKOUT_AMOUNT_ZERO]', 'vipps')).toBe(
+      'Legg til et produkt for å få med gaven.',
+    )
+    expect(friendlyPaymentError('Payment Vipps not initialize: x [DISCOUNT_UNAVAILABLE]', 'vipps')).toBe(
+      'Rabatten kunne ikke beregnes akkurat nå. Prøv igjen om litt.',
+    )
+    expect(friendlyPaymentError('Payment Vipps not initialize: x [COUPON_EXPIRED]', 'vipps')).toBe(
+      'Rabattkoden er ikke lenger gyldig. Handlekurven er oppdatert – prøv igjen.',
+    )
+  })
+
+  it('paymentErrorText reads the error\'s code first — whatever its text says', () => {
+    expect(paymentErrorText(refused('GIFT_MAX_ONE_UNIT'), 'vipps')).toBe('Du kan bare få én gave per bestilling. Reduser antallet og prøv igjen.')
+    expect(paymentErrorText(refused('COUPON_MIN_AMOUNT', 'Payment Vipps not initialize: amount must be a positive integer'), 'vipps')).toBe(
+      'Handlekurven er under minstebeløpet for rabattkoden. Handlekurven er oppdatert – prøv igjen.',
+    )
+  })
+
+  it('paymentErrorText is friendlyPaymentError for everything else', () => {
+    expect(paymentErrorText(new Error(VIPPS_EMPTY_CART), 'vipps')).toBe(EMPTY_CART_MESSAGE)
+    expect(paymentErrorText(new Error('Error: CHECKOUT_SUPERSEDED'), 'vipps')).toBe(CART_CHANGED_MESSAGE)
+    expect(paymentErrorText(new Error(STRIPE_UNDEFINED_ID), 'stripe')).toBe(PAYMENT_START_FAILED_MESSAGE)
+    expect(paymentErrorText('boom', 'vipps')).toBe(PAYMENT_START_FAILED_MESSAGE)
+    expect(paymentErrorText(refused('INTERNAL_SERVER_ERROR', 'Payment Vipps not initialize: 503'), 'vipps')).toBe(PAYMENT_START_FAILED_MESSAGE)
   })
 })

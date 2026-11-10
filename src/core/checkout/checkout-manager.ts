@@ -13,6 +13,8 @@
 import { storageGet, storageRemove, storageSet } from '../safe-storage.js'
 import type { CartLineItem } from '../cart/types.js'
 import type { CartManager } from '../cart/cart-manager.js'
+import { discountReasonOfError, type DiscountReason, type DiscountSettlement } from '../cart/discount-code.js'
+import { cartDiscountTotal, cartNetTotal } from '../cart/discount.js'
 import {
   checkoutSponsorOf,
   rememberCheckoutSponsor,
@@ -597,9 +599,41 @@ export function usesStripe(methods: unknown): boolean {
   })
 }
 
-/** What the lines add up to (unit price × quantity). */
-function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number }>): number {
-  return items.reduce((sum, i) => sum + (Number(i.unitPrice) || 0) * (Number(i.quantity) || 0), 0)
+/**
+ * The budget passed to `settleDiscountCode` before a payment. The page's own
+ * code (a campaign's gift) is waited for in full regardless — the gift is the
+ * point of the article, so «Kjøp nå med Vipps» never leaves without it, the
+ * request timeout the only cap — which leaves this as the bound for any other
+ * pending settle work; a page with no code of its own has none, so it never
+ * bites. Kept as the contract of the call (and what the stub tests assert).
+ */
+export const DISCOUNT_SETTLE_BUDGET_MS = 1200
+
+/**
+ * No payment was started: a code the shopper typed was still being checked
+ * when they tapped to pay, and Commerce did not take it. The field is telling
+ * them why right now — a payment that leaves for its provider would take the
+ * answer away with the page. Worded like Commerce's own refusal of a payment
+ * for a discount, the reason last and in brackets, so whoever shows a payment
+ * error says why in the same sentence (`discountReasonOfError`);
+ * `discountCodeNotTaken` tells the two apart — this code never was on the
+ * cart, so there is nothing to take off it.
+ */
+function codeNotTakenError(notTaken: { code: string; reason?: DiscountReason }): Error {
+  // Could not be asked: no reason of Commerce's — «we could not check the code right now».
+  const reason: DiscountReason = notTaken.reason ?? 'COUPON_UNAVAILABLE'
+  return Object.assign(new Error(`[CheckoutManager] the discount code was not taken — no payment started [${reason}]`), {
+    discountCodeNotTaken: true as const,
+  })
+}
+
+function isCodeNotTakenError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { discountCodeNotTaken?: unknown }).discountCodeNotTaken === true
+}
+
+/** What the lines cost: unit price × quantity, less what the cart's discount code takes off each. */
+function cartTotal(items: ReadonlyArray<{ unitPrice?: number; quantity?: number; discount?: number }>): number {
+  return cartNetTotal(items)
 }
 
 export class CheckoutManager extends EventTarget {
@@ -737,8 +771,13 @@ export class CheckoutManager extends EventTarget {
   /** The open checkout's lines as a signature, to tell a real change from an echo. */
   private cartSignature(sponsorId: number): string {
     return (this.cartManager.getCart(sponsorId)?.items ?? [])
-      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}`)
+      .map((i) => `${i.productId}:${i.variantId ?? ''}:${i.quantity}:${i.unitPrice}${i.discount ? `:-${i.discount}` : ''}`)
       .join('|')
+  }
+
+  /** What the discount code of the sponsor's cart takes off its lines; 0 without one. */
+  private cartDiscount(sponsorId: number): number {
+    return cartDiscountTotal(this.cartManager.getCart(sponsorId)?.items)
   }
 
   /** What the open checkout's cart looked like when it was last emitted. */
@@ -752,7 +791,11 @@ export class CheckoutManager extends EventTarget {
     const signature = this.cartSignature(state.sponsorId)
     if (subtotal === state.subtotal && signature === this.lastCartSignature) return
     this.lastCartSignature = signature
-    this.state = { ...state, subtotal }
+    const next: CheckoutState = { ...state, subtotal }
+    const discount = this.cartDiscount(state.sponsorId)
+    if (discount > 0) next.discount = discount
+    else delete next.discount
+    this.state = next
     this.emit()
   }
 
@@ -766,10 +809,12 @@ export class CheckoutManager extends EventTarget {
     if (!(cartTotal(cart.items) > 0)) {
       throw new Error(`[VioCheckout] sponsor ${sponsorId} has a cart that totals 0`)
     }
+    const discount = cartDiscountTotal(cart.items)
     this.state = {
       sponsorId,
       session: ++this.sessionSeq,
       subtotal: this.cartManager.subtotalForSponsor(sponsorId),
+      ...(discount > 0 ? { discount } : {}),
       // Page-level currency wins over whatever the persisted cart carries —
       // the host may have switched currency since the cart was created.
       currency: getGlobalCurrency(),
@@ -814,6 +859,9 @@ export class CheckoutManager extends EventTarget {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
     await this.cartManager.waitForCartMutations(sponsorId)
+    // The page's discount code goes on the cart before the checkout is built
+    // on it (nothing is asked when the page has none).
+    await this.settleDiscount(sponsorId)
     // And on the cart the SERVER has: the checkout takes every line of the
     // backend cart, so the page shows those lines before anything is built on
     // them (another tab may have added or paid; see CartManager.refreshFromServer).
@@ -863,6 +911,54 @@ export class CheckoutManager extends EventTarget {
       }
     }
     return checkout
+  }
+
+  /**
+   * The page's discount code — and the gift it brings — on the sponsor's cart
+   * before a checkout or a payment is built on it
+   * (`CartManager.settleDiscountCode`): asked for when the cart does not
+   * carry it yet, and waited for `DISCOUNT_SETTLE_BUDGET_MS` at most (the
+   * shopper's own typed code: until it answers). Never costs a checkout —
+   * without the code the purchase goes on without it — and a cart manager
+   * without discounts (a test's stub) has nothing to settle. Resolves with
+   * what was found: `notTaken` when the code the shopper typed was refused
+   * while this waited (`prepareRedirectPayment` does not leave the page then).
+   */
+  private async settleDiscount(sponsorId: number): Promise<DiscountSettlement | undefined> {
+    try {
+      const settle = (this.cartManager as Partial<CartManager>).settleDiscountCode
+      if (typeof settle === 'function') {
+        return (await settle.call(this.cartManager, sponsorId, { budgetMs: DISCOUNT_SETTLE_BUDGET_MS })) ?? undefined
+      }
+    } catch {
+      /* the purchase goes on without the discount */
+    }
+    return undefined
+  }
+
+  /**
+   * A payment that did not start. When Commerce refused it because of the
+   * cart's discount — the code is checked again right before charging, and a
+   * gift has its own rules — the cart is put right for the next attempt
+   * (`CartManager.discountRefusedAtPayment`: a code that is no good comes
+   * off, the cart is read again); and whatever gift was held back while the
+   * payment was being started may go in the cart now. Not waited for, and
+   * never throws: the caller shows the error meanwhile. (A payment this
+   * manager held back itself, for a typed code that was not taken, leaves the
+   * cart alone: that code never was on it.)
+   */
+  private afterPaymentNotStarted(sponsorId: number | undefined, err?: unknown): void {
+    if (!sponsorId) return
+    try {
+      const cart = this.cartManager as Partial<CartManager>
+      const reason = err === undefined || isCodeNotTakenError(err) ? undefined : discountReasonOfError(err)
+      if (reason && typeof cart.discountRefusedAtPayment === 'function') {
+        void cart.discountRefusedAtPayment.call(this.cartManager, sponsorId, reason)
+      }
+      if (typeof cart.releaseGiftHold === 'function') cart.releaseGiftHold.call(this.cartManager, sponsorId)
+    } catch {
+      /* the error the caller shows is the payment's */
+    }
   }
 
   /**
@@ -1205,6 +1301,14 @@ export class CheckoutManager extends EventTarget {
     // it: the provider's page shows every line of the backend cart, so the
     // page shows them first (see CartManager.refreshFromServer).
     await this.cartManager.waitForCartMutations(spId)
+    // The page's discount code first — Vipps Express leaves from the product
+    // or the cart without ever showing a checkout — so the lines read next
+    // are the discounted ones, and so is what the provider charges.
+    const settled = await this.settleDiscount(spId)
+    // The shopper's own code, typed a moment before the tap, was not taken:
+    // a code is validated BEFORE paying, and they have not read the answer
+    // yet. No payment — the next tap pays for the cart as it is.
+    if (settled?.notTaken) throw codeNotTakenError(settled.notTaken)
     await this.cartManager.refreshFromServer(spId)
     // Never a Vipps or Stripe payment for an empty cart or one of 0 kr.
     this.assertPayableCart(spId)
@@ -1375,6 +1479,23 @@ export class CheckoutManager extends EventTarget {
    * Vipps charges for.
    */
   async startVippsPayment(
+    sponsorId?: number,
+    formData?: unknown,
+    options: { express?: boolean } = {},
+  ): Promise<any> {
+    const spId = sponsorId ?? this.state?.sponsorId
+    try {
+      const res = await this.startVippsPaymentNow(sponsorId, formData, options)
+      // Express refused without an error: no payment was created, the checkout opens instead.
+      if (!res?.payment_url) this.afterPaymentNotStarted(spId)
+      return res
+    } catch (err) {
+      this.afterPaymentNotStarted(spId, err)
+      throw err
+    }
+  }
+
+  private async startVippsPaymentNow(
     sponsorId?: number,
     formData?: unknown,
     options: { express?: boolean } = {},

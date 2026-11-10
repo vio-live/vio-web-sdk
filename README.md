@@ -507,7 +507,8 @@ could never be netted.
   last thing a phone is sure to say before it discards a tab) whatever is still
   queued leaves by beacon (0.29.0; order 4128 had been recorded and never sent).
 - **What was bought: the paid cart, never a guess.** `items`, `value` and
-  `currency` are the lines that were paid (sum of the items, no shipping). Paid on
+  `currency` are the lines that were paid (sum of the items, no shipping; with a
+  discount code, what each line cost — a gift is worth 0). Paid on
   the page (Stripe's Element, Klarna, Apple Pay…) that is the cart in memory. Back
   from a payment page (Vipps, a Stripe link, an Adyen redirect, a provider's
   receipt — `detail.returned: true`), or with an empty cart, this tab's cart is
@@ -631,9 +632,9 @@ event. A browser marked as internal sends `client.internal: true`.
 | element (`cta_location`) | `cta` ids |
 |---|---|
 | `<vio-product-detail>` (`detail`) | `vipps` (Kjøp nå med Vipps) · `apple_pay` · `stripe` · `klarna` · `buy_now` (Kjøp nå) · `add_to_cart` (Legg i handlekurv) · `size` (any option value chosen, with `option_value`) · `quantity_plus` · `quantity_minus` · `description_open` («Beskrivelse» / the text / «Les mer», when the tap opens it) · `shipping_returns_open` («Frakt & retur», when it opens) · `terms_link` (Kjøpsvilkår) · `refund_link` (Angrerett og retur) · `checkout` («Til kassen» in the added-to-cart toast) · `close` (×, the backdrop, the handle) · `gallery_swipe` (the first change of photo per open product: a swipe, an arrow or a thumbnail) |
-| `<vio-cart>` (`cart`) | `checkout` (Til kassen) · `vipps` · `apple_pay` · `stripe` · `klarna` · `remove` · `quantity_plus` · `quantity_minus` · `close` |
+| `<vio-cart>` (`cart`) | `checkout` (Til kassen) · `vipps` · `apple_pay` · `stripe` · `klarna` · `remove` · `quantity_plus` · `quantity_minus` · `close` · `discount_apply` («Bruk» of the «Rabattkode» field) · `discount_remove` («Fjern») |
 | `<vio-product>` card (`card`) | `open` (a tap — or Enter — on the card or its image) · `add` (the bag or bar button) |
-| `<vio-checkout>` (`checkout`) | `select_<method>` (a method of the list: `select_vipps`, `select_stripe`, `select_klarna`, `select_apple_pay`, `select_kustom`, `select_qliro`, `select_walley`, `select_nexi`, `select_adyen`) · `pay_<method>` (the pay button of the chosen method: `pay_vipps`, `pay_stripe`, `pay_klarna`, `pay_apple_pay`, `pay_adyen`, `pay_kustom`…) · `pay_stripe_confirm` («Betal» under Stripe's own payment form) · `close` (×, the backdrop, the handle, «Lukk» / «Fortsett å handle» on the receipt) |
+| `<vio-checkout>` (`checkout`) | `select_<method>` (a method of the list: `select_vipps`, `select_stripe`, `select_klarna`, `select_apple_pay`, `select_kustom`, `select_qliro`, `select_walley`, `select_nexi`, `select_adyen`) · `pay_<method>` (the pay button of the chosen method: `pay_vipps`, `pay_stripe`, `pay_klarna`, `pay_apple_pay`, `pay_adyen`, `pay_kustom`…) · `pay_stripe_confirm` («Betal» under Stripe's own payment form) · `close` (×, the backdrop, the handle, «Lukk» / «Fortsett å handle» on the receipt) · `discount_apply` · `discount_remove` (the summary's «Rabattkode» field) |
 
 A detail's buttons carry the open product (`product_id`, `product_variant_id`), its
 sponsor, slot, campaign and article; a cart line's carry its product, variant,
@@ -898,8 +899,14 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
   `seller-terms`, `seller-refund`, `description`, `highlights`, `highlight`, `shipping-returns`,
   `slide`, `image-dots`, `carousel-arrow`, `added-toast` (`added-toast-checkout`,
   `added-toast-continue`).
-- `<vio-cart>`: `cart-shipping`, `cart-total`.
-- `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`.
+- `<vio-cart>`: `cart-shipping`, `cart-total`, `cart-discount` (the «Rabatt» row), `cart-notice`,
+  `cart-gift-note`.
+- `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`,
+  `summary-discount`, `summary-gift-note`, `confirm-discount`.
+- Both, with a discount code: `line-list-price` (struck through), `line-net-price`; and the
+  «Rabattkode» field: `discount-field`, `discount-input`, `discount-apply`, `discount-code`,
+  `discount-remove`, `discount-error`; and `vipps-only-note` (only Vipps with a code on the
+  cart).
 
 ```css
 vio-product-detail::part(add-to-cart) { letter-spacing: 0; text-transform: none; }
@@ -1069,7 +1076,7 @@ tap, so a second payment cannot start. Events on `document`:
 | Event | Detail | When |
 |---|---|---|
 | `vio:payment-redirect-start` | `{ method, sponsorId, source }` | At the tap. **Cancelable**: `preventDefault()` and the SDK draws no overlay — draw your own |
-| `vio:payment-redirect-error` | `… , reason` | It could not start. The overlay goes; the checkout opens with Vipps preselected |
+| `vio:payment-redirect-error` | `… , reason` | It could not start. The overlay goes; the checkout opens with Vipps preselected — unless Commerce refused it because of the cart's discount code: then the reason is said where the shopper is ([Discount codes](#discount-codes--the-brands-code-and-the-gift-it-brings-unreleased)) |
 | `vio:payment-redirect-cancel` | `… , reason` | `'express-off'` / `'not-started'`: the checkout opens instead (no error). `'back'`: the shopper came back with the browser's back button. `'cancelled'`: back through Vipps' own cancel (with `checkoutId`) |
 
 `source` is `'detail'`, `'cart'` or `'checkout'`. The overlay is `.vio-redirect-overlay`
@@ -1087,8 +1094,8 @@ in the light DOM.
   under the button: «Vipps fyller inn navn og adresse – du godkjenner og betaler i appen»). With
   **lines already in it**, the whole cart is paid, and the line under the button says so before
   the tap: «Betaler hele handlekurven · {n} varer · {total}» — n = every unit including this
-  product at the chosen quantity, total = the cart's subtotal with it (shipping is chosen in
-  Vipps).
+  product at the chosen quantity, total = what the cart costs with it (a discount code
+  counted; shipping is chosen in Vipps).
 
 When the brand has Express off, or the cart cannot have it (several suppliers, digital goods,
 no rate for the country — shopcart answers `express: false` and creates nothing), the checkout
@@ -1137,11 +1144,171 @@ built on the **backend** cart, every line of it. Three things keep the two the s
 document.addEventListener('vio:cart-updated', (e) => {
   const { sponsorId, cartId, items, itemCount, subtotal, currency, source } = e.detail
   // source: 'server' (GetCart, right before a checkout / on opening) | 'storage' (another tab)
+  // with a discount code on the cart, also: discount (what it takes off `subtotal`) and discountCode
 })
 ```
 
 `items` are copies of the lines (`CartLineItem[]`). A host that draws its own cart or badge
 redraws it from this event; `<vio-cart>` and the badge wired to `Vio.cart`'s `change` need nothing.
+
+## Discount codes — the brand's code, and the gift it brings (unreleased)
+
+A brand's own discount code (its shop's coupon) on the cart: a percentage off one product or
+off the whole cart, or a product given away. Commerce takes **one code per cart**, asks the
+brand's shop about it when it is applied (one to three seconds) and checks it again right
+before a payment.
+
+**A code is applied — and validated — before paying**, in the cart or the checkout: the
+shopper types it in the «Rabattkode» field, taps «Bruk» and sees what came of it there and
+then. Taken: the discount or the «Gratis» gift, and a lower total, above the button that
+pays. Not taken: why, and the total as it was. The check Commerce makes when a payment is
+started is a **safety net** (a coupon that ended between applying and paying), not where a
+shopper finds out about their code.
+
+**Who is told what came of a code depends on who asked for it:**
+
+| The code | Taken | Not taken |
+|---|---|---|
+| **Typed by the shopper** (the field's «Bruk», or a host's own field through `Vio.applyDiscountCode()`) | shown: the code with «Fjern», the discount, the new total | **always said**, with why — never in silence |
+| **The page's own** (`discountCode`, `?vio_discount=`) — nobody typed it | shown the same way | **nothing is said**: the purchase goes on at its prices (a visitor who typed nothing never reads «invalid code») |
+| Either, **refused when the payment is started** (the safety net) | — | said, with why; the cart is read again |
+
+> **Only for brands that are paid with Vipps.** Commerce works the discounted amount out for
+> the Vipps payment; Apple Pay, Stripe, Klarna and the embedded checkouts work theirs out of
+> the list prices on our side. So **with a code on the cart the SDK offers Vipps only**: in
+> the cart, the checkout and the product detail every other way to pay stays where it is but
+> is off (`disabled`, `data-discount-off`), with «Med rabattkode kan du bare betale med
+> Vipps.» under it (`::part(vipps-only-note)`); a method chosen in the checkout before the
+> code went on is unchosen. When the code comes off they are back. Without a code — or for a
+> brand that only takes Vipps — nothing changes.
+
+### The page names the code — the shopper types nothing
+
+```ts
+Vio.init({
+  apiKey: '…',
+  environment: 'production',
+  campaignId: 4,
+  discountCode: 'gratis_face_mask', // the campaign's code, as the brand created it in its shop
+})
+```
+
+…or `?vio_discount=CODE` in the page's URL, for a page whose config cannot be changed. It is
+kept for the tab (`sessionStorage`, so it survives the pages of the visit and the way back
+from Vipps); `?vio_discount=` (empty) forgets it; `discountCode` wins when both are there.
+Naming a code turns discount codes on for the page, so the «Rabattkode» field shows too
+([below](#the-rabattkode-field--where-a-code-is-typed-and-validated)); `discountField: false`
+keeps the page's code and hides the field. What the SDK does with the page's code:
+
+- **Puts it on the cart by itself**, through the same call a field makes: once the cart has
+  lines (a code with a minimum purchase would be refused on an empty cart), on every new cart
+  (after a purchase), on the cart the page opens with, and before a checkout or a payment is
+  built on the cart. Nothing in the cart waits for it while the shopper browses. A payment,
+  though, **waits for it in full**: «Kjøp nå med Vipps» from the product (the cart is born at
+  the tap) holds for the apply — one to three seconds, the brand's shop asked live — and the
+  gift it adds, so the page never leaves for Vipps without the gift. The request timeout
+  (15 s) is the only cap; if the apply or the gift's AddItem fails, the purchase goes on
+  without it. While it waits, the redirect overlay says **«Legger til gave …»**.
+- **Adds the gift.** When Commerce answers that the code gives a product away
+  (`ApplyDiscount` → `gifts`), one unit of it goes in the cart as soon as the cart has
+  something to pay for — and, before a payment, _before_ it starts (above). A gift the shopper
+  takes out stays out for that cart; when the last line to pay for goes, the gift the SDK put
+  in goes with it (a cart of a gift alone cannot be paid for); when it cannot be added (not
+  sold on that channel, out of stock) the purchase goes on without it; and it goes out again
+  with its code.
+- **Says nothing when the code is not taken.** A coupon that is over, unknown, used up or
+  not for here is asked once per cart, remembered with the cart, and the article keeps
+  selling at its prices — a line in the console (`[CartManager] discount code "…" not
+  applied …`), nothing on screen: the field does not even show the page's code being
+  checked, it stays empty until the code is taken. A code that asks for more in the cart
+  (`COUPON_MIN_AMOUNT`) is asked again when the cart's lines change; a shop that could not
+  be asked, twice at most.
+- **A page without a code asks nothing**: not one request more than before.
+
+### What the shopper sees
+
+- A line the code takes something off: its list price struck through, then what it costs —
+  **«Gratis»** when the code gives it away. A gift is **one unit**: its «+» does nothing.
+- **«Rabatt (CODE)  −52 kr»** between «Sum» (the lines at their list prices) and «Totalt»
+  (what is paid), in the cart, in the checkout's summary and on the receipt — the rows add
+  up. «Totalt», «Betal … med Vipps» and the detail's «Betaler hele handlekurven · … · total»
+  are what is paid. The receipt after Vipps is read from the checkout that was paid.
+- A cart of the gift alone cannot be paid for: «Legg til et produkt for å få med gaven.»
+- The safety net: a payment Commerce refuses because of the code — the coupon ended between
+  applying and paying, a gift line with two units — says why («Rabattkoden er ikke lenger
+  gyldig. Handlekurven er oppdatert – prøv igjen.»), where the shopper is: in the checkout,
+  on the cart, or on the page after «Kjøp nå med Vipps» (a notice where the «Lagt i
+  handlekurven» toast shows, even with `no-added-toast`) — whoever put the code on the cart.
+  A code that is no good any more comes off the cart with its gift, so the next attempt
+  pays. `vio:payment-redirect-error` still carries the reason for a host.
+- A tap on a Vipps button while a **typed** code is still being checked waits for the answer.
+  Taken: the payment starts, discounted. Not taken: **no payment is started** — the page
+  would leave for Vipps with the answer unread — and the reason is said the same way; the
+  next tap pays for the cart as it is.
+
+Every sentence is in `src/ui/discount-texts.ts` (Norwegian bokmål).
+
+### The «Rabattkode» field — where a code is typed and validated
+
+In `<vio-cart>` — over the totals and the buttons that pay; its Vipps button goes straight to
+Express, without a checkout in between — and in the summary of `<vio-checkout>`. It shows
+**wherever discount codes are on for the page**:
+
+| `Vio.init({ … })` | The field | The page's own code |
+|---|---|---|
+| `discountCode: 'KODE'` (or a `?vio_discount=KODE` link) | **shown** | applied by itself |
+| `discountCode: 'KODE', discountField: false` | hidden | applied by itself |
+| `discountField: true` | **shown** | none: the shopper types the brand's |
+| neither | none — the cart is the one it always was | none |
+
+Its states: empty («Rabattkode» + «Bruk»); being checked («Sjekker…» — the field waits, the
+rest of the cart does not, and a second tap sends nothing); applied (the code + «Fjern»,
+with the «Rabatt» row, the «Gratis» gift and the new total under it); or refused, with why
+and nothing else changed: one sentence per reason Commerce gives (`COUPON_NOT_FOUND` ·
+`COUPON_EXPIRED` · `COUPON_USAGE_LIMIT` · `COUPON_NOT_SUPPORTED` · `COUPON_MIN_AMOUNT` ·
+`COUPON_OTHER_APPLIED` · `COUPON_UNAVAILABLE`) and a generic one for anything else.
+
+A code typed here always has its answer said. The page's own code shows in the field only
+once it is taken (the code + «Fjern», so the shopper can take it off and type another);
+while it is being asked the field stays empty and usable, and when it is refused nothing is
+said. A payment always waits for a code the shopper typed.
+
+### From code — a host's own field, a host's own cart
+
+```ts
+const result = await Vio.applyDiscountCode('SOMMER10')          // every sponsor's cart, or (code, sponsorId)
+// { status: 'applied' | 'pending' | 'refused' | 'failed', code, reason?, carts: [{ sponsorId, status, reason?, message?, answer? }] }
+await Vio.removeDiscountCode()                                    // and none for the rest of this page load
+
+Vio.cart.discountCodeForSponsor(sponsorId)   // the code on that cart
+Vio.cart.discountBusy(sponsorId)             // { kind: 'applying' | 'removing', code, asked } while Commerce answers (`change` says when)
+Vio.cart.subtotalForSponsor(sponsorId)       // the lines at their list prices
+Vio.cart.discountForSponsor(sponsorId)       // what the code takes off them
+Vio.cart.totalForSponsor(sponsorId)          // what they cost (shipping apart)
+```
+
+Neither call throws: `pending` = no backend cart yet (the code is kept for this page load
+and goes on the cart once it has lines); `refused` carries Commerce's `reason`; `failed` = it
+could not be asked. `answer` is everything Commerce answered for that cart (`executed`,
+`message`, `gifts`…). A host's own field shows what `applyDiscountCode()` answers — taken or
+not, with why: that is the code someone typed. `discountBusy().asked` is `true` for a code
+asked for by name (a field, these calls) and `false` for what the SDK does by itself (the
+page's own code going on a cart), which a field shows only once it is done. A line (`CartLineItem`) keeps `unitPrice` — the list price — and
+`discount`, what the code takes off the LINE; `lineNetTotal`, `netUnitPrice`, `isGiftLine`,
+`cartDiscountTotal`, `cartNetTotal` (exported) do the sums. `vio:cart-updated` carries
+`discount` and `discountCode` beside `subtotal` when the cart has a code, and
+`Vio.checkout.currentState` has `discount` beside `subtotal`. `Vio.cart.totalAcrossSponsors`
+and `formatTotal()` are what is paid. The `purchase` (and `begin_checkout`,
+`add_payment_info`, `view_cart`) `value` and its items' `price` are what was paid: a gift is
+worth 0.
+
+**What it needs from the commerce gateway** (all additive; the SDK falls back, once per page
+load, on a gateway that predates a field): `Discounts.ApplyDiscount(cart_id, code)` →
+`{ executed, message, gifts { product_id variant_id quantity } }` and
+`DeleteAppliedDiscount`; `price.discount` on every cart and checkout line (the amount off
+the line, taxes included); `discount_code` on `GetCart`; and a payment refused for the
+discount as a GraphQL error whose `extensions.code` is the reason (`GIFT_MAX_ONE_UNIT`,
+`CHECKOUT_AMOUNT_ZERO`, `DISCOUNT_UNAVAILABLE`, `COUPON_*`).
 
 ## Headless / SSR
 

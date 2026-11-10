@@ -18,8 +18,14 @@ import { lineOriginWire } from '../cart/origin-wire.js'
 import { checkoutAttributionOf } from '../checkout/attribution.js'
 import {
   ADD_ITEM_MUTATION,
+  APPLY_DISCOUNT_MUTATION,
+  APPLY_DISCOUNT_MUTATION_LEGACY,
   CREATE_CHECKOUT_MUTATION,
   CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
+  DELETE_APPLIED_DISCOUNT_MUTATION,
+  GET_CART_QUERY,
+  GET_CART_WITH_DISCOUNT_CODE_QUERY,
+  GET_CHECKOUT_QUERY,
   UPDATE_CHECKOUT_MUTATION,
   UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
   UPDATE_ITEM_MUTATION,
@@ -49,6 +55,13 @@ function inputFields(name: string): Record<string, string> {
 function argsOf(field: string): Record<string, string> {
   const m = schema.match(new RegExp(`\\n  ${field}\\(([\\s\\S]*?)\\n  \\): `))
   if (!m) throw new Error(`${field}( is not in ${schemaPath}`)
+  return declarations(m[1]!)
+}
+
+/** The fields of `type <name> { … }`. */
+function typeFields(name: string): Record<string, string> {
+  const m = schema.match(new RegExp(`\\ntype ${name} \\{([\\s\\S]*?)\\n\\}`))
+  if (!m) throw new Error(`type ${name} is not in ${schemaPath}`)
   return declarations(m[1]!)
 }
 
@@ -137,6 +150,55 @@ describe(`the gateway schema (${process.env.VIO_GATEWAY_SCHEMA ? 'VIO_GATEWAY_SC
     const entry = inputFields(entryType)
     for (const field of Object.keys(ATTRIBUTION.entry!)) expect(entry, `entry.${field}`).toHaveProperty(field)
   })
+
+  it('ApplyDiscount / DeleteAppliedDiscount: take the cart and the code, under the names the SDK passes', () => {
+    for (const [field, document] of [
+      ['ApplyDiscount', APPLY_DISCOUNT_MUTATION],
+      ['DeleteAppliedDiscount', DELETE_APPLIED_DISCOUNT_MUTATION],
+    ] as const) {
+      const args = argsOf(field)
+      expect(Object.keys(args).sort()).toEqual(['cart_id', 'code'])
+      // The call inside the selection (the operation is named like the field: not that one).
+      const call = [...document.matchAll(new RegExp(`${field}\\(([^)]*)\\)`, 'g'))].map((m) => m[1]!).find((a) => /:\s*\$/.test(a))
+      expect([...(call ?? '').matchAll(/(\w+)\s*:\s*\$/g)].map((m) => m[1]).sort()).toEqual(['cart_id', 'code'])
+      expect(args.cart_id).toBe(variablesOf(document).cartId)
+      expect(args.code).toBe(variablesOf(document).code)
+    }
+  })
+
+  it('the discount on the wire: what a line is taken off (price.discount), the code of the cart and the checkout\'s totals', () => {
+    expect(typeFields('PriceDataDTO').discount).toBe('Float')
+    // The code of the cart is on every answer that is a cart; the SDK reads it from GetCart.
+    for (const cart of [
+      'CartDTO',
+      'GetCartDTO',
+      'CreateCartDTO',
+      'CreateItemToCartDTO',
+      'UpdateItemToCartDTO',
+      'RemoveItemToCartDTO',
+      'UpdateCartDTO',
+      'UpdateShippingsBySupplierDTO',
+    ]) {
+      expect(typeFields(cart).discount_code, cart).toBe('String')
+    }
+    expect(typeFields('TotalsDTO')).toMatchObject({ discounts: 'Float', total: 'Float', taxes: 'Float' })
+    expect(typeFields('GetCheckoutDTO').discount_code).toBe('String')
+    // …and the checkout the receipt is read from asks for them.
+    for (const field of ['discount_code', 'discounts', 'discount']) expect(GET_CHECKOUT_QUERY).toMatch(new RegExp(`\\n\\s+${field}\\n`))
+    // What a gateway without the cart's code would quote when it refuses the selection.
+    expect(featureTokens('cart_discount_code')).toEqual(['discount_code'])
+  })
+
+  it('ApplyDiscount answers with the gifts of the code: product, variant and quantity', () => {
+    const answer = typeFields('ApplyDiscountDTO')
+    expect(answer).toMatchObject({ executed: 'Boolean!', message: 'String!' })
+    expect(answer.gifts).toBeDefined()
+    expect(answer.gifts).toBe('[ApplyDiscountGiftDTO!]')
+    const gift = typeFields(bareType(answer.gifts!))
+    expect(gift).toEqual({ product_id: 'Int!', quantity: 'Int!', variant_id: 'Int' })
+    for (const field of ['product_id', 'variant_id', 'quantity']) expect(APPLY_DISCOUNT_MUTATION).toMatch(new RegExp(`\\n\\s+${field}\\n`))
+    expect(featureTokens('discount_gifts')).toEqual(['gifts'])
+  })
 })
 
 describe('the gateway schema, validated for real (graphql)', () => {
@@ -189,6 +251,18 @@ describe('the gateway schema, validated for real (graphql)', () => {
     })
     expect(coerced.errors?.length ?? 0).toBeGreaterThan(0)
     expect(lineOriginWire({ campaignId: 2_147_483_648, slot: 'hero' }, { privacyMode: 'standard' })).not.toHaveProperty('campaign_id')
+  })
+
+  it('ApplyDiscount and DeleteAppliedDiscount', () => {
+    expect(accepts(APPLY_DISCOUNT_MUTATION, { cartId: 'c', code: 'GAVE' })).toEqual({ cartId: 'c', code: 'GAVE' })
+    expect(accepts(APPLY_DISCOUNT_MUTATION_LEGACY, { cartId: 'c', code: 'GAVE' })).toEqual({ cartId: 'c', code: 'GAVE' })
+    expect(APPLY_DISCOUNT_MUTATION_LEGACY).not.toContain('gifts')
+    expect(accepts(DELETE_APPLIED_DISCOUNT_MUTATION, { cartId: 'c', code: 'GAVE' })).toEqual({ cartId: 'c', code: 'GAVE' })
+  })
+
+  it('GetCart with the cart\'s discount_code — and the query a page without discounts sends', () => {
+    accepts(GET_CART_WITH_DISCOUNT_CODE_QUERY, { cartId: 'c' })
+    accepts(GET_CART_QUERY, { cartId: 'c' })
   })
 
   it('the legacy documents validate too (what a gateway that predates the arguments gets)', () => {

@@ -140,8 +140,24 @@ type ApplyDiscountDTO {
   """Indicates whether the discount was successfully applied."""
   executed: Boolean!
 
+  """
+  Products the discount gives away: the client adds one unit of each to the cart. Null or empty when there are none.
+  """
+  gifts: [ApplyDiscountGiftDTO!]
+
   """Message providing details about the discount application result."""
   message: String!
+}
+
+type ApplyDiscountGiftDTO {
+  """Unique identifier of the gift product."""
+  product_id: Int!
+
+  """Quantity of the gift."""
+  quantity: Int!
+
+  """Variant of the gift product, when it has one."""
+  variant_id: Int
 }
 
 type AttrContentElement {
@@ -210,6 +226,9 @@ type CartDTO {
 
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
+
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
@@ -622,6 +641,9 @@ type CreateCartDTO {
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
 
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -714,6 +736,9 @@ type CreateItemToCartDTO {
 
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
+
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
@@ -979,6 +1004,9 @@ type GetCartDTO {
 
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
+
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
@@ -2585,6 +2613,9 @@ type RemoveItemToCartDTO {
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
 
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2790,6 +2821,9 @@ type UpdateCartDTO {
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
 
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2912,6 +2946,9 @@ type UpdateItemToCartDTO {
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
 
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2937,6 +2974,9 @@ type UpdateShippingsBySupplierDTO {
 
   """Unique identifier for the customer session associated with the cart."""
   customer_session_id: String!
+
+  """Discount code applied to the cart. Null when there is none."""
+  discount_code: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!

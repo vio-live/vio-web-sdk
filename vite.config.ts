@@ -23,6 +23,9 @@ export default defineConfig({
     port: 5173,
     open: true,
     host: '127.0.0.1',
+    // An https tunnel to this server (`cloudflared tunnel --url http://127.0.0.1:5173`):
+    // Vipps sends the shopper back to an https URL, and a phone can only reach a public one.
+    allowedHosts: ['.trycloudflare.com'],
     proxy: {
       '/proxy-vio': {
         target: 'https://api-staging.vio.live',

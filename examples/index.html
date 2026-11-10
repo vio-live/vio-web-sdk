@@ -74,11 +74,18 @@
         <ul>
           <li>
             <code>npm run dev</code> y abre
-            <code>http://127.0.0.1:5173/?env=testing&amp;campaignId=18&amp;discountCode=qa_gave&amp;discountField=true</code>
+            <code>http://127.0.0.1:5173/?env=testing&amp;campaignId=18</code>
+          </li>
+          <li>
+            El código de descuento es el de la campaña: se pone en el dashboard (QA), en la campaña,
+            por sponsor. El SDK lo pone solo en el carrito de esa marca; la barra de arriba dice cuál.
+            Cambiarlo o quitarlo en el dashboard y volver a la pestaña tras más de 5 min (o recargar):
+            el carrito lo cambia o lo quita, con su regalo.
           </li>
           <li>
             <code>apiKey</code> (si no, <code>VITE_VIO_API_KEY</code> en <code>.env.local</code>) ·
-            <code>env</code> = testing | production · <code>campaignId</code> · <code>discountCode</code> ·
+            <code>env</code> = testing | production · <code>campaignId</code> ·
+            <code>discountCode</code> (un código de la página, que pisa el de la campaña) ·
             <code>discountField</code> = true | false · <code>productIds</code> = 1,2,3 ·
             <code>vio_discount</code> funciona como en cualquier página.
           </li>

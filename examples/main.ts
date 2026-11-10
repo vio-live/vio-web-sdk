@@ -1,19 +1,36 @@
 /**
  * QA en local — el SDK de esta rama contra QA, configurado por la URL.
  *
- *   npm run dev   →   http://127.0.0.1:5173/?env=testing&campaignId=18&discountCode=qa_gave&discountField=true
+ *   npm run dev   →   http://127.0.0.1:5173/?env=testing&campaignId=18
+ *
+ * El código de descuento es el DE LA CAMPAÑA: no va en la URL. Se pone en el
+ * dashboard de Vio (QA), en la campaña, por sponsor (el código de ESA marca en
+ * ESA campaña, el cupón que existe en su tienda). El bootstrap lo trae en el
+ * sponsor (`discountCode`) y el SDK lo pone solo en el carrito de esa marca en
+ * las páginas de la campaña: la barra de arriba dice cuál («código X (campaña)»).
+ * Para probarlo:
+ *   1. Dashboard (QA) → la campaña 18 → su marca → código de descuento, p. ej. qa_gave.
+ *   2. Abrir la URL de arriba, añadir un producto: el código va solo (con su regalo),
+ *      sin campo «Rabattkode» (añade &discountField=true para verlo).
+ *   3. Dinámico: cambiar (o quitar) el código en el dashboard, esperar >5 min con la
+ *      pestaña en otra parte y volver a ella (o recargar): el carrito cambia el código
+ *      viejo por el nuevo, o lo quita, con su regalo. Un código TECLEADO no se toca.
+ * Sin backend que lo sirva (Commerce sin ese release), no pasa nada: sin código.
  *
  * Parámetros (todos opcionales salvo la key):
  *   apiKey         la key PÚBLICA de la surface (X-Api-Key), nunca la de gestión.
  *                  Sin ella: VITE_VIO_API_KEY de `.env.local`.
  *   env            testing (por defecto, QA) | production | development
- *   campaignId     la campaña del artículo: la página es de esa campaña y se pintan
- *                  los productos del canal de su marca (los que tienen stock, hasta 12)
- *   discountCode   el código de la campaña, aplicado solo (`Vio.init({ discountCode })`)
+ *   campaignId     la campaña del artículo: la página es de esa campaña (y su código),
+ *                  y se pintan los productos del canal de su marca (con stock, hasta 12)
+ *   discountCode   un código de la PÁGINA, que pisa el de la campaña para todos los
+ *                  carritos (`Vio.init({ discountCode })`): solo para probar el override
  *   discountField  true | false — enseñar / ocultar el campo «Rabattkode»
- *                  (sin él: lo que haga el SDK, que lo enseña cuando hay código)
+ *                  (sin él: lo que haga el SDK, que lo enseña cuando la página nombra
+ *                  su código; el de la campaña no lo enciende)
  *   productIds     1,2,3 — estos productos en vez de los del canal
- *   vio_discount   el código por la URL, como en cualquier página (`discountCode` gana)
+ *   vio_discount   el código por la URL, como en cualquier página (`discountCode` gana;
+ *                  los dos pisan el de la campaña)
  *
  * Los tres caminos de Vipps:
  *   1. Ficha con carrito vacío: «Tøm handlekurven», abrir un producto, «Kjøp nå med Vipps».
@@ -83,6 +100,8 @@ async function paintProducts(): Promise<void> {
     return
   }
   const sponsorId = campaign?.primarySponsor?.id
+  // El código que la campaña da a su marca (el del dashboard), en la barra.
+  say(statusEl, describeQaConfig(qa, campaign?.primarySponsor?.discountCode ?? null))
   let ids = productIds
   if (ids.length === 0 && sponsorId) {
     try {

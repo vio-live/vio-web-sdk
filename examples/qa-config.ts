@@ -20,6 +20,7 @@ export interface QaConfig {
   apiKey: string
   env: QaEnv
   campaignId?: number
+  /** A code of the page's own (`Vio.init({ discountCode })`): the override; without it, the campaign's. */
   discountCode?: string
   /** `true` / `false` as the URL said it; `undefined` when it did not (the SDK's default). */
   discountField?: boolean
@@ -82,8 +83,14 @@ export function readQaConfig(search: string, vars: QaEnvVars = {}): QaConfig {
   }
 }
 
-/** The status line: env, campaign, which code (and from where), the field. */
-export function describeQaConfig(c: QaConfig): string {
+/**
+ * The status line: env, campaign, which code (and from where), the field.
+ * `campaignCode` is what the bootstrap's campaign gives the brand shown
+ * (`discountCode` of its sponsor block, set in the dashboard): left out
+ * before the bootstrap; `null` when the campaign gives none. The page's own
+ * (`discountCode`, `?vio_discount=`) wins over it, as in the SDK.
+ */
+export function describeQaConfig(c: QaConfig, campaignCode?: string | null): string {
   return [
     `env ${c.env}`,
     c.campaignId ? `campaña ${c.campaignId}` : 'sin campaña (la de la surface)',
@@ -91,7 +98,11 @@ export function describeQaConfig(c: QaConfig): string {
       ? `código ${c.discountCode} (config)`
       : c.urlDiscountCode
         ? `código ${c.urlDiscountCode} (?vio_discount)`
-        : 'sin código',
+        : campaignCode === undefined
+          ? 'código: el de la campaña'
+          : campaignCode
+            ? `código ${campaignCode} (campaña)`
+            : 'sin código (la campaña no da ninguno)',
     c.discountField === undefined ? 'campo: por defecto' : `campo: ${c.discountField ? 'sí' : 'no'}`,
   ].join(' · ')
 }

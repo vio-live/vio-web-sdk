@@ -32,10 +32,16 @@ export const DISCOUNT_TEXT = {
   // ── With a code on the cart, only Vipps ───────────────────────────────────
   /** Under the ways to pay that are off while a discount code is on the cart (they would charge list prices). */
   vippsOnly: 'Med rabattkode kan du bare betale med Vipps.',
+  /** In place of the ways to pay when none of those on offer takes the discount on the cart (with «Fjern» under it). */
+  noDiscountMethod: 'Rabatten kan ikke brukes med betalingsmåtene her. Fjern rabatten for å betale.',
+  /** What the «Fjern» under that note is, read out. */
+  discountRemoveLabel: 'Fjern rabatten',
 
   // ── A payment Commerce would not start because of the discount ────────────
   /** The discount could not be worked out right now. */
   discountUnavailable: 'Rabatten kunne ikke beregnes akkurat nå. Prøv igjen om litt.',
+  /** The way to pay that was chosen does not take discounts. */
+  methodTakesNoDiscount: 'Rabatten kan ikke brukes med denne betalingsmåten. Velg en annen, eller fjern rabatten.',
   /** After a code that is no good any more came off the cart at the payment. */
   cartUpdated: 'Handlekurven er oppdatert – prøv igjen.',
 
@@ -54,6 +60,8 @@ export const DISCOUNT_TEXT = {
   fieldRemoveLabel: 'Fjern rabattkoden',
   /** The code could not be taken off. */
   fieldRemoveFailed: 'Rabattkoden kunne ikke fjernes. Prøv igjen.',
+  /** In the field, in place of the code, when the cart carries its campaign's — whose code is never shown. */
+  fieldCampaignApplied: 'Rabatt lagt til',
 
   // ── Why a code was refused (said for a code the shopper typed; never for the page's own) ──
   couponNotFound: 'Rabattkoden finnes ikke.',
@@ -114,6 +122,8 @@ export function discountPaymentText(reason: DiscountReason): string {
       return DISCOUNT_TEXT.giftOnly
     case 'DISCOUNT_UNAVAILABLE':
       return DISCOUNT_TEXT.discountUnavailable
+    case 'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED':
+      return DISCOUNT_TEXT.methodTakesNoDiscount
     case 'COUPON_UNAVAILABLE':
       return DISCOUNT_TEXT.couponUnavailable
     case 'COUPON_OTHER_APPLIED':

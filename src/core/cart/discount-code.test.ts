@@ -97,6 +97,9 @@ describe('discountReasonOfError — a payment Commerce would not start', () => {
     expect(discountReasonOfError(gatewayError([{ message: 'Payment Vipps not initialize: nothing to pay [CHECKOUT_AMOUNT_ZERO]' }]))).toBe('CHECKOUT_AMOUNT_ZERO')
     expect(discountReasonOfError(new Error('[CheckoutManager] could not persist checkout details: x [COUPON_EXPIRED]'))).toBe('COUPON_EXPIRED')
     expect(discountReasonOfError('Payment Vipps not initialize: y [DISCOUNT_UNAVAILABLE]')).toBe('DISCOUNT_UNAVAILABLE')
+    expect(discountReasonOfError('Payment Klarna not initialize: z [DISCOUNT_PAYMENT_METHOD_UNSUPPORTED]')).toBe(
+      'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED',
+    )
   })
 
   it('a code that is not about the discount, and anything that is no error: none', () => {

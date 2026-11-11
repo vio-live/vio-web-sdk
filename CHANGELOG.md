@@ -16,6 +16,51 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **The campaign's code is applied by reference: the code never reaches the page.** The bootstrap names it
+  only by an opaque reference (`discount: { ref } | null` on every sponsor block); the SDK asks Commerce to
+  apply that campaign's code to the brand's cart (`ApplyDiscount(cart_id, campaign_id)`) and Commerce looks it
+  up. Which campaign, when, its gift and its silence when refused are as before. A new reference (the
+  dashboard set the code again) swaps it on the cart; none takes it off — without naming it
+  (`DeleteAppliedDiscount(cart_id)`). See
+  [README → The campaign's code](README.md#the-campaigns-code--set-in-the-dashboard-the-shopper-types-nothing).
+- **«Fjern» where no way to pay takes the code on the cart.** The checkout and the cart drawer say so under
+  the buttons that are off and offer «Fjern» (`::part(discount-dead-end)`): the code comes off and every way
+  to pay is back.
+- `Vio.cart.hasDiscountCode(sponsorId?)` and `Vio.cart.discountSourceForSponsor(sponsorId)` (`CODE` |
+  `CAMPAIGN`); `SponsorCartState.discountSource` / `discountRef`; `Sponsor.discount` and
+  `SponsorCommerceBlock.discountMethods` are typed. `vio:cart-updated` says `discountSource: 'CAMPAIGN'` for
+  the campaign's code.
+- A payment refused because the chosen way to pay takes no discount (`DISCOUNT_PAYMENT_METHOD_UNSUPPORTED`)
+  is said where the shopper is, as the other discount refusals.
+
+### Changed
+- **The campaign's code is never shown.** Its «Rabatt» row has no code («Rabatt −52 kr»), in the cart, the
+  checkout's summary and the receipt; with `discountField: true` the field says «Rabatt lagt til» with
+  «Fjern». `Vio.cart.discountCodeForSponsor()` answers nothing for it, and `removeDiscountCode()` reports it
+  as `source: 'CAMPAIGN'` with `code: ''`.
+- **A code nobody typed — the campaign's or the page's own — goes only on the cart of a brand one of whose
+  ways to pay takes discounts** (the bootstrap's `commerce.discountMethods` is not empty; without that field,
+  `paymentMethods` include Vipps). The page's own code waits for the bootstrap to know. A code the shopper
+  types is asked as before.
+- **Which ways to pay a code turns off** is read from each method's own `discounts` config, as Commerce
+  offers it; a method whose config does not say: Vipps takes codes, the others do not — as before.
+- The bootstrap's `discountCode` on the sponsor blocks is no longer read (Commerce sends it as `null`).
+
+### ⚠️ Upgrade notes
+- **Needs the Commerce release with discount codes by reference** (gateway: `campaign_id` on
+  `ApplyDiscount`, `DeleteAppliedDiscount` without a code, `discount_source` on the cart; campaigns service:
+  `discount: { ref }` and `commerce.discountMethods` in the bootstrap). On a gateway without them the cart
+  goes on without the campaign's code — one refused call per page load, nothing on screen; a bootstrap
+  without `discount` is a campaign without codes.
+- **0.38.0 pages get no campaign code from that Commerce release**: it sends the sponsor blocks'
+  `discountCode` as `null`. Upgrade the pages that rely on the campaign's code together with it.
+- **The other way round** — this version against a Commerce that still sends `discountCode` and no
+  `discount` — gives no new campaign code either (a campaign's code already on a cart is left as it is).
+  Deploy Commerce first.
+- A page with its own `discountCode` (or `?vio_discount=`) now applies it once the bootstrap has arrived,
+  and not on a brand none of whose ways to pay takes discounts.
+
 ## 0.38.0 — 2026-11-10
 
 Discount codes and the gift they bring, two analytics fixes, and everything of

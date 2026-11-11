@@ -40,6 +40,8 @@ function deferred<T>() {
 
 /** What the cart manager says about the code of the sponsor's cart, as the test sets it. */
 let cartCode: string | undefined
+/** `CAMPAIGN` when the sponsor's cart carries its campaign's code (no code is shown then). */
+let cartSource: 'CAMPAIGN' | undefined
 /** The discount call in flight; `asked`: by name (a field, the host's call) — `false`: the page's own code, by itself. */
 let busy: { kind: 'applying' | 'removing'; code: string; sponsorId: number; asked: boolean } | undefined
 let apply: ReturnType<typeof vi.fn>
@@ -49,12 +51,14 @@ const page = (config: Record<string, unknown> = { discountField: true }) => Conf
 
 beforeEach(() => {
   cartCode = undefined
+  cartSource = undefined
   busy = undefined
   apply = vi.fn(async (code: string) => applied(code))
   remove = vi.fn(async () => ({ removed: true, carts: [{ sponsorId: SPONSOR, code: 'KODE', status: 'removed' }] }))
   vi.spyOn(Vio.cart, 'applyDiscountCode').mockImplementation(apply as never)
   vi.spyOn(Vio.cart, 'removeDiscountCode').mockImplementation(remove as never)
   vi.spyOn(Vio.cart, 'discountCodeForSponsor').mockImplementation(() => cartCode)
+  vi.spyOn(Vio.cart, 'discountSourceForSponsor').mockImplementation(() => cartSource ?? (cartCode ? 'CODE' : undefined))
   vi.spyOn(Vio.cart, 'discountBusy').mockImplementation(() => busy)
   vi.spyOn(Vio.cart, 'refreshFromServer').mockResolvedValue(undefined as any)
   vi.spyOn(Vio.checkout, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Vipps' }] as any)
@@ -72,7 +76,12 @@ afterEach(() => {
 
 async function cart(items: Array<Record<string, unknown>> = [CREAM]): Promise<El> {
   const el = await mount<El>('vio-cart')
-  el.carts = new Map([[SPONSOR, { sponsorId: SPONSOR, currency: 'NOK', items, ...(cartCode ? { discountCode: cartCode } : {}) }]])
+  el.carts = new Map([
+    [
+      SPONSOR,
+      { sponsorId: SPONSOR, currency: 'NOK', items, ...(cartCode ? { discountCode: cartCode } : {}), ...(cartSource ? { discountSource: cartSource } : {}) },
+    ],
+  ])
   el.itemCount = items.length
   el.availableMethods = ['Vipps']
   el.open = true
@@ -151,42 +160,28 @@ describe('where the field shows', () => {
     expect(applyButton(el).getAttribute('data-vio-cta')).toBe('discount_apply')
   })
 
-  describe('a code the CAMPAIGN gives (the bootstrap, set in the dashboard per sponsor)', () => {
-    const facade = Vio as unknown as { cachedBootstrap: unknown }
-    let kept: unknown
+  describe('the code a CAMPAIGN gives (set in the dashboard per sponsor, put on by reference): its code is never shown', () => {
     beforeEach(() => {
-      kept = facade.cachedBootstrap
-      facade.cachedBootstrap = {
-        campaign: { id: 5, name: 'Jul' },
-        campaigns: [
-          {
-            id: 5,
-            name: 'Jul',
-            status: 'active',
-            primarySponsor: { id: SPONSOR, name: 'Faves', discountCode: 'gratis_face_mask', commerce: { apiKey: 'k', channelId: '1' } },
-          },
-        ],
-      }
-    })
-    afterEach(() => {
-      facade.cachedBootstrap = kept
+      cartSource = 'CAMPAIGN'
     })
 
-    it('does not turn the field on: on the cart, only its «Rabatt» row and «Gratis» show — as the page\'s own code does', async () => {
+    it('does not turn the field on: on the cart, only its «Rabatt» row — without a code — and «Gratis»', async () => {
       page({ campaignId: 5 })
-      cartCode = 'gratis_face_mask'
       const el = await cart([CREAM, MASK])
       expect(field(el)).toBeNull()
-      expect(text(el.shadowRoot!.querySelector('.discount-row'))).toBe('Rabatt (gratis_face_mask) −52 Kr')
+      expect(text(el.shadowRoot!.querySelector('.discount-row'))).toBe('Rabatt −52 Kr')
       expect(el.shadowRoot!.textContent).toContain('Gratis')
     })
 
-    it('with discountField: true the field shows it once taken — the code and «Fjern»', async () => {
+    it('with discountField: true the field says a discount is on — never a code — and «Fjern» takes it off', async () => {
       page({ campaignId: 5, discountField: true })
-      cartCode = 'gratis_face_mask'
       const el = await cart([CREAM, MASK])
-      expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('gratis_face_mask')
+      expect(text(el.shadowRoot!.querySelector('.discount-code'))).toBe('Rabatt lagt til')
+      expect(input(el)).toBeNull()
       expect(text(removeButton(el))).toBe('Fjern')
+      removeButton(el).click()
+      await settle(el)
+      expect(remove).toHaveBeenCalledWith(SPONSOR)
     })
   })
 })

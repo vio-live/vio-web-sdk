@@ -85,12 +85,13 @@ export function readQaConfig(search: string, vars: QaEnvVars = {}): QaConfig {
 
 /**
  * The status line: env, campaign, which code (and from where), the field.
- * `campaignCode` is what the bootstrap's campaign gives the brand shown
- * (`discountCode` of its sponsor block, set in the dashboard): left out
- * before the bootstrap; `null` when the campaign gives none. The page's own
+ * `campaignRef` is what the bootstrap's campaign gives the brand shown —
+ * only a reference (`discount.ref` of its sponsor block, set in the
+ * dashboard): the code itself never reaches the page. Left out before the
+ * bootstrap; `null` when the campaign gives none. The page's own
  * (`discountCode`, `?vio_discount=`) wins over it, as in the SDK.
  */
-export function describeQaConfig(c: QaConfig, campaignCode?: string | null): string {
+export function describeQaConfig(c: QaConfig, campaignRef?: string | null): string {
   return [
     `env ${c.env}`,
     c.campaignId ? `campaña ${c.campaignId}` : 'sin campaña (la de la surface)',
@@ -98,10 +99,10 @@ export function describeQaConfig(c: QaConfig, campaignCode?: string | null): str
       ? `código ${c.discountCode} (config)`
       : c.urlDiscountCode
         ? `código ${c.urlDiscountCode} (?vio_discount)`
-        : campaignCode === undefined
+        : campaignRef === undefined
           ? 'código: el de la campaña'
-          : campaignCode
-            ? `código ${campaignCode} (campaña)`
+          : campaignRef
+            ? `código de la campaña (ref ${campaignRef}; el código no llega a la página)`
             : 'sin código (la campaña no da ninguno)',
     c.discountField === undefined ? 'campo: por defecto' : `campo: ${c.discountField ? 'sí' : 'no'}`,
   ].join(' · ')

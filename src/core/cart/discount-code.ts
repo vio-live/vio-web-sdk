@@ -29,10 +29,14 @@
  * A payment Commerce refuses because of the discount says why either way.
  *
  * The code that goes on a cart without the shopper typing it is, first of
- * all, the CAMPAIGN's: set in Vio's dashboard per campaign and sponsor, given
- * by the bootstrap (`discountCode` on the sponsor blocks), put on THAT
- * sponsor's cart on the campaign's pages, and followed when a newer bootstrap
- * changes or removes it (core/campaign-discount.ts). A page can also name one
+ * all, the CAMPAIGN's: set in Vio's dashboard per campaign and sponsor, named
+ * by the bootstrap only by reference (`discount.ref` on the sponsor blocks —
+ * the code itself never reaches the page), put on THAT sponsor's cart on the
+ * campaign's pages by campaign (Commerce looks the code up), shown without
+ * its code, and followed when a newer bootstrap changes or removes it
+ * (core/campaign-discount.ts). A code nobody typed — the campaign's or the
+ * page's own — goes only on the cart of a brand one of whose ways to pay
+ * takes discounts (`sponsorTakesDiscounts`). A page can also name one
  * for all its carts, as an override: `Vio.init({ discountCode })`, or
  * `?vio_discount=CODE` in its URL — kept for the tab (`sessionStorage`), so
  * it survives the pages of the visit and the way back from the payment;
@@ -89,9 +93,16 @@ export const COUPON_REASONS = [
  * code is checked again right before charging):
  * - `GIFT_MAX_ONE_UNIT` — a line that is a gift has more than one unit;
  * - `CHECKOUT_AMOUNT_ZERO` — the cart holds only the gift: nothing to pay;
- * - `DISCOUNT_UNAVAILABLE` — the discount could not be worked out right now.
+ * - `DISCOUNT_UNAVAILABLE` — the discount could not be worked out right now;
+ * - `DISCOUNT_PAYMENT_METHOD_UNSUPPORTED` — the chosen way to pay does not
+ *   take discounts (only the methods that do may pay for a cart with a code).
  */
-export const DISCOUNT_PAYMENT_REASONS = ['GIFT_MAX_ONE_UNIT', 'CHECKOUT_AMOUNT_ZERO', 'DISCOUNT_UNAVAILABLE'] as const
+export const DISCOUNT_PAYMENT_REASONS = [
+  'GIFT_MAX_ONE_UNIT',
+  'CHECKOUT_AMOUNT_ZERO',
+  'DISCOUNT_UNAVAILABLE',
+  'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED',
+] as const
 
 export type CouponReason = (typeof COUPON_REASONS)[number]
 export type DiscountPaymentReason = (typeof DISCOUNT_PAYMENT_REASONS)[number]
@@ -235,12 +246,15 @@ export interface DiscountCodeResult {
  * The answer of `Vio.removeDiscountCode()`: whether a code came off some
  * cart, and what each cart that carried one said (`removed`, `refused` by
  * Commerce, or `failed` — it could not be asked and the code is still on).
+ * A campaign's code says `source: 'CAMPAIGN'` and no code (`''`): its text
+ * is never sent to the page.
  */
 export interface DiscountCodeRemoval {
   removed: boolean
   carts: Array<{
     sponsorId: number
     code: string
+    source?: 'CAMPAIGN'
     status: 'removed' | 'refused' | 'failed'
     message?: string
     answer?: DiscountAnswer

@@ -230,6 +230,9 @@ type CartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -644,6 +647,9 @@ type CreateCartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -693,6 +699,9 @@ type CreateCheckoutDTO {
   """Discount code applied to the checkout."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """Email address associated with the checkout."""
   email: String
 
@@ -739,6 +748,9 @@ type CreateItemToCartDTO {
 
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
+
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
@@ -865,11 +877,16 @@ type DiscountsMutations {
 
   """Applies a discount to the specified cart."""
   ApplyDiscount(
+    """
+    Campaign whose code for the cart's brand is applied (set in the dashboard). Exactly one of code or campaign_id.
+    """
+    campaign_id: Int
+
     """Unique identifier of the cart where the discount will be applied."""
     cart_id: String!
 
-    """Unique code of the discount to be applied."""
-    code: String!
+    """Unique code of the discount to be applied. Exactly one of code or campaign_id."""
+    code: String
   ): ApplyDiscountDTO!
 
   """Removes an applied discount from the specified cart."""
@@ -877,8 +894,8 @@ type DiscountsMutations {
     """Unique identifier of the cart from which the discount will be removed."""
     cart_id: String!
 
-    """Unique code of the discount to be removed."""
-    code: String!
+    """Unique code of the discount to be removed. Without it, whatever discount the cart carries is removed."""
+    code: String
   ): DeleteAppliedDiscountDTO!
 
   """Deletes a discount by its identifier."""
@@ -1008,6 +1025,9 @@ type GetCartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -1087,6 +1107,9 @@ type GetCheckoutDTO {
 
   """Discount code applied to the checkout."""
   discount_code: String
+
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
 
   """Email address associated with the checkout."""
   email: String
@@ -2616,6 +2639,9 @@ type RemoveItemToCartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2824,6 +2850,9 @@ type UpdateCartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2872,6 +2901,9 @@ type UpdateCheckoutDTO {
 
   """Discount code applied to the checkout."""
   discount_code: String
+
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
 
   """Email address associated with the checkout."""
   email: String
@@ -2949,6 +2981,9 @@ type UpdateItemToCartDTO {
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
 
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
+
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!
 
@@ -2977,6 +3012,9 @@ type UpdateShippingsBySupplierDTO {
 
   """Discount code applied to the cart. Null when there is none."""
   discount_code: String
+
+  """Whose the discount code is: CAMPAIGN (its code is not sent), CODE, or null without one."""
+  discount_source: String
 
   """List of line items in the cart."""
   line_items: [LineItemDTO!]!

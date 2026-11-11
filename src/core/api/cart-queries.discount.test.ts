@@ -6,13 +6,18 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  APPLY_CAMPAIGN_DISCOUNT_MUTATION,
   APPLY_DISCOUNT_MUTATION,
   APPLY_DISCOUNT_MUTATION_LEGACY,
   DELETE_APPLIED_DISCOUNT_MUTATION,
+  DELETE_CART_DISCOUNT_MUTATION,
   GET_CART_QUERY,
   GET_CART_WITH_DISCOUNT_CODE_QUERY,
+  GET_CART_WITH_DISCOUNT_SOURCE_QUERY,
+  applyCampaignDiscount,
   applyDiscount,
   deleteAppliedDiscount,
+  deleteCartDiscount,
   getCart,
 } from './cart-queries.js'
 import { gatewayHas, resetGatewayFeatures } from './gateway-features.js'
@@ -113,13 +118,62 @@ describe('applyDiscount / deleteAppliedDiscount', () => {
   })
 })
 
+describe('the campaign\'s code: applied by campaign, taken off without naming it', () => {
+  it('ApplyDiscount with the campaign and no code, asking for the gifts', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => response({ data: { Discounts: { ApplyDiscount: { executed: true, message: '', gifts: [] } } } }))
+    await expect(applyCampaignDiscount('cart-1', 5, OPTS)).resolves.toMatchObject({ executed: true })
+    expect(sent(fetchMock).query).toBe(APPLY_CAMPAIGN_DISCOUNT_MUTATION)
+    expect(sent(fetchMock).query).toContain('ApplyDiscount(cart_id: $cartId, campaign_id: $campaignId)')
+    expect(sent(fetchMock).variables).toEqual({ cartId: 'cart-1', campaignId: 5 })
+  })
+
+  it('a gateway that does not take a campaign: null — and not asked again on this page load', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      response(
+        {
+          errors: [
+            { message: 'Unknown argument "campaign_id" on field "DiscountsMutations.ApplyDiscount".' },
+            { message: 'Field "ApplyDiscount" argument "code" of type "String!" is required, but it was not provided.' },
+          ],
+        },
+        400,
+      ),
+    )
+    await expect(applyCampaignDiscount('cart-1', 5, OPTS)).resolves.toBeNull()
+    expect(gatewayHas('discount_campaign')).toBe(false)
+    await expect(applyCampaignDiscount('cart-2', 5, OPTS)).resolves.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('an ApplyDiscount by campaign that ran and failed is not a missing argument: it rejects, and the gateway is still asked', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      response({ data: { Discounts: { ApplyDiscount: null } }, errors: [{ message: 'shopcart is down', path: ['Discounts', 'ApplyDiscount'] }] }),
+    )
+    await expect(applyCampaignDiscount('cart-1', 5, OPTS)).rejects.toThrow('shopcart is down')
+    expect(gatewayHas('discount_campaign')).toBe(true)
+  })
+
+  it('DeleteAppliedDiscount with the cart alone: whatever code it carries comes off', async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => response({ data: { Discounts: { DeleteAppliedDiscount: { executed: true, message: '' } } } }))
+    await expect(deleteCartDiscount('cart-1', OPTS)).resolves.toEqual({ executed: true, message: '' })
+    expect(sent(fetchMock).query).toBe(DELETE_CART_DISCOUNT_MUTATION)
+    expect(sent(fetchMock).query).toContain('DeleteAppliedDiscount(cart_id: $cartId)')
+    expect(sent(fetchMock).variables).toEqual({ cartId: 'cart-1' })
+  })
+})
+
 describe('GetCart and the cart\'s discount code', () => {
   const CART = { cart_id: 'cart-1', line_items: [] }
 
-  it('the query a page without discounts sends has no discount_code — the other one differs by that line alone', () => {
+  it('the query a page without discounts sends has no discount_code — the others differ by those lines alone', () => {
     expect(GET_CART_QUERY).not.toContain('discount_code')
     expect(GET_CART_WITH_DISCOUNT_CODE_QUERY).toContain('discount_code')
     expect(GET_CART_WITH_DISCOUNT_CODE_QUERY.replace('\n      discount_code', '')).toBe(GET_CART_QUERY)
+    expect(GET_CART_WITH_DISCOUNT_SOURCE_QUERY.replace('\n      discount_source', '')).toBe(GET_CART_WITH_DISCOUNT_CODE_QUERY)
   })
 
   it('getCart as it always was: the legacy query, and nothing learned about the gateway', async () => {
@@ -129,28 +183,45 @@ describe('GetCart and the cart\'s discount code', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('with a code in play it also asks which code the cart carries', async () => {
+  it('with a code in play it also asks which code the cart carries, and whose', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockImplementation(async () => response({ data: { Cart: { GetCart: { ...CART, discount_code: 'GAVE' } } } }))
-    await expect(getCart('cart-1', OPTS, { discountCode: true })).resolves.toMatchObject({ discount_code: 'GAVE' })
-    expect(sent(fetchMock).query).toBe(GET_CART_WITH_DISCOUNT_CODE_QUERY)
+      .mockImplementation(async () => response({ data: { Cart: { GetCart: { ...CART, discount_code: null, discount_source: 'CAMPAIGN' } } } }))
+    await expect(getCart('cart-1', OPTS, { discountCode: true })).resolves.toMatchObject({ discount_code: null, discount_source: 'CAMPAIGN' })
+    expect(sent(fetchMock).query).toBe(GET_CART_WITH_DISCOUNT_SOURCE_QUERY)
   })
 
-  it('a gateway that predates the field: asked once more without it, and from then on straight without', async () => {
+  it('a gateway without discount_source: asked once more with the code alone, and from then on straight so', async () => {
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(response({ errors: [{ message: 'Cannot query field "discount_code" on type "GetCartDTO".' }] }, 400))
+      .mockResolvedValueOnce(response({ errors: [{ message: 'Cannot query field "discount_source" on type "GetCartDTO".' }] }, 400))
+      .mockImplementation(async () => response({ data: { Cart: { GetCart: { ...CART, discount_code: 'GAVE' } } } }))
+    await expect(getCart('cart-1', OPTS, { discountCode: true })).resolves.toMatchObject({ discount_code: 'GAVE' })
+    expect(sent(fetchMock, 0).query).toBe(GET_CART_WITH_DISCOUNT_SOURCE_QUERY)
+    expect(sent(fetchMock, 1).query).toBe(GET_CART_WITH_DISCOUNT_CODE_QUERY)
+    expect(gatewayHas('cart_discount_source')).toBe(false)
+    expect(gatewayHas('cart_discount_code')).toBe(true)
+    await getCart('cart-1', OPTS, { discountCode: true })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(sent(fetchMock, 2).query).toBe(GET_CART_WITH_DISCOUNT_CODE_QUERY)
+  })
+
+  it('a gateway that predates both fields: asked without each in turn, and from then on straight without', async () => {
+    const unknown = (...fields: string[]) =>
+      response({ errors: fields.map((f) => ({ message: `Cannot query field "${f}" on type "GetCartDTO".` })) }, 400)
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(unknown('discount_code', 'discount_source'))
+      .mockResolvedValueOnce(unknown('discount_code'))
       .mockImplementation(async () => response({ data: { Cart: { GetCart: CART } } }))
     await expect(getCart('cart-1', OPTS, { discountCode: true })).resolves.toEqual(CART)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(sent(fetchMock, 0).query).toBe(GET_CART_WITH_DISCOUNT_CODE_QUERY)
-    expect(sent(fetchMock, 1).query).toBe(GET_CART_QUERY)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(sent(fetchMock, 2).query).toBe(GET_CART_QUERY)
     expect(gatewayHas('cart_discount_code')).toBe(false)
 
     await getCart('cart-1', OPTS, { discountCode: true })
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(sent(fetchMock, 2).query).toBe(GET_CART_QUERY)
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(sent(fetchMock, 3).query).toBe(GET_CART_QUERY)
   })
 
   it('a GetCart that ran and failed is not a missing field: it fails, and is not asked again', async () => {

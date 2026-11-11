@@ -12,7 +12,8 @@
  * - checking: Commerce asks the brand's shop, one to three seconds — the
  *   field waits («Sjekker…»), nothing else in the cart does, and a second
  *   tap sends nothing;
- * - applied: the code, and «Fjern»;
+ * - applied: the code, and «Fjern» — for the campaign's code, «Rabatt lagt
+ *   til» in its place: its code is never shown (nor known to the page);
  * - refused: the field again, with why (`couponReasonText`) — the cart and
  *   its total as they were.
  *
@@ -21,7 +22,8 @@
  *   always — being checked, taken, or refused with why. Never in silence.
  * - The PAGE's own (`discountCode`, `?vio_discount=`, or the one its campaign
  *   gives the sponsor), which the shopper did
- *   not type: only once it is taken (the code and «Fjern»). While it is asked
+ *   not type: only once it is taken (the code — or, the campaign's, that a
+ *   discount is on — and «Fjern»). While it is asked
  *   the field stays as it is, and when it is refused nothing is said — a
  *   visitor who typed nothing never reads «invalid code».
  */
@@ -89,11 +91,16 @@ export class DiscountField {
     if (discountFieldEnabled()) this.opts.host.requestUpdate()
   }
 
-  /** The code the carts this field is about carry (the first one that does). */
+  /**
+   * The code the carts this field is about carry (the first one that does):
+   * its text; `''` for a campaign's, whose code is not shown; `undefined`
+   * when none carries one.
+   */
   private appliedCode(sponsorIds: number[]): string | undefined {
     for (const id of sponsorIds) {
       const code = Vio.cart.discountCodeForSponsor(id)
       if (code) return code
+      if (Vio.cart.discountSourceForSponsor(id) === 'CAMPAIGN') return ''
     }
     return undefined
   }
@@ -159,7 +166,7 @@ export class DiscountField {
     try {
       let failed = false
       for (const id of sponsorIds) {
-        if (!Vio.cart.discountCodeForSponsor(id)) continue
+        if (this.appliedCode([id]) === undefined) continue
         const result = await Vio.cart.removeDiscountCode(id)
         if (!result.removed && result.carts.length > 0) failed = true
       }
@@ -179,7 +186,7 @@ export class DiscountField {
     if (sponsorIds.length === 0) return nothing
     const busy = this.busy(sponsorIds)
     const applied = this.appliedCode(sponsorIds)
-    const showsCode = !!applied && busy?.kind !== 'applying'
+    const showsCode = applied !== undefined && busy?.kind !== 'applying'
     // No longer true: «could not be taken off» once the code is off, and «not
     // taken» once that very code is on the cart after all.
     const stale =
@@ -193,7 +200,9 @@ export class DiscountField {
         <div class="discount-field is-applied" part="discount-field">
           <span class="discount-applied">
             <span class="discount-label">${DISCOUNT_TEXT.fieldLabel}</span>
-            <span class="discount-code" part="discount-code">${applied}</span>
+            ${applied
+              ? html`<span class="discount-code" part="discount-code">${applied}</span>`
+              : html`<span class="discount-code is-campaign" part="discount-code">${DISCOUNT_TEXT.fieldCampaignApplied}</span>`}
           </span>
           <button
             type="button"

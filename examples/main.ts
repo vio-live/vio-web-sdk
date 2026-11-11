@@ -5,16 +5,20 @@
  *
  * El código de descuento es el DE LA CAMPAÑA: no va en la URL. Se pone en el
  * dashboard de Vio (QA), en la campaña, por sponsor (el código de ESA marca en
- * ESA campaña, el cupón que existe en su tienda). El bootstrap lo trae en el
- * sponsor (`discountCode`) y el SDK lo pone solo en el carrito de esa marca en
- * las páginas de la campaña: la barra de arriba dice cuál («código X (campaña)»).
+ * ESA campaña). El código nunca llega a la página: el bootstrap trae solo una
+ * referencia en el sponsor (`discount.ref`) y el SDK le pide a Commerce que
+ * aplique el código de esa campaña en el carrito de esa marca. La barra de arriba
+ * dice si la campaña da uno («código de la campaña (ref …)»); en el carrito sale
+ * como «Rabatt», sin código. Solo para marcas con un medio de pago que acepte
+ * descuentos (Vipps).
  * Para probarlo:
  *   1. Dashboard (QA) → la campaña 18 → su marca → código de descuento, p. ej. qa_gave.
  *   2. Abrir la URL de arriba, añadir un producto: el código va solo (con su regalo),
  *      sin campo «Rabattkode» (añade &discountField=true para verlo).
- *   3. Dinámico: cambiar (o quitar) el código en el dashboard, esperar >5 min con la
- *      pestaña en otra parte y volver a ella (o recargar): el carrito cambia el código
- *      viejo por el nuevo, o lo quita, con su regalo. Un código TECLEADO no se toca.
+ *   3. Dinámico: cambiar (o quitar) el código en el dashboard (cambia la referencia),
+ *      esperar >5 min con la pestaña en otra parte y volver a ella (o recargar): el
+ *      carrito quita el viejo y pone el nuevo, o lo quita, con su regalo. Un código
+ *      TECLEADO no se toca.
  * Sin backend que lo sirva (Commerce sin ese release), no pasa nada: sin código.
  *
  * Parámetros (todos opcionales salvo la key):
@@ -100,8 +104,8 @@ async function paintProducts(): Promise<void> {
     return
   }
   const sponsorId = campaign?.primarySponsor?.id
-  // El código que la campaña da a su marca (el del dashboard), en la barra.
-  say(statusEl, describeQaConfig(qa, campaign?.primarySponsor?.discountCode ?? null))
+  // Si la campaña da un código a su marca (el del dashboard): solo su referencia, en la barra.
+  say(statusEl, describeQaConfig(qa, campaign?.primarySponsor?.discount?.ref ?? null))
   let ids = productIds
   if (ids.length === 0 && sponsorId) {
     try {

@@ -20,11 +20,17 @@ import { Configuration, type VioConfig } from './configuration.js'
 import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
 import { createCommerceClient, type CommerceClient } from './api/commerce.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
-import { syncDiscountParam, type DiscountCodeRemoval, type DiscountCodeResult } from './cart/discount-code.js'
 import {
-  bootstrapDiscountCodes,
+  rememberedDiscountCode,
+  syncDiscountParam,
+  type DiscountCodeRemoval,
+  type DiscountCodeResult,
+} from './cart/discount-code.js'
+import {
+  bootstrapDiscountRefs,
   campaignDiscountFor,
   campaignDiscountNow,
+  sponsorTakesDiscounts,
   type CampaignDiscount,
 } from './campaign-discount.js'
 import { CheckoutManager } from './checkout/checkout-manager.js'
@@ -149,8 +155,8 @@ class VioFacade {
    * dead endpoint on every call. */
   private bootstrapFailedAt = 0
   /**
-   * The discount codes the campaigns give in the bootstrap held now, as one
-   * string (`bootstrapDiscountCodes`; `''`: none) — so a refresh that changed
+   * The discounts the campaigns give in the bootstrap held now, as one
+   * string (`bootstrapDiscountRefs`; `''`: none) — so a refresh that changed
    * them is told from one that did not. `undefined` until the first bootstrap
    * of this configuration.
    */
@@ -231,9 +237,10 @@ class VioFacade {
     }
     // The page's discount code: `discountCode` of this config, else the
     // `?vio_discount=` of the URL (kept for the tab). The carts the page opens
-    // with are asked for it now, without waiting; a page without a code asks
-    // nothing and does not even create its cart manager here. (The code a
-    // CAMPAIGN gives a sponsor comes with the bootstrap: `adoptBootstrap`.)
+    // with are asked for it — once the bootstrap says their brands' ways to
+    // pay take codes (`adoptBootstrap` asks again then); a page without a
+    // code asks nothing and does not even create its cart manager here. (The
+    // code a CAMPAIGN gives a sponsor comes with the bootstrap too.)
     try {
       const remembered = syncDiscountParam()
       if (Configuration.get().discountCode ?? remembered) this.cart.ensureDiscountCodes()
@@ -338,6 +345,7 @@ class VioFacade {
       const created: CartManager = new CartManager(scope, {
         campaignDiscount: (sponsorId) => this.campaignDiscountOf(created, sponsorId),
         campaignDiscountNow: (sponsorId, campaignId) => this.campaignDiscountNowOf(created, sponsorId, campaignId),
+        discountAllowed: (sponsorId, channelId) => this.discountAllowedOf(created, sponsorId, channelId),
       })
       // Only the current connection's events reach the page's listeners.
       for (const type of ['change', 'error']) {
@@ -360,12 +368,13 @@ class VioFacade {
   }
 
   /**
-   * The code the page's campaign gives a sponsor's cart, and that campaign
-   * (`campaignDiscountFor`: the first of the page's campaigns — its elements'
-   * `vio-campaign` / `data-vio-campaign`, then `Vio.init({ campaignId })` —
-   * that is active and has the sponsor, else the default campaign when it
-   * has the sponsor). Nothing for a manager of another connection, before the
-   * bootstrap, or when no campaign gives any code (the page is not even read).
+   * The discount the page's campaign gives a sponsor's cart — its reference —
+   * and that campaign (`campaignDiscountFor`: the first of the page's
+   * campaigns — its elements' `vio-campaign` / `data-vio-campaign`, then
+   * `Vio.init({ campaignId })` — that is active and has the sponsor, else the
+   * default campaign when it has the sponsor). Nothing for a manager of
+   * another connection, before the bootstrap, or when no campaign gives any
+   * (the page is not even read).
    */
   private campaignDiscountOf(manager: CartManager, sponsorId: number): CampaignDiscount | undefined {
     try {
@@ -376,7 +385,7 @@ class VioFacade {
     }
   }
 
-  /** What `campaignId` gives the sponsor now (`campaignDiscountNow`); `undefined` — cannot tell — before the bootstrap or for another connection's manager. */
+  /** What `campaignId` gives the sponsor now — its reference (`campaignDiscountNow`); `undefined` — cannot tell — before the bootstrap or for another connection's manager. */
   private campaignDiscountNowOf(manager: CartManager, sponsorId: number, campaignId: number): string | null | undefined {
     try {
       if (!this.cachedBootstrap || this.cartManagers.get(this.cartScope) !== manager) return undefined
@@ -387,15 +396,35 @@ class VioFacade {
   }
 
   /**
-   * The campaigns' codes on the carts of the page's connection: each cart is
-   * given the one its page campaign gives its sponsor, and loses one its
-   * campaign no longer gives (`CartManager.ensureDiscountCodes`) — when the
-   * bootstrap held now has codes, or a cart carries a campaign's. Nothing at
-   * all (not even a cart manager) otherwise.
+   * Whether a sponsor's cart may get a code nobody typed (the campaign's, the
+   * page's own): its selling block — the cart's channel's, else the one of
+   * the page's campaign — lists a way to pay that takes discounts
+   * (`sponsorTakesDiscounts`). `undefined` — not yet — before the bootstrap,
+   * or for a manager of another connection.
+   */
+  private discountAllowedOf(manager: CartManager, sponsorId: number, channelId?: string): boolean | undefined {
+    try {
+      if (!this.cachedBootstrap || this.cartManagers.get(this.cartScope) !== manager) return undefined
+      const block = this.sponsorCommerce(sponsorId, channelId ? { channelId, retired: true } : {})
+      return sponsorTakesDiscounts(block?.commerce)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * The codes nobody typed on the carts of the page's connection: each cart
+   * is given the one its page campaign gives its sponsor (or the page's own),
+   * and loses one its campaign no longer gives
+   * (`CartManager.ensureDiscountCodes`) — when the bootstrap held now has
+   * campaigns' codes, the page has a code of its own (it waited for the
+   * bootstrap to know the brands' ways to pay), or a cart carries a
+   * campaign's. Nothing at all (not even a cart manager) otherwise.
    */
   private settleCampaignCodes(): void {
     try {
-      if (this.campaignCodes) {
+      const pageCode = Configuration.isInitialized && !!(Configuration.get().discountCode ?? rememberedDiscountCode())
+      if (this.campaignCodes || pageCode) {
         this.cart.ensureDiscountCodes()
         return
       }
@@ -589,9 +618,9 @@ class VioFacade {
     } catch {
       /* the memory of channels is a convenience */
     }
-    // The campaigns' discount codes (per campaign and sponsor): the carts follow
+    // The campaigns' discounts (per campaign and sponsor): the carts follow
     // them when this bootstrap is the configuration's first, or changed them.
-    const codes = bootstrapDiscountCodes(res)
+    const codes = bootstrapDiscountRefs(res)
     if (codes !== this.campaignCodes) {
       this.campaignCodes = codes
       this.settleCampaignCodes()

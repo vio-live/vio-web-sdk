@@ -32,7 +32,17 @@ import type { CtaInput } from '../../core/analytics/cta.js'
 import { lineOrigins } from '../../core/cart/cart-manager.js'
 import { cartDiscountTotal, cartNetTotal, isGiftLine, isGiftOnlyCart } from '../../core/cart/discount.js'
 import { discountReasonOfError } from '../../core/cart/discount-code.js'
-import { discountRow, discountStyles, renderLinePrice, renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
+import {
+  discountRow,
+  discountStyles,
+  cartCarriesDiscount,
+  methodTakesDiscounts,
+  renderDiscountDeadEnd,
+  renderLinePrice,
+  renderVippsOnlyNote,
+  vippsOnlyStyles,
+  type OfferedMethod,
+} from '../discount.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
 import { DiscountField, discountFieldStyles } from '../discount-field.js'
 
@@ -107,6 +117,10 @@ export class VioCart extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** The same methods with their config — whether each takes a discount code (`discounts`). */
+  @state() private offeredMethodInfo: OfferedMethod[] | null = null
+  /** The «Fjern» of the discount none of the ways to pay takes: in flight, or the last one failed. */
+  @state() private discountRemoval: 'removing' | 'failed' | null = null
   /** Asking for the brand's methods: a neutral placeholder instead of every method's button (see methodEnabled). */
   @state() private methodsLoading = false
   @state() private vippsOfficial = false
@@ -680,12 +694,14 @@ export class VioCart extends LitElement {
     this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(firstSponsorId)) as
-        | Array<{ name: string }>
+        | Array<{ name: string } & OfferedMethod>
         | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        this.offeredMethodInfo = methods
       } else {
         this.availableMethods = null
+        this.offeredMethodInfo = null
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
@@ -693,6 +709,7 @@ export class VioCart extends LitElement {
       }
       // Unknown (not "none") — render everything rather than nothing.
       this.availableMethods = null
+      this.offeredMethodInfo = null
     } finally {
       this.loadingPaymentMethods = false
       this.methodsLoading = false
@@ -764,8 +781,8 @@ export class VioCart extends LitElement {
   private onApplePay(): void {
     const handle = this.applePayHandle
     if (!handle || !handle.available || !this.payable) return
-    // A discount code on the cart: only Vipps charges what Commerce works out.
-    if (this.discountOnCart) return
+    // A discount code on the cart: only the methods that take discounts charge what Commerce works out.
+    if (this.discountOff('apple-pay')) return
     // Snapshot items + total BEFORE clearing the cart (confirmation needs them).
     const snapshot = this.buildConfirmation()
     // Who the order is with, while the cart still names it — only when one
@@ -819,7 +836,7 @@ export class VioCart extends LitElement {
    * (betalingsmetode). The host's checkout-open handler closes this cart and
    * opens <vio-checkout> in express mode with Klarna preselected. */
   private onKlarnaExpress(): void {
-    if (!this.payable || this.discountOnCart) return
+    if (!this.payable || this.discountOff('klarna')) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -953,7 +970,7 @@ export class VioCart extends LitElement {
 
   /** Stripe — opens the checkout with Stripe preselected. */
   private onStripe(): void {
-    if (!this.payable || this.discountOnCart) return
+    if (!this.payable || this.discountOff('stripe')) return
     const firstSponsorId = [...this.carts.keys()][0]
     if (firstSponsorId === undefined) return
     this.dispatchEvent(
@@ -985,14 +1002,59 @@ export class VioCart extends LitElement {
   }
 
   /**
-   * A cart in the drawer carries a discount code: Vipps is the only way to
-   * pay (the others would charge list prices — `renderVippsOnlyNote`).
+   * A cart in the drawer carries a discount code — whatever its source, the
+   * campaign's included: only the ways to pay that take discounts can pay
+   * (the others would charge list prices — `renderVippsOnlyNote`).
    */
   private get discountOnCart(): boolean {
     for (const cart of this.carts.values()) {
-      if (cart.items.length > 0 && cart.discountCode) return true
+      if (cart.items.length > 0 && cartCarriesDiscount(cart)) return true
     }
     return false
+  }
+
+  /** A way to pay the carts' discount code turns off: one that does not take discounts (its `discounts` config), while a code is on. */
+  private discountOff(method: string): boolean {
+    return this.discountOnCart && !methodTakesDiscounts(method, this.offeredMethodInfo)
+  }
+
+  /** The express ways to pay the drawer shows now. */
+  private shownMethods(): string[] {
+    return [
+      ...(this.methodEnabled('apple-pay') && this.applePayAvailable ? ['apple-pay'] : []),
+      ...(this.methodEnabled('stripe') ? ['stripe'] : []),
+      ...(this.methodEnabled('klarna') ? ['klarna'] : []),
+      ...(this.methodEnabled('vipps') ? ['vipps'] : []),
+    ]
+  }
+
+  /** «Fjern» of the discount none of the ways to pay takes: it comes off the carts, and every way to pay is back. */
+  private onRemoveDeadEndDiscount = async (): Promise<void> => {
+    if (this.discountRemoval === 'removing') return
+    this.discountRemoval = 'removing'
+    try {
+      const result = await Vio.cart.removeDiscountCode()
+      this.discountRemoval = result.removed || !Vio.cart.hasDiscountCode() ? null : 'failed'
+    } catch {
+      this.discountRemoval = 'failed'
+    }
+  }
+
+  /**
+   * Under the ways to pay, with a code on a cart: none of them takes it —
+   * «Fjern» in place of a dead end; some do not — the note saying which.
+   */
+  private renderDiscountMethodNote() {
+    if (!this.discountOnCart) return ''
+    const shown = this.shownMethods()
+    if (shown.length > 0 && shown.every((m) => this.discountOff(m))) {
+      return renderDiscountDeadEnd({
+        removing: this.discountRemoval === 'removing',
+        failed: this.discountRemoval === 'failed',
+        onRemove: this.onRemoveDeadEndDiscount,
+      })
+    }
+    return shown.some((m) => this.discountOff(m)) ? renderVippsOnlyNote() : ''
   }
 
   /** What the carts' discount codes take off their lines; 0 without one. */
@@ -1160,8 +1222,8 @@ export class VioCart extends LitElement {
                         class="applepay-btn"
                         data-vio-cta="apple_pay"
                         @click=${this.onApplePay}
-                        ?disabled=${this.discountOnCart}
-                        ?data-discount-off=${this.discountOnCart}
+                        ?disabled=${this.discountOff('apple-pay')}
+                        ?data-discount-off=${this.discountOff('apple-pay')}
                         aria-label="Betal med Apple Pay"
                       >
                         <svg class="ap-logo" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
@@ -1175,8 +1237,8 @@ export class VioCart extends LitElement {
                         class="stripe-btn"
                         data-vio-cta="stripe"
                         @click=${this.onStripe}
-                        ?disabled=${this.discountOnCart}
-                        ?data-discount-off=${this.discountOnCart}
+                        ?disabled=${this.discountOff('stripe')}
+                        ?data-discount-off=${this.discountOff('stripe')}
                         aria-label="Betal med Stripe"
                       >
                         <img class="stripe-logo" src=${STRIPE_LOGO_SRC} alt="Stripe" />
@@ -1189,8 +1251,8 @@ export class VioCart extends LitElement {
                         class="klarna-btn"
                         data-vio-cta="klarna"
                         @click=${this.onKlarnaExpress}
-                        ?disabled=${this.discountOnCart}
-                        ?data-discount-off=${this.discountOnCart}
+                        ?disabled=${this.discountOff('klarna')}
+                        ?data-discount-off=${this.discountOff('klarna')}
                         aria-label="Betal med Klarna"
                       >
                         Kjøp med
@@ -1202,12 +1264,7 @@ export class VioCart extends LitElement {
                       </button>
                     `
                   : ''}
-                ${this.discountOnCart &&
-                ((this.methodEnabled('apple-pay') && this.applePayAvailable) ||
-                  this.methodEnabled('stripe') ||
-                  this.methodEnabled('klarna'))
-                  ? renderVippsOnlyNote()
-                  : ''}
+                ${this.renderDiscountMethodNote()}
                 ${this.methodEnabled('vipps')
                   ? this.vippsOfficial
                     ? html`

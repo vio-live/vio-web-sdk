@@ -296,8 +296,13 @@ export const UPDATE_ITEM_MUTATION = updateItemMutation(false)
 /** `UpdateItem` with the `origin` of the added units (`CartLineOriginInput`, snake_case fields — see `lineOriginWire`). */
 export const UPDATE_ITEM_WITH_ORIGIN_MUTATION = updateItemMutation(true)
 
-/** With `discount_code` — the discount code the cart carries (gateway-features `cart_discount_code`) — or without it, as before discounts. */
-const getCartQuery = (withDiscountCode: boolean) => `
+/**
+ * With `discount_code` — the discount code the cart carries (gateway-features
+ * `cart_discount_code`) — and `discount_source` — `CAMPAIGN` for a
+ * campaign's code, whose text Commerce does not send (`cart_discount_source`)
+ * — or without them, as before discounts.
+ */
+const getCartQuery = (withDiscountCode: boolean, withDiscountSource = false) => `
 query GetCart($cartId: String!) {
   Cart {
     GetCart(cart_id: $cartId) {
@@ -364,14 +369,16 @@ query GetCart($cartId: String!) {
       subtotal
       shipping
       currency
-      available_shipping_countries${withDiscountCode ? '\n      discount_code' : ''}
+      available_shipping_countries${withDiscountCode ? '\n      discount_code' : ''}${withDiscountSource ? '\n      discount_source' : ''}
     }
   }
 }
 `
 export const GET_CART_QUERY = getCartQuery(false)
-/** `GetCart` that also asks which discount code the cart carries — only sent for a cart with a code in play. */
+/** `GetCart` that also asks which discount code the cart carries — for a gateway without `discount_source`. */
 export const GET_CART_WITH_DISCOUNT_CODE_QUERY = getCartQuery(true)
+/** `GetCart` that also asks which discount the cart carries, and whose — only sent for a cart with a code in play. */
+export const GET_CART_WITH_DISCOUNT_SOURCE_QUERY = getCartQuery(true, true)
 
 export const GET_LINE_ITEMS_BY_SUPPLIER_QUERY = `
 query GetLineItemsBySupplier($cartId: String!) {
@@ -1270,10 +1277,12 @@ export async function updateItem(
 
 /**
  * `GetCart`. With `extra.discountCode` the answer also says which discount
- * code the cart carries (`discount_code`, null when none) — asked only for a
- * cart with a code in play, so a page without discounts sends exactly the
- * query it always did; a gateway that predates the field gets that same
- * query, once per page load — see gateway-features.
+ * code the cart carries (`discount_code`, null when none, and null too for a
+ * campaign's code) and whose it is (`discount_source`: `CAMPAIGN` for a
+ * campaign's code) — asked only for a cart with a code in play, so a page
+ * without discounts sends exactly the query it always did; a gateway that
+ * predates a field gets the query without it, once per page load — see
+ * gateway-features.
  */
 export async function getCart(
   cartId: string,
@@ -1281,8 +1290,12 @@ export async function getCart(
   extra: { discountCode?: boolean } = {},
 ): Promise<any> {
   const json = extra.discountCode
-    ? await withGatewayFeature('cart_discount_code', (supported) =>
-        executeCartGraphQL(supported ? GET_CART_WITH_DISCOUNT_CODE_QUERY : GET_CART_QUERY, { cartId }, options),
+    ? await withGatewayFeature('cart_discount_source', (withSource) =>
+        withSource
+          ? executeCartGraphQL(GET_CART_WITH_DISCOUNT_SOURCE_QUERY, { cartId }, options)
+          : withGatewayFeature('cart_discount_code', (supported) =>
+              executeCartGraphQL(supported ? GET_CART_WITH_DISCOUNT_CODE_QUERY : GET_CART_QUERY, { cartId }, options),
+            ),
       )
     : await executeCartGraphQL(GET_CART_QUERY, { cartId }, options)
   return json?.data?.Cart?.GetCart
@@ -1324,6 +1337,46 @@ export const DELETE_APPLIED_DISCOUNT_MUTATION = `
 mutation DeleteAppliedDiscount($cartId: String!, $code: String!) {
   Discounts {
     DeleteAppliedDiscount(cart_id: $cartId, code: $code) {
+      executed
+      message
+    }
+  }
+}
+`
+
+/**
+ * `Discounts.ApplyDiscount` by campaign: puts on the cart the code a
+ * campaign gives the cart's brand (set in Vio's dashboard). The page never
+ * sees the code: Commerce looks it up from the campaign, checks the campaign
+ * is running with that brand on the cart's channel, and answers as for a
+ * code (a campaign that gives none answers `COUPON_NOT_FOUND`). The same
+ * campaign again is taken again. With the gifts the code brings.
+ */
+export const APPLY_CAMPAIGN_DISCOUNT_MUTATION = `
+mutation ApplyCampaignDiscount($cartId: String!, $campaignId: Int!) {
+  Discounts {
+    ApplyDiscount(cart_id: $cartId, campaign_id: $campaignId) {
+      executed
+      message
+      gifts {
+        product_id
+        variant_id
+        quantity
+      }
+    }
+  }
+}
+`
+
+/**
+ * `Discounts.DeleteAppliedDiscount` without a code: takes off the cart
+ * whatever code it carries — how a campaign's code comes off, since the page
+ * never knows its text.
+ */
+export const DELETE_CART_DISCOUNT_MUTATION = `
+mutation DeleteCartDiscount($cartId: String!) {
+  Discounts {
+    DeleteAppliedDiscount(cart_id: $cartId) {
       executed
       message
     }
@@ -1378,6 +1431,37 @@ export async function deleteAppliedDiscount(
   options?: CartQueryOptions,
 ): Promise<DiscountAnswer> {
   const json = await executeCartGraphQL(DELETE_APPLIED_DISCOUNT_MUTATION, { cartId, code }, options)
+  return discountAnswerOf(json?.data?.Discounts?.DeleteAppliedDiscount)
+}
+
+/**
+ * Put on the backend cart the code campaign `campaignId` gives the cart's
+ * brand (`APPLY_CAMPAIGN_DISCOUNT_MUTATION`). Resolves with Commerce's
+ * answer, as `applyDiscount`; `null` when the gateway does not take a
+ * campaign — it refused the argument at validation, nothing ran — and from
+ * then on, for this page load, `null` without asking (gateway-features
+ * `discount_campaign`): the cart goes on without the campaign's code.
+ * Rejects only when the call itself failed.
+ */
+export async function applyCampaignDiscount(
+  cartId: string,
+  campaignId: number,
+  options?: CartQueryOptions,
+): Promise<DiscountAnswer | null> {
+  const json = await withGatewayFeature('discount_campaign', async (supported) =>
+    supported ? executeCartGraphQL(APPLY_CAMPAIGN_DISCOUNT_MUTATION, { cartId, campaignId }, options) : null,
+  )
+  return json === null ? null : discountAnswerOf(json?.data?.Discounts?.ApplyDiscount)
+}
+
+/**
+ * Take off the backend cart whatever code it carries (a campaign's, whose
+ * text the page never knows). Same answer shape as `applyDiscount`. Rejects
+ * when the call failed — a gateway that predates it refuses it at
+ * validation (it asks for the code): the code then stays on the cart.
+ */
+export async function deleteCartDiscount(cartId: string, options?: CartQueryOptions): Promise<DiscountAnswer> {
+  const json = await executeCartGraphQL(DELETE_CART_DISCOUNT_MUTATION, { cartId }, options)
   return discountAnswerOf(json?.data?.Discounts?.DeleteAppliedDiscount)
 }
 

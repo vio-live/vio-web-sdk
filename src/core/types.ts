@@ -70,7 +70,26 @@ export interface Product {
 export interface SponsorCommerceBlock {
   apiKey: string
   channelId?: string | null
+  /** The ways the brand is paid with on this channel, as slugs (`vipps`, `klarna`, `apple_pay`…). */
   paymentMethods?: string[]
+  /**
+   * The ones of those that take a discount code (`[]`: none). A brand whose
+   * list is empty gets no code by itself — neither its campaign's nor the
+   * page's own; a code the shopper types is still asked. A Commerce that
+   * predates the field does not send it: then a brand paid with Vipps takes
+   * codes (`sponsorTakesDiscounts`).
+   */
+  discountMethods?: string[]
+}
+
+/**
+ * The discount a campaign gives a sponsor (bootstrap `discount`): an opaque
+ * reference to the code set in Vio's dashboard. The code itself is never
+ * sent to the page — the SDK asks Commerce to apply the campaign's code, and
+ * Commerce looks it up. A new reference is a new code.
+ */
+export interface SponsorDiscount {
+  ref: string
 }
 
 /** One of a brand's promises («Rask levering» / «2-5 virkedager»), with a line icon of the SDK's set. */
@@ -95,15 +114,20 @@ export interface Sponsor {
   /** The brand's promises (Settings → Brand): up to three, shown under the buy zone of the product detail. */
   highlights?: SponsorHighlight[] | null
   /**
-   * The brand's discount code for THIS campaign (its shop's coupon), as it is
-   * set in Vio's dashboard, on the campaign, per sponsor — so the same brand
-   * may carry one code in one campaign and another (or none) in the next.
-   * Read on the sponsor blocks of `campaigns[]`, and on the top-level ones
-   * (the default campaign). On a page of that campaign the SDK puts it on THIS
-   * sponsor's cart by itself, exactly as a page's own `discountCode`, and
-   * follows it when a newer bootstrap changes or removes it (README →
-   * Discount codes). `null` = no code; a Commerce that predates the field
-   * does not send it, which is the same.
+   * The brand's discount for THIS campaign, as it is set in Vio's dashboard,
+   * on the campaign, per sponsor — so the same brand may have one code in one
+   * campaign and another (or none) in the next. Read on the sponsor blocks of
+   * `campaigns[]`, and on the top-level ones (the default campaign). On a
+   * page of that campaign the SDK puts the campaign's code on THIS sponsor's
+   * cart by itself — by reference: the page never sees the code — and follows
+   * it when a newer bootstrap changes the reference or removes it (README →
+   * Discount codes). `null` = no code (or none for this brand's ways to pay);
+   * a Commerce that predates the field does not send it, which is the same.
+   */
+  discount?: SponsorDiscount | null
+  /**
+   * @deprecated Always `null`: the campaign's code is not sent to the page
+   * any more (see `discount`). Not read by the SDK.
    */
   discountCode?: string | null
   commerce: SponsorCommerceBlock

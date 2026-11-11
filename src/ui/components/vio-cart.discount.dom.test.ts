@@ -306,3 +306,40 @@ describe('a discount code on the cart: only Vipps', () => {
     expect(button(el, '.vipps-btn').disabled).toBe(false)
   })
 })
+
+describe('the campaign\'s code on the cart (put on by reference: its code is never shown)', () => {
+  it('the «Rabatt» row without a code; the ways to pay that take no discount off, as with any code', async () => {
+    vi.mocked(Vio.checkout.getAvailablePaymentMethods).mockResolvedValue([{ name: 'Vipps' }, { name: 'Stripe' }] as any)
+    const el = await cart([CREAM, MASK], { discountSource: 'CAMPAIGN' })
+    el.availableMethods = ['Vipps', 'Stripe']
+    await settle(el)
+    expect(row(el, '.discount-row')).toBe('Rabatt −52 Kr')
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.stripe-btn')!.disabled).toBe(true)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.vipps-btn')!.disabled).toBe(false)
+  })
+})
+
+describe('none of the ways to pay the drawer shows takes the code on the cart', () => {
+  it('«Fjern» instead of a dead end: the code comes off the carts, and the ways to pay are back', async () => {
+    const remove = vi.spyOn(Vio.cart, 'removeDiscountCode').mockResolvedValue({ removed: true, carts: [] } as any)
+    vi.mocked(Vio.checkout.getAvailablePaymentMethods).mockResolvedValue([{ name: 'Klarna' }] as any)
+    const el = await cart([CREAM], { discountSource: 'CAMPAIGN' })
+    el.availableMethods = ['Klarna']
+    await settle(el)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.klarna-btn')!.disabled).toBe(true)
+    expect(row(el, '.discount-dead-end p')).toBe('Rabatten kan ikke brukes med betalingsmåtene her. Fjern rabatten for å betale.')
+    el.shadowRoot!.querySelector<HTMLButtonElement>('.discount-dead-end-remove')!.click()
+    await settle(el)
+    expect(remove).toHaveBeenCalledWith()
+  })
+
+  it('a method that says it takes discounts (`discounts: true`) keeps its button on — no dead end', async () => {
+    const el = await cart([CREAM], { discountCode: 'KODE' })
+    // What the brand's methods answered (the drawer keeps them with their config).
+    el.availableMethods = ['Klarna']
+    el.offeredMethodInfo = [{ name: 'Klarna', config: [{ type: 'string', name: 'discounts', value: 'true' }] }]
+    await settle(el)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('.klarna-btn')!.disabled).toBe(false)
+    expect(el.shadowRoot!.querySelector('.discount-dead-end')).toBeNull()
+  })
+})

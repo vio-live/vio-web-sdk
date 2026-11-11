@@ -19,7 +19,9 @@ export type GatewayFeature =
   | 'line_origin'
   | 'checkout_attribution'
   | 'cart_discount_code'
+  | 'cart_discount_source'
   | 'discount_gifts'
+  | 'discount_campaign'
 
 /**
  * What the gateway's validation error names when it does not know the
@@ -36,8 +38,12 @@ const FEATURE_TOKENS: Readonly<Record<GatewayFeature, readonly string[]>> = {
   checkout_attribution: ['attribution', 'CheckoutAttributionInput', 'CheckoutAttributionEntryInput'],
   // `discount_code` on the CART read model (GetCart); the checkout has had one of its own for long.
   cart_discount_code: ['discount_code'],
+  // `discount_source` on the CART read model: `CAMPAIGN` for a campaign's code, whose text is not sent.
+  cart_discount_source: ['discount_source'],
   // `gifts` on the answer of ApplyDiscount: the products a code gives away.
   discount_gifts: ['gifts'],
+  // `campaign_id` on ApplyDiscount: the campaign's code, applied by campaign (Commerce looks the code up).
+  discount_campaign: ['campaign_id'],
 }
 
 /** The names a feature goes by on the gateway: its field or argument, then its input types (tests). */

@@ -19,7 +19,8 @@
  * What is said depends on who asked for the code:
  * - TYPED here (or asked for by name: the other field, the host's own call):
  *   always — being checked, taken, or refused with why. Never in silence.
- * - The PAGE's own (`discountCode`, `?vio_discount=`), which the shopper did
+ * - The PAGE's own (`discountCode`, `?vio_discount=`, or the one its campaign
+ *   gives the sponsor), which the shopper did
  *   not type: only once it is taken (the code and «Fjern»). While it is asked
  *   the field stays as it is, and when it is refused nothing is said — a
  *   visitor who typed nothing never reads «invalid code».
@@ -35,7 +36,10 @@ import { DISCOUNT_TEXT, couponReasonText } from './discount-texts.js'
  * `false`); when it does not, the field shows wherever the page has a
  * discount code of its own — `discountCode` in its config, or the
  * `?vio_discount=` its link carried — because codes are on there. A page
- * with neither is the one it always was: no field.
+ * with neither is the one it always was: no field. The code a CAMPAIGN gives
+ * a sponsor (the bootstrap's, set in the dashboard) does not turn it on: it
+ * goes on the cart by itself and shows as its «Rabatt» row; the field only
+ * with `discountField: true`.
  */
 export function discountFieldEnabled(): boolean {
   try {

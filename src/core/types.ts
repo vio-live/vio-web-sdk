@@ -94,6 +94,18 @@ export interface Sponsor {
   refundPolicyUrl?: string | null
   /** The brand's promises (Settings → Brand): up to three, shown under the buy zone of the product detail. */
   highlights?: SponsorHighlight[] | null
+  /**
+   * The brand's discount code for THIS campaign (its shop's coupon), as it is
+   * set in Vio's dashboard, on the campaign, per sponsor — so the same brand
+   * may carry one code in one campaign and another (or none) in the next.
+   * Read on the sponsor blocks of `campaigns[]`, and on the top-level ones
+   * (the default campaign). On a page of that campaign the SDK puts it on THIS
+   * sponsor's cart by itself, exactly as a page's own `discountCode`, and
+   * follows it when a newer bootstrap changes or removes it (README →
+   * Discount codes). `null` = no code; a Commerce that predates the field
+   * does not send it, which is the same.
+   */
+  discountCode?: string | null
   commerce: SponsorCommerceBlock
 }
 

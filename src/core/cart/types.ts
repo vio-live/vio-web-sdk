@@ -132,11 +132,23 @@ export interface SponsorCartState {
   availableShippingCountries?: string[]
   /**
    * The discount code on the backend cart — Commerce takes one per cart
-   * (`Vio.applyDiscountCode`, or the page's `discountCode`). Set once
-   * Commerce took it, gone when it is removed or the backend cart is; a new
-   * backend cart is given the page's code again.
+   * (`Vio.applyDiscountCode`, the page's `discountCode`, or the code the
+   * page's campaign gives the sponsor). Set once Commerce took it, gone when
+   * it is removed or the backend cart is; a new backend cart is given the
+   * page's code again.
    */
   discountCode?: string
+  /**
+   * The campaign `discountCode` came from, when the SDK put on the cart the
+   * code that campaign gives this sponsor (the bootstrap's `discountCode`):
+   * the code follows that campaign — when a newer bootstrap gives the sponsor
+   * another code there, it comes off (with the gifts the SDK put in for it)
+   * and the new one goes on; when it gives none, it comes off and the cart is
+   * given the page's code as any cart without one. Absent for a code the
+   * shopper typed, the page's own, or one the server cart had: those are
+   * never taken off by the SDK.
+   */
+  discountCampaignId?: number
   /** The gifts that code brings, and what became of each in this cart. Goes with `discountCode`. */
   gifts?: CartGift[]
   /**

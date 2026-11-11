@@ -24,19 +24,32 @@ Discount codes and the gift they bring, two analytics fixes, and everything of
 ### Added
 - **Discount codes: the brand's own code on the cart, and the gift it brings.** A code is applied — and
   validated — **before paying**, in the cart or the checkout: the shopper types it in the «Rabattkode» field
-  and sees what came of it there and then (the check at a payment's start is only a safety net). A page can
-  also name its campaign's code — `Vio.init({ discountCode: 'gratis_face_mask' })`, or `?vio_discount=CODE` in
-  its URL — and the SDK puts it on the cart by itself, without the shopper typing anything: once the cart has
-  lines, on every new cart, on the cart the page opens with, and before a checkout or a payment is built on it
-  (`Discounts.ApplyDiscount`, one code per cart). When the code gives a product away (`gifts`), one unit goes
-  in the cart as soon as there is something to pay for — «Gratis», one unit, removable; it goes out again with
-  the last line to pay for, or with its code. **Only for brands that are paid with Vipps.** See
+  and sees what came of it there and then (the check at a payment's start is only a safety net). When the
+  code gives a product away (`gifts`), one unit goes in the cart as soon as there is something to pay for —
+  «Gratis», one unit, removable; it goes out again with the last line to pay for, or with its code. **Only for
+  brands that are paid with Vipps.** See
   [README → Discount codes](README.md#discount-codes--the-brands-code-and-the-gift-it-brings).
+- **The campaign's code, set in Vio's dashboard per campaign and per brand — the page names nothing.** The
+  bootstrap gives it (`discountCode` on every sponsor block of `campaigns[]`, and on the top-level ones of the
+  default campaign; `null` = none) and the SDK puts it on **that brand's cart** by itself, without the shopper
+  typing anything: once the cart has lines, on every new cart, on the cart the page opens with, and before a
+  checkout or a payment is built on it (`Discounts.ApplyDiscount`, one code per cart). The campaign is the
+  page's — its elements' `vio-campaign` / `data-vio-campaign`, then `Vio.init({ campaignId })`: the first one
+  active with that brand, else the default campaign; another brand's cart never gets it. **It follows the
+  dashboard**: when a newer bootstrap (the tab back after five minutes, the next page) gives the brand another
+  code in that campaign, the cart's old one comes off with its gift and the new one goes on; when it gives
+  none, it comes off with its gift. A code the shopper typed, and the page's own, are never touched. It does
+  not turn the «Rabattkode» field on (`discountField: true` does). `Sponsor.discountCode` and
+  `SponsorCartState.discountCampaignId` are typed. See
+  [README → The campaign's code](README.md#the-campaigns-code--set-in-the-dashboard-the-shopper-types-nothing).
+- **A code of the page's own, as an override**: `Vio.init({ discountCode })`, or `?vio_discount=CODE` in its
+  URL (kept for the tab), goes on **every** brand's cart the same way, over the campaign's; it also turns the
+  «Rabattkode» field on.
 - **Who is told what came of a code depends on who asked for it.** A code the shopper **typed** always has its
-  answer said — taken, or not and why; never in silence. The **page's own** code (`discountCode`,
-  `?vio_discount=`), which nobody typed, shows only once it is taken: not taken (expired, unknown, used up), it
-  is asked once per cart and nothing is said — not even that it was being checked — and the article keeps
-  selling at its prices.
+  answer said — taken, or not and why; never in silence. A code **nobody typed** — the campaign's, or the
+  page's own (`discountCode`, `?vio_discount=`) — shows only once it is taken: not taken (expired, unknown,
+  used up), it is asked once per cart and nothing is said — not even that it was being checked — and the
+  article keeps selling at its prices.
 - **What a code takes off shows where the money is said.** A line the code takes something off has its list
   price struck through and then what it costs («Gratis» for a gift; a percentage on a product or on the whole
   cart shows its net price); a «Rabatt (CODE)» row sits between «Sum» (list prices) and «Totalt» (what is paid)
@@ -49,7 +62,8 @@ Discount codes and the gift they bring, two analytics fixes, and everything of
   `COUPON_MIN_AMOUNT`, `COUPON_OTHER_APPLIED`, `COUPON_UNAVAILABLE`) — the cart and its total as they were. It
   shows **wherever discount codes are on for the page**: a page that names a `discountCode` (or was opened with
   `?vio_discount=`), or `Vio.init({ discountField: true })` on a page with no code of its own.
-  `discountField: false` hides it; a page that says nothing about codes has none.
+  `discountField: false` hides it; a page that says nothing about codes has none — a campaign's code on the
+  cart shows there as its «Rabatt» row, not as a field.
 - **From code**: `Vio.applyDiscountCode(code, sponsorId?)` and `Vio.removeDiscountCode(sponsorId?)` (never throw;
   the answer says `applied` / `pending` / `refused` with Commerce's `reason` / `failed`, and carries everything
   Commerce answered per cart), `Vio.cart.discountCodeForSponsor()`, `discountBusy()` (with `asked`: someone
@@ -113,27 +127,33 @@ Discount codes and the gift they bring, two analytics fixes, and everything of
 - A host that emits `vio:payment-success` itself is read as before (its cart is the paid one) unless it sets
   `returned: true`; with an empty cart the SDK now reads the checkout named by the detail, and sends nothing
   when it cannot.
-- **Discount codes change nothing for a page that does not use them**: without `discountCode`, `?vio_discount=`
-  or `discountField` the SDK sends the same requests and draws the same cart and checkout as before.
+- **Discount codes change nothing for a page that does not use them**: without a code in the bootstrap, and
+  without `discountCode`, `?vio_discount=` or `discountField`, the SDK sends the same requests and draws the
+  same cart and checkout as before.
 - **To use them** (README → Discount codes): the brand must be paid with **Vipps only** — Apple Pay and Klarna
   work their amounts out of the list prices and do not count a code; the commerce gateway must answer
   `price.discount` per line, `discount_code` on `GetCart` and `gifts` on `ApplyDiscount` (the SDK falls back on
   a gateway that predates `discount_code` or `gifts`, once per page load — a code is then applied, but a gift is
-  not added); and the code must exist in the brand's shop. For a campaign with a gift:
-  `Vio.init({ …, discountCode: '<the code>' })` is all a page needs — the «Rabattkode» field shows with it
-  (the code and «Fjern» once it is taken); add `discountField: false` for a page that wants the code applied
-  and no field.
-- A page with `discountCode` asks Commerce for the code once per cart (one `ApplyDiscount`, plus one `AddItem`
-  for a gift and one `GetCart`); «Kjøp nå med Vipps» **waits for the code and its gift in full** before leaving
-  for Vipps — the apply is one to three seconds (the brand's shop asked live) — so the gift is never lost, with
-  the request timeout (15 s) the only cap, a short «Legger til gave …» on the overlay meanwhile, and the
-  purchase going on without the gift only if the apply or the AddItem fails. A page with no `discountCode` waits
-  for nothing and makes no extra call.
+  not added); and the code must exist in the brand's shop. For a campaign with a gift: **set the code in Vio's
+  dashboard, on the campaign, for that brand** — the page needs nothing more than its campaign
+  (`Vio.init({ campaignId })` or `vio-campaign`), and there is no «Rabattkode» field unless it asks for one
+  (`discountField: true`). `Vio.init({ discountCode })` is only for overriding it on a page.
+- **To use the campaign's code, Commerce must have the release that serves it in the bootstrap**
+  (`discountCode` on the sponsor blocks of `GET /v2/mobile/config`, campaigns service). With an older backend
+  nothing happens: the field is not there, so no code goes on and no extra request is made — the page sells at
+  its prices as before.
+- A cart with a code to get (the campaign's for its brand, or the page's own) asks Commerce for it once per
+  cart (one `ApplyDiscount`, plus one `AddItem` for a gift and one `GetCart`); a dashboard change swaps it at
+  the next bootstrap (one `DeleteAppliedDiscount`, a `DeleteItem` for its gift, then the same). «Kjøp nå med
+  Vipps» **waits for the code and its gift in full** before leaving for Vipps — the apply is one to three
+  seconds (the brand's shop asked live) — so the gift is never lost, with the request timeout (15 s) the only
+  cap, a short «Legger til gave …» on the overlay meanwhile, and the purchase going on without the gift only if
+  the apply or the AddItem fails. A cart with no code to get waits for nothing and makes no extra call.
 - A host that draws its own cart from `vio:cart-updated` or from the lines: a line's `unitPrice` is still its
   list price — subtract `discount` (the line's, or the event's) to show what is paid.
-- **Check that Commerce has the discount-code release before naming a code on a page.** It is in QA from
-  2026-11-10; until it reaches production, a page with `discountCode` there sees nothing happen (the code is not
-  taken, silently) and sells at its prices.
+- **Check that Commerce has the discount-code release before relying on a code.** It is in QA from
+  2026-11-10; until it reaches production, a code there — the campaign's or a page's — is not taken (silently)
+  and the page sells at its prices.
 - `<vio-reel>` (from 0.38.0-beta.1) is in this version, but its backend is in staging only: keep it to QA pages
   and the editor's preview for now. Pages without a `<vio-reel>` are not affected.
 

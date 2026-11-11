@@ -22,16 +22,21 @@
  * - a code someone ASKED for — typed in the «Rabattkode» field, or
  *   `Vio.applyDiscountCode()` from a host's own field — always has its answer
  *   said, taken or not, with why;
- * - the PAGE's own code (`discountCode`, `?vio_discount=`), which nobody
- *   typed, shows only once it is taken: refused, nothing is said and the
+ * - the PAGE's own code (the campaign's, `discountCode`, `?vio_discount=`),
+ *   which nobody typed, shows only once it is taken: refused, nothing is said and the
  *   purchase goes on at its prices (a visitor who typed nothing never reads
  *   «invalid code»).
  * A payment Commerce refuses because of the discount says why either way.
  *
- * A page can name the code for its carts without the shopper typing it:
- * `Vio.init({ discountCode })`, or `?vio_discount=CODE` in its URL — kept for
- * the tab (`sessionStorage`), so it survives the pages of the visit and the
- * way back from the payment; `?vio_discount=` (empty) forgets it.
+ * The code that goes on a cart without the shopper typing it is, first of
+ * all, the CAMPAIGN's: set in Vio's dashboard per campaign and sponsor, given
+ * by the bootstrap (`discountCode` on the sponsor blocks), put on THAT
+ * sponsor's cart on the campaign's pages, and followed when a newer bootstrap
+ * changes or removes it (core/campaign-discount.ts). A page can also name one
+ * for all its carts, as an override: `Vio.init({ discountCode })`, or
+ * `?vio_discount=CODE` in its URL — kept for the tab (`sessionStorage`), so
+ * it survives the pages of the visit and the way back from the payment;
+ * `?vio_discount=` (empty) forgets it.
  *
  * Never throws; the URL and the storage are taken as arguments (defaults:
  * the real ones), like `analytics/internal-traffic.ts`.

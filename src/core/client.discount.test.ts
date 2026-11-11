@@ -1414,6 +1414,25 @@ describe('the campaign\'s code — set in the dashboard per campaign and brand, 
       expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
     })
 
+    it('a bootstrap from a Commerce that predates references (no `discount` on the blocks): the code on the cart is left as it is', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      bootstrap = () => {
+        const b = campaignBoot()
+        for (const c of b.campaigns!) {
+          for (const s of [c.primarySponsor!, ...(c.secondarySponsors ?? [])]) delete (s as { discount?: unknown }).discount
+        }
+        return b
+      }
+      await tabBack()
+      expect(ops()).toEqual([])
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5 })
+    })
+
     it('a campaign that stops being the page\'s and the brand\'s (gone from the bootstrap): its code comes off', async () => {
       dashboard = { '5:7': 'TI' }
       await ready({ campaignId: 5 })

@@ -123,23 +123,26 @@ export function campaignDiscountFor(
 /**
  * What campaign `campaignId` gives a sponsor NOW — to tell whether a
  * discount the SDK put on a cart from it still holds: its reference; `null`
- * when it gives none any more — no discount (or `null`) on the sponsor's
- * block, the sponsor is no longer in it, or the campaign is neither the
- * default one nor an active one of `campaigns[]` (paused, ended, gone from
- * the bootstrap).
+ * when it gives none any more — `discount: null` on the sponsor's block, the
+ * sponsor is no longer in it, or the campaign is neither the default one nor
+ * an active one of `campaigns[]` (paused, ended, gone from the bootstrap);
+ * `undefined` — cannot tell — when the sponsor's block has no `discount` at
+ * all (a Commerce that predates it: what is on the cart is left as it is).
  */
 export function campaignDiscountNow(
   boot: BootLike | null | undefined,
   campaignId: number,
   sponsorId: number,
-): string | null {
+): string | null | undefined {
   if (!boot) return null
   try {
     const fallback = defaultCampaignEntry(boot)
     const campaign =
       fallback && toNumber(fallback.id) === campaignId ? fallback : activeCampaignEntry(boot, campaignId)
     if (!campaign) return null
-    return sponsorDiscountRef(sponsorBlockIn(campaign, sponsorId)) ?? null
+    const block = sponsorBlockIn(campaign, sponsorId)
+    if (block && typeof block === 'object' && !('discount' in block)) return undefined
+    return sponsorDiscountRef(block) ?? null
   } catch {
     return null
   }

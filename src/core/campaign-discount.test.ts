@@ -148,6 +148,12 @@ describe('campaignDiscountNow — whether a discount put on a cart from a campai
     expect(campaignDiscountNow({ campaign: null, noActiveCampaign: true, campaigns: [] } as never, 5, BRAND_A)).toBeNull()
   })
 
+  it('a sponsor block without `discount` at all (a Commerce that predates it): cannot tell — undefined', () => {
+    const b = boot()
+    b.campaigns![1]!.primarySponsor = sponsor(BRAND_A)
+    expect(campaignDiscountNow(b, 5, BRAND_A)).toBeUndefined()
+  })
+
   it('the default campaign from its top-level blocks; nothing readable is null, never a throw', () => {
     const b: BootstrapResponse = { campaign: { id: 4, name: 'Autumn' }, primarySponsor: sponsor(BRAND_A, 'r-top') }
     expect(campaignDiscountNow(b, 4, BRAND_A)).toBe('r-top')

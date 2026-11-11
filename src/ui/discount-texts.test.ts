@@ -39,6 +39,10 @@ describe('what the SDK says about a discount code', () => {
     expect(discountPaymentText('CHECKOUT_AMOUNT_ZERO')).toBe('Legg til et produkt for å få med gaven.')
     expect(discountPaymentText('DISCOUNT_UNAVAILABLE')).toBe('Rabatten kunne ikke beregnes akkurat nå. Prøv igjen om litt.')
     expect(discountPaymentText('COUPON_UNAVAILABLE')).toBe('Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.')
+    // The way to pay chosen does not take discounts: another one, or the code off.
+    expect(discountPaymentText('DISCOUNT_PAYMENT_METHOD_UNSUPPORTED')).toBe(
+      'Rabatten kan ikke brukes med denne betalingsmåten. Velg en annen, eller fjern rabatten.',
+    )
   })
 
   it('…and a code that is no good any more says why, and that the cart is ready for another try', () => {

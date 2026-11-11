@@ -89,9 +89,16 @@ export const COUPON_REASONS = [
  * code is checked again right before charging):
  * - `GIFT_MAX_ONE_UNIT` — a line that is a gift has more than one unit;
  * - `CHECKOUT_AMOUNT_ZERO` — the cart holds only the gift: nothing to pay;
- * - `DISCOUNT_UNAVAILABLE` — the discount could not be worked out right now.
+ * - `DISCOUNT_UNAVAILABLE` — the discount could not be worked out right now;
+ * - `DISCOUNT_PAYMENT_METHOD_UNSUPPORTED` — the chosen way to pay does not
+ *   take discounts (only the methods that do may pay for a cart with a code).
  */
-export const DISCOUNT_PAYMENT_REASONS = ['GIFT_MAX_ONE_UNIT', 'CHECKOUT_AMOUNT_ZERO', 'DISCOUNT_UNAVAILABLE'] as const
+export const DISCOUNT_PAYMENT_REASONS = [
+  'GIFT_MAX_ONE_UNIT',
+  'CHECKOUT_AMOUNT_ZERO',
+  'DISCOUNT_UNAVAILABLE',
+  'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED',
+] as const
 
 export type CouponReason = (typeof COUPON_REASONS)[number]
 export type DiscountPaymentReason = (typeof DISCOUNT_PAYMENT_REASONS)[number]

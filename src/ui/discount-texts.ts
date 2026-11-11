@@ -36,6 +36,8 @@ export const DISCOUNT_TEXT = {
   // ── A payment Commerce would not start because of the discount ────────────
   /** The discount could not be worked out right now. */
   discountUnavailable: 'Rabatten kunne ikke beregnes akkurat nå. Prøv igjen om litt.',
+  /** The way to pay that was chosen does not take discounts. */
+  methodTakesNoDiscount: 'Rabatten kan ikke brukes med denne betalingsmåten. Velg en annen, eller fjern rabatten.',
   /** After a code that is no good any more came off the cart at the payment. */
   cartUpdated: 'Handlekurven er oppdatert – prøv igjen.',
 
@@ -114,6 +116,8 @@ export function discountPaymentText(reason: DiscountReason): string {
       return DISCOUNT_TEXT.giftOnly
     case 'DISCOUNT_UNAVAILABLE':
       return DISCOUNT_TEXT.discountUnavailable
+    case 'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED':
+      return DISCOUNT_TEXT.methodTakesNoDiscount
     case 'COUPON_UNAVAILABLE':
       return DISCOUNT_TEXT.couponUnavailable
     case 'COUPON_OTHER_APPLIED':

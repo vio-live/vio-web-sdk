@@ -32,6 +32,10 @@ export const DISCOUNT_TEXT = {
   // ── With a code on the cart, only Vipps ───────────────────────────────────
   /** Under the ways to pay that are off while a discount code is on the cart (they would charge list prices). */
   vippsOnly: 'Med rabattkode kan du bare betale med Vipps.',
+  /** In place of the ways to pay when none of those on offer takes the discount on the cart (with «Fjern» under it). */
+  noDiscountMethod: 'Rabatten kan ikke brukes med betalingsmåtene her. Fjern rabatten for å betale.',
+  /** What the «Fjern» under that note is, read out. */
+  discountRemoveLabel: 'Fjern rabatten',
 
   // ── A payment Commerce would not start because of the discount ────────────
   /** The discount could not be worked out right now. */
@@ -56,6 +60,8 @@ export const DISCOUNT_TEXT = {
   fieldRemoveLabel: 'Fjern rabattkoden',
   /** The code could not be taken off. */
   fieldRemoveFailed: 'Rabattkoden kunne ikke fjernes. Prøv igjen.',
+  /** In the field, in place of the code, when the cart carries its campaign's — whose code is never shown. */
+  fieldCampaignApplied: 'Rabatt lagt til',
 
   // ── Why a code was refused (said for a code the shopper typed; never for the page's own) ──
   couponNotFound: 'Rabattkoden finnes ikke.',

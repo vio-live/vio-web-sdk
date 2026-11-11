@@ -19,7 +19,7 @@ import { Vio } from '../../core/client.js'
 import { cartNetTotal, isGiftOnlyCart } from '../../core/cart/discount.js'
 import { discountReasonOfError } from '../../core/cart/discount-code.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
-import { renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
+import { cartCarriesDiscount, methodTakesDiscounts, renderVippsOnlyNote, vippsOnlyStyles, type OfferedMethod } from '../discount.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
 import {
   formatPrice,
@@ -362,6 +362,8 @@ export class VioProductDetail extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buy buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** The same methods with their config — whether each takes a discount code (`discounts`). */
+  @state() private offeredMethodInfo: OfferedMethod[] | null = null
   /**
    * The brand's methods are being asked for. Meanwhile the buy zone shows a
    * neutral placeholder, never the buttons of every method: «null = render
@@ -1755,16 +1757,18 @@ export class VioProductDetail extends LitElement {
     if (!spId) return
     if (spId !== this.methodsSponsorId) {
       this.availableMethods = null
+      this.offeredMethodInfo = null
       this.vippsExpress = false
     }
     this.methodsSponsorId = spId
     this.methodsLoading = true
     try {
       const methods = (await Vio.checkout.getAvailablePaymentMethods(spId)) as
-        | Array<{ name: string }>
+        | Array<{ name: string } & OfferedMethod>
         | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        this.offeredMethodInfo = methods
         // Read from the list itself (getVippsExpressEnabled answers «yes»
         // when it cannot tell; the line must not).
         const vipps = (methods as Array<{ name?: string; config?: Array<{ name?: string; value?: string }> }>).find(
@@ -1773,6 +1777,7 @@ export class VioProductDetail extends LitElement {
         this.vippsExpress = !!vipps && vipps.config?.find((c) => c?.name === 'express')?.value !== 'false'
       } else {
         this.availableMethods = null
+        this.offeredMethodInfo = null
         this.vippsExpress = false
       }
     } catch (err) {
@@ -1781,6 +1786,7 @@ export class VioProductDetail extends LitElement {
       }
       // Unknown (not "none") — render everything rather than nothing.
       this.availableMethods = null
+      this.offeredMethodInfo = null
       this.vippsExpress = false
     } finally {
       this.methodsLoading = false
@@ -2329,7 +2335,7 @@ export class VioProductDetail extends LitElement {
    * loads immediately. Reuses the working Klarna Payments flow (no express SDK).
    */
   private async buyWithKlarna(): Promise<void> {
-    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOff('klarna')) return
     if (!this.requireSelection()) return
     this.adding = true
     try {
@@ -2429,12 +2435,18 @@ export class VioProductDetail extends LitElement {
   }
 
   /**
-   * This brand's cart carries a discount code: Vipps is the only way to pay
-   * (Apple Pay, Stripe and Klarna would charge list prices — see
-   * `renderVippsOnlyNote`). Their buttons are off until the code comes off.
+   * This brand's cart carries a discount code — whatever its source, the
+   * campaign's included: only the ways to pay that take discounts can pay
+   * (the others would charge list prices — see `renderVippsOnlyNote`). Their
+   * buttons are off until the code comes off.
    */
   private discountOnCart(): boolean {
-    return !!Vio.cart.getCart(this.sponsorId)?.discountCode
+    return cartCarriesDiscount(Vio.cart.getCart(this.sponsorId))
+  }
+
+  /** A way to pay the cart's discount code turns off: one that does not take discounts (its `discounts` config), while a code is on. */
+  private discountOff(method: string): boolean {
+    return this.discountOnCart() && !methodTakesDiscounts(method, this.offeredMethodInfo)
   }
 
   /** This brand's cart already has lines. */
@@ -2527,7 +2539,7 @@ export class VioProductDetail extends LitElement {
 
   /** Buy with Stripe — opens the checkout with Stripe preselected. */
   private buyWithStripe(): void {
-    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOnCart()) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.discountOff('stripe')) return
     if (!this.requireSelection()) return
     this.addCurrentToCart()
     this.close()
@@ -2577,7 +2589,7 @@ export class VioProductDetail extends LitElement {
    * that total.
    */
   private buyWithApplePay(): void {
-    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle || this.discountOnCart()) return
+    if (!this.product || this.availableQuantity <= 0 || !this.applePayHandle || this.discountOff('apple-pay')) return
     if (!this.requireSelection()) return
     if (!(this.unitPrice > 0)) return
     const cartHasLines = (Vio.cart.getCart(this.sponsorId)?.items.length ?? 0) > 0
@@ -3206,8 +3218,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-applepay"
                   data-vio-cta="apple_pay"
                   @click=${this.buyWithApplePay}
-                  ?disabled=${this.adding || this.discountOnCart()}
-                  ?data-discount-off=${this.discountOnCart()}
+                  ?disabled=${this.adding || this.discountOff('apple-pay')}
+                  ?data-discount-off=${this.discountOff('apple-pay')}
                   aria-label="Kjøp nå med Apple Pay"
                 >
                   <span>Kjøp nå med</span>
@@ -3222,8 +3234,8 @@ export class VioProductDetail extends LitElement {
                   class="buy-stripe"
                   data-vio-cta="stripe"
                   @click=${this.buyWithStripe}
-                  ?disabled=${this.adding || this.discountOnCart()}
-                  ?data-discount-off=${this.discountOnCart()}
+                  ?disabled=${this.adding || this.discountOff('stripe')}
+                  ?data-discount-off=${this.discountOff('stripe')}
                   aria-label="Kjøp nå med Stripe"
                   style="width: 100%; margin-top: 10px; display: flex; align-items: center; justify-content: center; gap: 6px; background: #635bff; color: #fff; border: none; padding: 14px 24px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;"
                 >
@@ -3243,8 +3255,8 @@ export class VioProductDetail extends LitElement {
                   data-vio-cta="klarna"
                   data-vio-cta-label="Kjøp nå med Klarna"
                   @click=${this.buyWithKlarna}
-                  ?disabled=${this.adding || this.discountOnCart()}
-                  ?data-discount-off=${this.discountOnCart()}
+                  ?disabled=${this.adding || this.discountOff('klarna')}
+                  ?data-discount-off=${this.discountOff('klarna')}
                 >
                   <span>Kjøp nå med</span>
                   <img
@@ -3256,10 +3268,9 @@ export class VioProductDetail extends LitElement {
               `
             : ''}
           ${this.availableQuantity > 0 &&
-          this.discountOnCart() &&
-          ((this.hasPrice && this.applePayOk && this.methodEnabled('apple-pay', 'applepay')) ||
-            this.methodEnabled('stripe') ||
-            this.methodEnabled('klarna'))
+          ((this.hasPrice && this.applePayOk && this.methodEnabled('apple-pay', 'applepay') && this.discountOff('apple-pay')) ||
+            (this.methodEnabled('stripe') && this.discountOff('stripe')) ||
+            (this.methodEnabled('klarna') && this.discountOff('klarna')))
             ? renderVippsOnlyNote()
             : ''}
 

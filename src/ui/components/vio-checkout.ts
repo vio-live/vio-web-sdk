@@ -62,7 +62,16 @@ import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } from '../checkout-errors.js'
 import { isGiftOnlyCart } from '../../core/cart/discount.js'
-import { discountRow, discountStyles, isVippsMethod, renderLinePrice, renderVippsOnlyNote, vippsOnlyStyles } from '../discount.js'
+import {
+  discountRow,
+  discountStyles,
+  methodTakesDiscounts,
+  renderDiscountDeadEnd,
+  renderLinePrice,
+  renderVippsOnlyNote,
+  vippsOnlyStyles,
+  type OfferedMethod,
+} from '../discount.js'
 import { DISCOUNT_TEXT } from '../discount-texts.js'
 import { DiscountField, discountFieldStyles } from '../discount-field.js'
 import { receiptFromCheckout } from '../../core/checkout/checkout-receipt.js'
@@ -191,6 +200,10 @@ export class VioCheckout extends LitElement {
   /** Payment method names enabled for the sponsor (backend-configured).
    * null = not loaded yet → all buttons render; [] = none enabled. */
   @state() private availableMethods: string[] | null = null
+  /** The same methods with their config — whether each takes a discount code (`discounts`). */
+  @state() private offeredMethodInfo: OfferedMethod[] | null = null
+  /** The «Fjern» of the discount none of the ways to pay takes: in flight, or the last one failed. */
+  @state() private discountRemoval: 'removing' | 'failed' | null = null
   @state() private vippsOfficial = false
   @state() private kustomMounting = false
   /** The widget is being told about a cart change (suspend → sync → resume). */
@@ -424,6 +437,7 @@ export class VioCheckout extends LitElement {
       this.sponsorBootstrapAsked = false
       this.express = false
       this.availableMethods = null
+      this.offeredMethodInfo = null
       this.paymentMethodsResolved = false
       this.autoSelectAttempted = false
       this.returningFrom = null
@@ -1994,9 +2008,10 @@ export class VioCheckout extends LitElement {
       const spId = this.checkoutState.sponsorId
       const methods = (await Vio.checkout.getAvailablePaymentMethods(
         spId,
-      )) as Array<{ name: string }> | unknown
+      )) as Array<{ name: string } & OfferedMethod> | unknown
       if (Array.isArray(methods)) {
         this.availableMethods = methods.map((m) => m.name)
+        this.offeredMethodInfo = methods
         // Which Stripe: the flow travels in the method's own config, and the
         // list is memoised, so this costs nothing extra. (Vipps here is always
         // the standard payment — see startVippsFromCheckout — whatever the
@@ -2004,6 +2019,7 @@ export class VioCheckout extends LitElement {
         this.stripeMode = await Vio.checkout.getStripeMode(spId)
       } else {
         this.availableMethods = null
+        this.offeredMethodInfo = null
       }
     } catch (err) {
       if (typeof console !== 'undefined') {
@@ -2011,6 +2027,7 @@ export class VioCheckout extends LitElement {
       }
       // Unknown (not "none") — render everything rather than an empty grid.
       this.availableMethods = null
+      this.offeredMethodInfo = null
     } finally {
       this.loadingPaymentMethods = false
       this.paymentMethodsResolved = true
@@ -2086,19 +2103,43 @@ export class VioCheckout extends LitElement {
   }
 
   /**
-   * The cart this checkout pays carries a discount code: Vipps is the only
-   * way to pay — Commerce works the discounted amount out for it, the other
-   * methods would charge list prices (`renderVippsOnlyNote`). Their buttons
-   * are off, and a method chosen before the code went on is unchosen.
+   * The cart this checkout pays carries a discount code — whatever its
+   * source, the campaign's included: only the ways to pay that take
+   * discounts can pay (Vipps, for now) — Commerce works the discounted amount
+   * out for them, the others would charge list prices
+   * (`renderVippsOnlyNote`). Their buttons are off, and a method chosen
+   * before the code went on is unchosen.
    */
   private get discountOnCart(): boolean {
     const id = this.checkoutState?.sponsorId
-    return !!id && !!Vio.cart.discountCodeForSponsor(id)
+    return !!id && (!!Vio.cart.discountCodeForSponsor(id) || Vio.cart.discountSourceForSponsor(id) === 'CAMPAIGN')
   }
 
-  /** A way to pay the cart's discount code turns off: anything but Vipps, while a code is on. */
+  /** A way to pay the cart's discount code turns off: one that does not take discounts (its `discounts` config), while a code is on. */
   private discountOff(method: string): boolean {
-    return this.discountOnCart && !isVippsMethod(method)
+    return this.discountOnCart && !methodTakesDiscounts(method, this.offeredMethodInfo)
+  }
+
+  /**
+   * A code is on the cart and none of the ways to pay on offer takes it:
+   * «Fjern» in place of a row of buttons that are all off.
+   */
+  private get noMethodTakesDiscount(): boolean {
+    const offered = this.offeredMethods()
+    return this.discountOnCart && Array.isArray(offered) && offered.length > 0 && offered.every((m) => this.discountOff(m))
+  }
+
+  /** «Fjern» of that dead end: the code comes off the cart, and every way to pay is back. */
+  private onRemoveDeadEndDiscount = async (): Promise<void> => {
+    const id = this.checkoutState?.sponsorId
+    if (!id || this.discountRemoval === 'removing') return
+    this.discountRemoval = 'removing'
+    try {
+      const result = await Vio.cart.removeDiscountCode(id)
+      this.discountRemoval = result.removed || !this.discountOnCart ? null : 'failed'
+    } catch {
+      this.discountRemoval = 'failed'
+    }
   }
 
   /**
@@ -4698,8 +4739,8 @@ export class VioCheckout extends LitElement {
                             data-vio-cta="select_apple_pay"
                             data-vio-cta-label="Apple Pay"
                             @click=${() => this.onPay('apple-pay')}
-                            ?disabled=${this.applePayInProgress || this.discountOnCart}
-                            ?data-discount-off=${this.discountOnCart}
+                            ?disabled=${this.applePayInProgress || this.discountOff('apple-pay')}
+                            ?data-discount-off=${this.discountOff('apple-pay')}
                           >
                             ${this.applePayInProgress
                               ? 'Åpner…'
@@ -4714,8 +4755,8 @@ export class VioCheckout extends LitElement {
                             data-vio-cta="select_stripe"
                             data-vio-cta-label="Stripe"
                             @click=${() => this.onPay('stripe')}
-                            ?disabled=${this.stripeLoading || this.discountOnCart}
-                            ?data-discount-off=${this.discountOnCart}
+                            ?disabled=${this.stripeLoading || this.discountOff('stripe')}
+                            ?data-discount-off=${this.discountOff('stripe')}
                           >
                             <img src=${STRIPE_LOGO_SRC} style="height: 20px; display: block;" alt="Stripe" />
                           </button>
@@ -4723,49 +4764,49 @@ export class VioCheckout extends LitElement {
                       : ''}
                     ${this.methodEnabled('klarna') && this.klarnaAvailable
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_klarna" data-vio-cta-label="Klarna" @click=${() => this.onPay('klarna')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_klarna" data-vio-cta-label="Klarna" @click=${() => this.onPay('klarna')} ?disabled=${this.discountOff('klarna')} ?data-discount-off=${this.discountOff('klarna')}>
                             Klarna
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('kustom')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_kustom" data-vio-cta-label="Kustom" @click=${() => this.onPay('kustom')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_kustom" data-vio-cta-label="Kustom" @click=${() => this.onPay('kustom')} ?disabled=${this.discountOff('kustom')} ?data-discount-off=${this.discountOff('kustom')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Kustom</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('qliro')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_qliro" data-vio-cta-label="Qliro" @click=${() => this.onPay('qliro')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_qliro" data-vio-cta-label="Qliro" @click=${() => this.onPay('qliro')} ?disabled=${this.discountOff('qliro')} ?data-discount-off=${this.discountOff('qliro')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Qliro</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('walley')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_walley" data-vio-cta-label="Walley" @click=${() => this.onPay('walley')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_walley" data-vio-cta-label="Walley" @click=${() => this.onPay('walley')} ?disabled=${this.discountOff('walley')} ?data-discount-off=${this.discountOff('walley')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Walley</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('nexi')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_nexi" data-vio-cta-label="Nexi" @click=${() => this.onPay('nexi')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_nexi" data-vio-cta-label="Nexi" @click=${() => this.onPay('nexi')} ?disabled=${this.discountOff('nexi')} ?data-discount-off=${this.discountOff('nexi')}>
                             <span style="font-weight:800;font-size:16px;letter-spacing:-0.01em">Nexi</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('adyen')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_adyen" @click=${() => this.onPay('adyen')} ?disabled=${this.discountOnCart} ?data-discount-off=${this.discountOnCart}>
+                          <button class="payment-btn" data-vio-cta="select_adyen" @click=${() => this.onPay('adyen')} ?disabled=${this.discountOff('adyen')} ?data-discount-off=${this.discountOff('adyen')}>
                             <span style="font-weight:700;font-size:15px;letter-spacing:-0.01em">${this.methodLabel('adyen')}</span>
                           </button>
                         `
                       : ''}
                     ${this.methodEnabled('vipps')
                       ? html`
-                          <button class="payment-btn" data-vio-cta="select_vipps" @click=${() => this.onPay('vipps')} aria-label="Vipps">
+                          <button class="payment-btn" data-vio-cta="select_vipps" @click=${() => this.onPay('vipps')} aria-label="Vipps" ?disabled=${this.discountOff('vipps')} ?data-discount-off=${this.discountOff('vipps')}>
                             ${this.vippsOfficial
                               ? html`<vipps-mobilepay-button
                                   brand="vipps"
@@ -4779,9 +4820,15 @@ export class VioCheckout extends LitElement {
                         `
                       : ''}
                   </div>
-                  ${this.discountOnCart && (this.offeredMethods() ?? []).some((m) => !isVippsMethod(m))
-                    ? renderVippsOnlyNote()
-                    : ''}
+                  ${this.noMethodTakesDiscount
+                    ? renderDiscountDeadEnd({
+                        removing: this.discountRemoval === 'removing',
+                        failed: this.discountRemoval === 'failed',
+                        onRemove: this.onRemoveDeadEndDiscount,
+                      })
+                    : this.discountOnCart && (this.offeredMethods() ?? []).some((m) => this.discountOff(m))
+                      ? renderVippsOnlyNote()
+                      : ''}
                 `}
             ${this.paymentNotice
               ? html`<div class="payment-notice">${this.paymentNotice}</div>`

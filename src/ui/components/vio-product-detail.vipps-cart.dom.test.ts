@@ -175,6 +175,17 @@ describe('vio-product-detail — «Kjøp nå med Vipps» and a cart that already
     expect(productIds()).toEqual([146])
   })
 
+  it('the campaign\'s code on the brand\'s cart (no code shown): the same — Stripe and Klarna off, with the note', async () => {
+    Vio.cart.addManual({ productId: 146, sponsorId: SPONSOR, brand: 'Brand', name: 'Item', unitPrice: 1299, currency: 'NOK', imageUrl: '' })
+    await Vio.cart.waitForCartMutations(SPONSOR)
+    Vio.cart.getCart(SPONSOR)!.discountSource = 'CAMPAIGN'
+    const el = await openDetail()
+    const root = el.shadowRoot!
+    for (const sel of ['.buy-stripe', '.buy-klarna']) expect(root.querySelector<HTMLButtonElement>(sel)!.disabled, sel).toBe(true)
+    expect(root.querySelector<HTMLButtonElement>('.buy-vipps')!.disabled).toBe(false)
+    expect(root.querySelector('.vipps-only-note')).not.toBeNull()
+  })
+
   it('without a code on the cart: Stripe and Klarna on, no note', async () => {
     const el = await openDetail()
     const root = el.shadowRoot!

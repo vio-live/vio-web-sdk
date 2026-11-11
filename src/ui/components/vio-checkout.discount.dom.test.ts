@@ -309,3 +309,111 @@ describe('a discount code on the cart: only Vipps', () => {
     expect(el.shadowRoot!.querySelector('.vipps-only-note')).toBeNull()
   })
 })
+
+describe('the campaign\'s code on the cart (put on by reference: its code is never shown)', () => {
+  beforeEach(() => {
+    vi.mocked(Vio.cart.discountCodeForSponsor).mockReturnValue(undefined)
+    vi.spyOn(Vio.cart, 'discountSourceForSponsor').mockReturnValue('CAMPAIGN')
+  })
+
+  it('the «Rabatt» row says what it takes off, without a code; the totals as for any code', async () => {
+    const el = await openWithVipps()
+    expect(summaryRow(el, 'Rabatt')).toMatch(/^Rabatt\s*−52 Kr$/)
+    expect(el.shadowRoot!.textContent).not.toContain('gratis_face_mask')
+    expect(summaryRow(el, 'Totalt')).toMatch(/^Totalt\s*398 Kr$/)
+  })
+
+  it('the ways to pay that take no discount are off, as with any code', async () => {
+    manager.getAvailablePaymentMethods.mockResolvedValue([{ name: 'Vipps' }, { name: 'Stripe' }])
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.open(SPONSOR)
+    el.show()
+    await cycles(el)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('[data-vio-cta="select_stripe"]')?.disabled).toBe(true)
+    expect(el.shadowRoot!.querySelector<HTMLButtonElement>('[data-vio-cta="select_vipps"]')?.disabled).toBe(false)
+  })
+})
+
+describe('which ways to pay take a discount: each method\'s own config', () => {
+  /** The checkout's list of ways to pay, with `code` on the cart (`null`: none whose code is shown). */
+  async function openList(methods: unknown[], code: string | null = 'KODE') {
+    vi.mocked(Vio.cart.discountCodeForSponsor).mockReturnValue(code ?? undefined)
+    manager.getAvailablePaymentMethods.mockResolvedValue(methods)
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.open(SPONSOR)
+    el.show()
+    await cycles(el)
+    return el
+  }
+  const choice = (el: HTMLElement, cta: string) => el.shadowRoot!.querySelector<HTMLButtonElement>(`[data-vio-cta="${cta}"]`)
+  const yes = [{ type: 'string', name: 'discounts', value: 'true' }]
+  const no = [{ type: 'string', name: 'discounts', value: 'false' }]
+
+  it('a method that says `discounts: true` stays on with a code; one that says false is off — whatever its name', async () => {
+    const el = await openList([
+      { name: 'Vipps', config: yes },
+      { name: 'Kustom', config: yes },
+      { name: 'Stripe', config: no },
+    ])
+    expect(choice(el, 'select_vipps')?.disabled).toBe(false)
+    expect(choice(el, 'select_kustom')?.disabled).toBe(false)
+    expect(choice(el, 'select_stripe')?.disabled).toBe(true)
+    expect(el.shadowRoot!.querySelector('.discount-dead-end')).toBeNull()
+  })
+
+  it('a method whose config does not say: Vipps does, the others do not (as before)', async () => {
+    const el = await openList([{ name: 'Vipps' }, { name: 'Kustom', config: [] }])
+    expect(choice(el, 'select_vipps')?.disabled).toBe(false)
+    expect(choice(el, 'select_kustom')?.disabled).toBe(true)
+    expect(text(el.shadowRoot!.querySelector('.vipps-only-note'))).toBe('Med rabattkode kan du bare betale med Vipps.')
+  })
+
+  describe('none of the ways to pay on offer takes the code on the cart', () => {
+    let remove: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      remove = vi.fn(async () => {
+        vi.mocked(Vio.cart.discountCodeForSponsor).mockReturnValue(undefined)
+        return { removed: true, carts: [{ sponsorId: SPONSOR, code: 'KODE', status: 'removed' }] }
+      })
+      vi.spyOn(Vio.cart, 'removeDiscountCode').mockImplementation(remove as never)
+    })
+
+    it('«Fjern» instead of a dead end: it says why, takes the code off the cart, and the ways to pay are back', async () => {
+      const el = await openList([{ name: 'Stripe', config: no }, { name: 'Kustom' }])
+      expect(choice(el, 'select_stripe')?.disabled).toBe(true)
+      expect(choice(el, 'select_kustom')?.disabled).toBe(true)
+      const deadEnd = el.shadowRoot!.querySelector<HTMLElement>('.discount-dead-end')
+      expect(text(deadEnd?.querySelector('p'))).toBe('Rabatten kan ikke brukes med betalingsmåtene her. Fjern rabatten for å betale.')
+      expect(el.shadowRoot!.querySelector('.vipps-only-note:not(.discount-dead-end p)')).toBeNull()
+      const button = deadEnd!.querySelector<HTMLButtonElement>('.discount-dead-end-remove')!
+      expect(text(button)).toBe('Fjern')
+
+      button.click()
+      await cycles(el)
+      expect(remove).toHaveBeenCalledWith(SPONSOR)
+      expect(el.shadowRoot!.querySelector('.discount-dead-end')).toBeNull()
+      expect(choice(el, 'select_stripe')?.disabled).toBe(false)
+      expect(choice(el, 'select_kustom')?.disabled).toBe(false)
+    })
+
+    it('the campaign\'s code too (no code shown): the same «Fjern»', async () => {
+      vi.spyOn(Vio.cart, 'discountSourceForSponsor').mockReturnValue('CAMPAIGN')
+      const el = await openList([{ name: 'Kustom' }], null)
+      expect(el.shadowRoot!.querySelector('.discount-dead-end-remove')).not.toBeNull()
+    })
+
+    it('it could not be taken off: it stays, and says so', async () => {
+      remove.mockImplementation(async () => ({ removed: false, carts: [{ sponsorId: SPONSOR, code: 'KODE', status: 'failed' }] }))
+      const el = await openList([{ name: 'Kustom' }])
+      el.shadowRoot!.querySelector<HTMLButtonElement>('.discount-dead-end-remove')!.click()
+      await cycles(el)
+      expect(text(el.shadowRoot!.querySelector('.discount-dead-end .discount-error'))).toBe('Rabattkoden kunne ikke fjernes. Prøv igjen.')
+    })
+
+    it('without a code on the cart: no «Fjern», every method on', async () => {
+      const el = await openList([{ name: 'Kustom' }], null)
+      expect(el.shadowRoot!.querySelector('.discount-dead-end')).toBeNull()
+      expect(choice(el, 'select_kustom')?.disabled).toBe(false)
+    })
+  })
+})

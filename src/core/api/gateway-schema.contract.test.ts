@@ -5,7 +5,10 @@
  * order's attribution (ADR-0035 phase B) exists in the gateway's schema under
  * that exact name. Read from the real file when `VIO_GATEWAY_SCHEMA` points
  * at a checkout of the gateway, else from the copy in `__fixtures__` (taken
- * from #30 at `133bd2a`; refresh it when the gateway changes). A name that
+ * from #30 at `133bd2a`, plus the discount-by-campaign contract: `campaign_id`
+ * on ApplyDiscount, `code` optional on both discount mutations, and
+ * `discount_source` on the carts and checkouts; refresh it when the gateway
+ * changes). A name that
  * drifts here would make the SDK fall back to the legacy shape — silently
  * but for a console line — so this test is what keeps the two in step.
  */
@@ -18,13 +21,16 @@ import { lineOriginWire } from '../cart/origin-wire.js'
 import { checkoutAttributionOf } from '../checkout/attribution.js'
 import {
   ADD_ITEM_MUTATION,
+  APPLY_CAMPAIGN_DISCOUNT_MUTATION,
   APPLY_DISCOUNT_MUTATION,
   APPLY_DISCOUNT_MUTATION_LEGACY,
   CREATE_CHECKOUT_MUTATION,
   CREATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
   DELETE_APPLIED_DISCOUNT_MUTATION,
+  DELETE_CART_DISCOUNT_MUTATION,
   GET_CART_QUERY,
   GET_CART_WITH_DISCOUNT_CODE_QUERY,
+  GET_CART_WITH_DISCOUNT_SOURCE_QUERY,
   GET_CHECKOUT_QUERY,
   UPDATE_CHECKOUT_MUTATION,
   UPDATE_CHECKOUT_WITH_ATTRIBUTION_MUTATION,
@@ -151,19 +157,24 @@ describe(`the gateway schema (${process.env.VIO_GATEWAY_SCHEMA ? 'VIO_GATEWAY_SC
     for (const field of Object.keys(ATTRIBUTION.entry!)) expect(entry, `entry.${field}`).toHaveProperty(field)
   })
 
-  it('ApplyDiscount / DeleteAppliedDiscount: take the cart and the code, under the names the SDK passes', () => {
-    for (const [field, document] of [
-      ['ApplyDiscount', APPLY_DISCOUNT_MUTATION],
-      ['DeleteAppliedDiscount', DELETE_APPLIED_DISCOUNT_MUTATION],
+  it('ApplyDiscount / DeleteAppliedDiscount: take the cart and the code — or the campaign, or the cart alone — under the names the SDK passes', () => {
+    expect(Object.keys(argsOf('ApplyDiscount')).sort()).toEqual(['campaign_id', 'cart_id', 'code'])
+    expect(Object.keys(argsOf('DeleteAppliedDiscount')).sort()).toEqual(['cart_id', 'code'])
+    expect(argsOf('ApplyDiscount').campaign_id).toBe('Int')
+    for (const [field, document, passed] of [
+      ['ApplyDiscount', APPLY_DISCOUNT_MUTATION, ['cart_id', 'code']],
+      ['ApplyDiscount', APPLY_CAMPAIGN_DISCOUNT_MUTATION, ['campaign_id', 'cart_id']],
+      ['DeleteAppliedDiscount', DELETE_APPLIED_DISCOUNT_MUTATION, ['cart_id', 'code']],
+      ['DeleteAppliedDiscount', DELETE_CART_DISCOUNT_MUTATION, ['cart_id']],
     ] as const) {
       const args = argsOf(field)
-      expect(Object.keys(args).sort()).toEqual(['cart_id', 'code'])
-      // The call inside the selection (the operation is named like the field: not that one).
+      // The call inside the selection (the operation is named like the field, or after it: not that one).
       const call = [...document.matchAll(new RegExp(`${field}\\(([^)]*)\\)`, 'g'))].map((m) => m[1]!).find((a) => /:\s*\$/.test(a))
-      expect([...(call ?? '').matchAll(/(\w+)\s*:\s*\$/g)].map((m) => m[1]).sort()).toEqual(['cart_id', 'code'])
+      expect([...(call ?? '').matchAll(/(\w+)\s*:\s*\$/g)].map((m) => m[1]).sort()).toEqual([...passed])
       expect(args.cart_id).toBe(variablesOf(document).cartId)
-      expect(args.code).toBe(variablesOf(document).code)
     }
+    // What a gateway without the campaign would quote when it refuses the argument.
+    expect(featureTokens('discount_campaign')).toEqual(['campaign_id'])
   })
 
   it('the discount on the wire: what a line is taken off (price.discount), the code of the cart and the checkout\'s totals', () => {
@@ -180,7 +191,10 @@ describe(`the gateway schema (${process.env.VIO_GATEWAY_SCHEMA ? 'VIO_GATEWAY_SC
       'UpdateShippingsBySupplierDTO',
     ]) {
       expect(typeFields(cart).discount_code, cart).toBe('String')
+      expect(typeFields(cart).discount_source, cart).toBe('String')
     }
+    expect(typeFields('GetCheckoutDTO').discount_source).toBe('String')
+    expect(featureTokens('cart_discount_source')).toEqual(['discount_source'])
     expect(typeFields('TotalsDTO')).toMatchObject({ discounts: 'Float', total: 'Float', taxes: 'Float' })
     expect(typeFields('GetCheckoutDTO').discount_code).toBe('String')
     // …and the checkout the receipt is read from asks for them.
@@ -258,9 +272,12 @@ describe('the gateway schema, validated for real (graphql)', () => {
     expect(accepts(APPLY_DISCOUNT_MUTATION_LEGACY, { cartId: 'c', code: 'GAVE' })).toEqual({ cartId: 'c', code: 'GAVE' })
     expect(APPLY_DISCOUNT_MUTATION_LEGACY).not.toContain('gifts')
     expect(accepts(DELETE_APPLIED_DISCOUNT_MUTATION, { cartId: 'c', code: 'GAVE' })).toEqual({ cartId: 'c', code: 'GAVE' })
+    expect(accepts(APPLY_CAMPAIGN_DISCOUNT_MUTATION, { cartId: 'c', campaignId: 5 })).toEqual({ cartId: 'c', campaignId: 5 })
+    expect(accepts(DELETE_CART_DISCOUNT_MUTATION, { cartId: 'c' })).toEqual({ cartId: 'c' })
   })
 
-  it('GetCart with the cart\'s discount_code — and the query a page without discounts sends', () => {
+  it('GetCart with the cart\'s discount_code and discount_source — and the query a page without discounts sends', () => {
+    accepts(GET_CART_WITH_DISCOUNT_SOURCE_QUERY, { cartId: 'c' })
     accepts(GET_CART_WITH_DISCOUNT_CODE_QUERY, { cartId: 'c' })
     accepts(GET_CART_QUERY, { cartId: 'c' })
   })

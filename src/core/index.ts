@@ -162,9 +162,9 @@ export type {
   AddManualOptions,
 } from './cart/cart-manager.js'
 export type { CartGift, CartLineItem, CartLineOrigin, CartOrigin, SponsorCartState } from './cart/types.js'
-// The discount code of a cart (one per backend cart): the campaign's (bootstrap `discountCode`, per
-// campaign and sponsor) / `Vio.init({ discountCode })` / `?vio_discount=` / `Vio.applyDiscountCode()` /
-// `Vio.removeDiscountCode()`, and the reasons Commerce gives.
+// The discount code of a cart (one per backend cart): the campaign's (bootstrap `discount.ref`, per
+// campaign and sponsor, applied by reference) / `Vio.init({ discountCode })` / `?vio_discount=` /
+// `Vio.applyDiscountCode()` / `Vio.removeDiscountCode()`, and the reasons Commerce gives.
 export {
   normalizeDiscountCode,
   discountReasonOf,
@@ -293,6 +293,7 @@ export type {
   ProductVariant,
   Sponsor,
   SponsorCommerceBlock,
+  SponsorDiscount,
   BootstrapResponse,
   BootstrapCampaign,
   BootstrapCampaignEntry,

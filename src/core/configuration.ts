@@ -52,16 +52,18 @@ export interface VioConfig {
   /**
    * A discount code for this page's carts — an OVERRIDE: the recommended
    * place for a campaign's code is the campaign itself, in Vio's dashboard,
-   * per sponsor (the bootstrap gives it, and the SDK puts it on that
-   * sponsor's cart by itself on the campaign's pages). This one goes on every
+   * per sponsor (the SDK puts it on that sponsor's cart by itself on the
+   * campaign's pages, by reference — the code never reaches the page). This
+   * one goes on every
    * sponsor's cart instead, the same way — the shopper types nothing — once
    * the cart has lines, on every new cart, and before a checkout or a
    * payment is built on it. Commerce takes one code per cart; when it does
    * not take this one, nothing is said (nobody typed it) and the purchase
    * goes on without it. Wins over a `?vio_discount=` in the URL, which wins
    * over the campaign's. Naming a code turns discount codes on for the page:
-   * the «Rabattkode» field shows too (see `discountField`). Only for brands
-   * that are paid with Vipps (README → Discount codes).
+   * the «Rabattkode» field shows too (see `discountField`). Only on the carts
+   * of brands one of whose ways to pay takes discount codes (Vipps, for now):
+   * it waits for the bootstrap to know (README → Discount codes).
    */
   discountCode?: string
   /**
@@ -72,11 +74,12 @@ export interface VioConfig {
    *
    * Shown by default wherever discount codes are on for the page — it names
    * a `discountCode`, or its link carried `?vio_discount=`. A code the
-   * page's CAMPAIGN gives (bootstrap) does not turn it on. `true` shows it
-   * on a page with no code of its own (the shopper types the brand's; the
-   * campaign's shows there once it is on the cart); `false` hides it (the
-   * page's own code still goes on the cart). A page that says nothing about
-   * discount codes has no field. Only for brands that are paid with Vipps.
+   * page's CAMPAIGN gives does not turn it on. `true` shows it on a page with
+   * no code of its own (the shopper types the brand's; with the campaign's
+   * on the cart it says a discount is on — never its code — and «Fjern»);
+   * `false` hides it (the page's own code still goes on the cart). A page
+   * that says nothing about discount codes has no field. Only for brands
+   * that are paid with Vipps.
    */
   discountField?: boolean
   /** Log the SDK's slot/attribution decisions at `console.debug` (manifest assignments per slot). */

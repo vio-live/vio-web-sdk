@@ -33,23 +33,46 @@ const boot = (): BootstrapResponse => ({
   campaigns: [{ id: 4, name: 'Faves høst', status: 'active', isDefault: true, primarySponsor: faves, slots: [] }],
 })
 
-/** Another brand, in campaign 5 with Faves, on its own channel. */
+/** Another brand, in campaign 5 with the first, on its own channel. */
 const TINT = 8
 const tint: Sponsor = { id: TINT, name: 'Tint', commerce: { apiKey: 'key-490', channelId: '490' } }
+/** The brand whose cart a channel key sells for. */
+const sponsorOfKey = (key: string) => (key === 'key-490' ? TINT : FAVES)
 /**
  * What Vio's dashboard says per campaign and sponsor (`campaignId:sponsorId`
- * → the code), as the bootstrap gives it: `discountCode` on every sponsor
- * block — `null` where the dashboard names none.
+ * → the code). The bootstrap never carries the code: `discount: { ref }` on
+ * every sponsor block (`null` where the dashboard names none, or the brand's
+ * ways to pay take no code), `discountCode: null` always.
  */
 let dashboard: Record<string, string>
-const coded = (s: Sponsor, campaignId: number): Sponsor => ({ ...s, discountCode: dashboard[`${campaignId}:${s.id}`] ?? null })
-/** The surface with the campaigns' codes: 4 (the default, Faves) and 5 («Jul»: Faves, and Tint as a secondary). */
+/** The brands' ways to pay, as the bootstrap lists them: `discountMethods` per brand (absent: `['vipps']`; `null`: not sent). */
+let discountMethodsOf: Record<number, string[] | null>
+let paymentMethodsOf: Record<number, string[] | undefined>
+/** The references the dashboard gave each code, per campaign and sponsor (a new one each time the code is set). */
+let refs: Map<string, string>
+const refOf = (campaignId: number, sponsorId: number, code: string) => {
+  const key = `${campaignId}:${sponsorId}=${code}`
+  if (!refs.has(key)) refs.set(key, `r${refs.size + 1}`)
+  return refs.get(key)!
+}
+const coded = (s: Sponsor, campaignId: number): Sponsor => {
+  const code = dashboard[`${campaignId}:${s.id}`]
+  const discountMethods = s.id in discountMethodsOf ? (discountMethodsOf[s.id] ?? null) : ['vipps']
+  const paymentMethods = paymentMethodsOf[s.id] ?? ['vipps', 'klarna']
+  return {
+    ...s,
+    discountCode: null,
+    discount: code && (discountMethods === null || discountMethods.length > 0) ? { ref: refOf(campaignId, s.id, code) } : null,
+    commerce: { ...s.commerce, paymentMethods, ...(discountMethods !== null ? { discountMethods } : {}) },
+  }
+}
+/** The surface with the campaigns' discounts: 4 (the default, the first brand) and 5 (that brand, and Tint as a secondary). */
 const campaignBoot = (): BootstrapResponse => ({
-  campaign: { id: 4, name: 'Faves høst' },
+  campaign: { id: 4, name: 'Autumn' },
   primarySponsor: coded(faves, 4),
   campaigns: [
-    { id: 4, name: 'Faves høst', status: 'active', isDefault: true, primarySponsor: coded(faves, 4), slots: [] },
-    { id: 5, name: 'Jul', status: 'active', primarySponsor: coded(faves, 5), secondarySponsors: [coded(tint, 5)], slots: [] },
+    { id: 4, name: 'Autumn', status: 'active', isDefault: true, primarySponsor: coded(faves, 4), slots: [] },
+    { id: 5, name: 'Winter', status: 'active', primarySponsor: coded(faves, 5), secondarySponsors: [coded(tint, 5)], slots: [] },
   ],
 })
 /** What `GET /v2/mobile/config` answers in this test. */
@@ -76,6 +99,8 @@ interface FakeLine {
 }
 
 let session: Map<string, string>
+/** The channel key each backend cart was created with. */
+let cartKeys: Map<string, string>
 /** Every commerce GraphQL call: its operation, the key it carried, its variables and its query. */
 let calls: Array<{ op: string; key: string; variables: Record<string, any>; query: string }>
 /** Never reset: the facade is one per page, and it remembers checkouts it announced by id. */
@@ -83,6 +108,8 @@ let cartSeq = 0
 let carts: Map<string, FakeLine[]>
 /** The code each backend cart carries. */
 let cartCodes: Map<string, string>
+/** The campaign whose code a backend cart carries (applied by campaign): its text is never sent back. */
+let cartCampaigns: Map<string, number>
 /** What each CreatePaymentVipps charged: the cart's lines less what its code takes off them. */
 let charged: number[]
 /** How the gateway and the brand's shop behave in this test. */
@@ -95,9 +122,12 @@ let gateway: {
   expired: Set<string>
   /** Products this channel cannot sell (an AddItem of them fails). */
   unavailable: Set<number>
-  /** The gateway knows `discount_code` on the cart / `gifts` on ApplyDiscount. */
+  /** The gateway knows `discount_code` / `discount_source` on the cart, `gifts` on ApplyDiscount. */
   knowsCartDiscountCode: boolean
+  knowsDiscountSource: boolean
   knowsGifts: boolean
+  /** The gateway takes `campaign_id` on ApplyDiscount, and DeleteAppliedDiscount without a code. */
+  knowsCampaign: boolean
   /** When set, ApplyDiscount answers only once this is resolved (the brand's shop is slow). */
   applyGate: Promise<void> | null
   /** CreatePaymentVipps fails for a reason that has nothing to do with the discount. */
@@ -133,7 +163,10 @@ function cartBody(cartId: string, query = '') {
     cart_id: cartId,
     currency: 'NOK',
     shipping_country: 'NO',
-    ...(query.includes('discount_code') ? { discount_code: cartCodes.get(cartId) ?? null } : {}),
+    ...(query.includes('discount_code') ? { discount_code: cartCampaigns.has(cartId) ? null : (cartCodes.get(cartId) ?? null) } : {}),
+    ...(query.includes('discount_source')
+      ? { discount_source: !cartCodes.has(cartId) ? null : cartCampaigns.has(cartId) ? 'CAMPAIGN' : 'CODE' }
+      : {}),
     line_items: (carts.get(cartId) ?? []).map((l) => ({
       id: l.id,
       product_id: l.product_id,
@@ -166,6 +199,7 @@ async function graphql(body: { query: string; variables: Record<string, any> }, 
     case 'CreateCart': {
       const id = `cart-${++cartSeq}`
       carts.set(id, [])
+      cartKeys.set(id, key)
       return json({ data: { Cart: { CreateCart: cartBody(id) } } })
     }
     case 'AddItem': {
@@ -190,31 +224,62 @@ async function graphql(body: { query: string; variables: Record<string, any> }, 
       carts.set(v.cartId, (carts.get(v.cartId) ?? []).filter((l) => l.id !== v.cartItemId))
       return json({ data: { Cart: { DeleteItem: cartBody(v.cartId) } } })
     }
-    case 'GetCart':
-      if (body.query.includes('discount_code') && !gateway.knowsCartDiscountCode) {
-        return json({ errors: [{ message: 'Cannot query field "discount_code" on type "GetCartDTO".' }] }, 400)
+    case 'GetCart': {
+      // Each field the gateway does not know is an error of its own, as GraphQL validation answers.
+      const unknown = [
+        ...(body.query.includes('discount_code') && !gateway.knowsCartDiscountCode ? ['discount_code'] : []),
+        ...(body.query.includes('discount_source') && !gateway.knowsDiscountSource ? ['discount_source'] : []),
+      ]
+      if (unknown.length) {
+        return json({ errors: unknown.map((f) => ({ message: `Cannot query field "${f}" on type "GetCartDTO".` })) }, 400)
       }
       return json({ data: { Cart: { GetCart: cartBody(v.cartId, body.query) } } })
+    }
+    case 'ApplyCampaignDiscount':
     case 'ApplyDiscount': {
+      if (body.query.includes('campaign_id') && !gateway.knowsCampaign) {
+        return json(
+          {
+            errors: [
+              { message: 'Unknown argument "campaign_id" on field "DiscountsMutations.ApplyDiscount".' },
+              { message: 'Field "ApplyDiscount" argument "code" of type "String!" is required, but it was not provided.' },
+            ],
+          },
+          400,
+        )
+      }
       if (body.query.includes('gifts') && !gateway.knowsGifts) {
         return json({ errors: [{ message: 'Cannot query field "gifts" on type "ApplyDiscountDTO".' }] }, 400)
       }
       if (gateway.applyGate) await gateway.applyGate
       if (gateway.applyThrows) return json({ errors: [{ message: 'shopcart is down' }] }, 502)
+      // By campaign: the code the dashboard gives the cart's brand there; none answers as an unknown code.
+      const byCampaign = v.campaignId !== undefined
+      const code: string | undefined = byCampaign ? dashboard[`${v.campaignId}:${sponsorOfKey(cartKeys.get(v.cartId) ?? '')}`] : v.code
       const current = cartCodes.get(v.cartId)
-      const why = current && current !== v.code ? 'COUPON_OTHER_APPLIED' : refusal(v.cartId, v.code)
+      const why = !code ? 'COUPON_NOT_FOUND' : current && current !== code ? 'COUPON_OTHER_APPLIED' : refusal(v.cartId, code)
       if (why) return json({ data: { Discounts: { ApplyDiscount: { executed: false, message: why } } } })
-      cartCodes.set(v.cartId, v.code)
-      const gifts = (CODES[v.code]!.gifts ?? []).map((product_id) => ({ product_id, variant_id: null, quantity: 1 }))
+      cartCodes.set(v.cartId, code!)
+      if (byCampaign) cartCampaigns.set(v.cartId, v.campaignId)
+      else cartCampaigns.delete(v.cartId)
+      const gifts = (CODES[code!]!.gifts ?? []).map((product_id) => ({ product_id, variant_id: null, quantity: 1 }))
       return json({
         data: { Discounts: { ApplyDiscount: { executed: true, message: '', ...(body.query.includes('gifts') ? { gifts } : {}) } } },
       })
     }
+    case 'DeleteCartDiscount':
     case 'DeleteAppliedDiscount': {
+      if (v.code === undefined && !gateway.knowsCampaign) {
+        return json({ errors: [{ message: 'Field "DeleteAppliedDiscount" argument "code" of type "String!" is required, but it was not provided.' }] }, 400)
+      }
       if (gateway.removeThrows) return json({ errors: [{ message: 'shopcart is down' }] }, 502)
-      const had = cartCodes.get(v.cartId) === v.code
-      if (had) cartCodes.delete(v.cartId)
-      return json({ data: { Discounts: { DeleteAppliedDiscount: { executed: had, message: had ? '' : 'COUPON_NOT_FOUND' } } } })
+      // Without a code: whatever the cart carries.
+      const had = cartCodes.has(v.cartId) && (v.code === undefined || cartCodes.get(v.cartId) === v.code)
+      if (had) {
+        cartCodes.delete(v.cartId)
+        cartCampaigns.delete(v.cartId)
+      }
+      return json({ data: { Discounts: { DeleteAppliedDiscount: { executed: had, message: had ? '' : 'COUPON_NOT_APPLIED' } } } })
     }
     case 'CreateCheckout':
       return json({ data: { Checkout: { CreateCheckout: { id: `co-${v.cartId}`, status: 'open' } } } })
@@ -265,6 +330,11 @@ beforeEach(() => {
   calls = []
   carts = new Map()
   cartCodes = new Map()
+  cartCampaigns = new Map()
+  cartKeys = new Map()
+  refs = new Map()
+  discountMethodsOf = {}
+  paymentMethodsOf = {}
   charged = []
   session = new Map()
   gateway = {
@@ -273,7 +343,9 @@ beforeEach(() => {
     expired: new Set(),
     unavailable: new Set(),
     knowsCartDiscountCode: true,
+    knowsDiscountSource: true,
     knowsGifts: true,
+    knowsCampaign: true,
     applyGate: null,
     vippsDown: false,
   }
@@ -417,6 +489,7 @@ describe('Vio.applyDiscountCode / Vio.removeDiscountCode — a "discount code" f
 
   it('a gateway without the cart\'s discount_code and without gifts: the code still goes on, the old documents are sent', async () => {
     gateway.knowsCartDiscountCode = false
+    gateway.knowsDiscountSource = false
     gateway.knowsGifts = false
     await ready()
     add(CREAM)
@@ -425,9 +498,12 @@ describe('Vio.applyDiscountCode / Vio.removeDiscountCode — a "discount code" f
 
     await expect(Vio.applyDiscountCode('TI')).resolves.toMatchObject({ status: 'applied' })
 
-    expect(ops()).toEqual(['ApplyDiscount', 'ApplyDiscount', 'GetCart', 'GetCart'])
+    expect(ops()).toEqual(['ApplyDiscount', 'ApplyDiscount', 'GetCart', 'GetCart', 'GetCart'])
     expect(calls[1]!.query).not.toContain('gifts')
-    expect(calls[3]!.query).not.toContain('discount_code')
+    expect(calls[2]!.query).toContain('discount_source')
+    expect(calls[3]!.query).toContain('discount_code')
+    expect(calls[3]!.query).not.toContain('discount_source')
+    expect(calls[4]!.query).not.toContain('discount_code')
     expect(Vio.cart.getCart(FAVES)?.discountCode).toBe('TI')
   })
 
@@ -670,8 +746,11 @@ describe('Vio.init({ discountCode }) — the page\'s code, without the shopper t
     await idle()
     calls = []
 
-    // The next page of the visit names the campaign's code.
+    // The next page of the visit names a code of its own: asked once its bootstrap says the brand's ways to pay take codes.
     Vio.init({ apiKey: key, environment: 'testing', discountCode: 'TI' } as never)
+    await idle()
+    expect(ops()).toEqual([])
+    await Vio.bootstrap()
     await idle()
 
     expect(ops()).toEqual(['ApplyDiscount', 'GetCart'])
@@ -997,7 +1076,7 @@ describe('a page without discount codes', () => {
 
 // ── The campaign's code: set in Vio's dashboard, on the campaign, per sponsor ──
 
-describe('the campaign\'s code (bootstrap) — the page names none, the dashboard gives one per campaign and brand', () => {
+describe('the campaign\'s code — set in the dashboard per campaign and brand, applied by reference: the page never sees it', () => {
   const T0 = new Date('2026-11-10T10:00:00Z').getTime()
   let clock = T0
 
@@ -1013,7 +1092,7 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     Vio.cart.addManual({
       productId,
       sponsorId,
-      brand: sponsorId === FAVES ? 'Faves' : 'Tint',
+      brand: sponsorId === FAVES ? 'Brand A' : 'Brand B',
       name: `P${productId}`,
       unitPrice: priceOf(productId),
       currency: 'NOK',
@@ -1037,36 +1116,59 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     await flush()
     await idleBoth()
   }
-  const appliedCodes = () => calls.filter((c) => c.op === 'ApplyDiscount').map((c) => c.variables.code)
+  /** What each ApplyDiscount asked for: `campaign N`, or the code. */
+  const applied = () =>
+    calls.filter((c) => c.op === 'ApplyDiscount' || c.op === 'ApplyCampaignDiscount').map((c) => (c.variables.campaignId !== undefined ? `campaign ${c.variables.campaignId}` : c.variables.code))
   const cart = () => Vio.cart.getCart(FAVES)
+  /** The calls by operation, a campaign's apply and removal named as such. */
+  const opsNamed = () => ops().map((o) => (o === 'ApplyCampaignDiscount' ? 'ApplyDiscount(campaign)' : o === 'DeleteCartDiscount' ? 'DeleteAppliedDiscount(cart)' : o))
 
-  it('a page of the campaign: the brand\'s code there goes on its cart by itself, with its gift — exactly as a page\'s own code', async () => {
+  it('a page of the campaign: the brand\'s code goes on its cart by itself — by campaign — with its gift', async () => {
     dashboard = { '5:7': GIFT_CODE }
     await ready({ campaignId: 5 })
     expect(Configuration.get()).not.toHaveProperty('discountCode')
     addFrom(CREAM, 5)
     await idle()
 
-    expect(ops()).toEqual(['CreateCart', 'AddItem', 'ApplyDiscount', 'AddItem', 'GetCart'])
-    expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId: cartIdNow(), code: GIFT_CODE } })
-    expect(cart()).toMatchObject({ discountCode: GIFT_CODE, discountCampaignId: 5, gifts: [{ productId: MASK, added: true }] })
+    expect(opsNamed()).toEqual(['CreateCart', 'AddItem', 'ApplyDiscount(campaign)', 'AddItem', 'GetCart'])
+    expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId: cartIdNow(), campaignId: 5 } })
+    expect(calls[2]!.variables).not.toHaveProperty('code')
+    expect(cartCodes.get(cartIdNow())).toBe(GIFT_CODE)
+    expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5, gifts: [{ productId: MASK, added: true }] })
     expect(linesNow()).toEqual([`${CREAM}×1`, `${MASK}×1`])
     expect(Vio.cart.totalForSponsor(FAVES)).toBe(349)
   })
 
-  it('the code of THAT campaign: the page\'s campaign gives its own, a page without one the default campaign\'s, an element\'s vio-campaign first', async () => {
+  it('the code is never on the page: not in the bootstrap, the calls, the cart, nor what the cart says', async () => {
+    dashboard = { '5:7': 'TI' }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+
+    expect(JSON.stringify(campaignBoot())).not.toContain('"TI"')
+    expect(calls.every((c) => !JSON.stringify(c.variables).includes('"TI"'))).toBe(true)
+    expect(JSON.stringify(cart())).not.toContain('"TI"')
+    expect(cart()).not.toHaveProperty('discountCode')
+    expect(Vio.cart.discountCodeForSponsor(FAVES)).toBeUndefined()
+    expect(Vio.cart.hasDiscountCode(FAVES)).toBe(true)
+    expect(Vio.cart.discountSourceForSponsor(FAVES)).toBe('CAMPAIGN')
+    // What it takes off is shown as any discount: the cream is 10 % off.
+    expect(lineOf(CREAM)).toMatchObject({ discount: 34.9 })
+  })
+
+  it('the discount of THAT campaign: the page\'s campaign gives its own, a page without one the default campaign\'s, an element\'s vio-campaign first', async () => {
     dashboard = { '4:7': 'TI', '5:7': GIFT_CODE }
     await ready()
     addFrom(CREAM, 4)
     await idle()
-    expect(appliedCodes()).toEqual(['TI'])
+    expect(applied()).toEqual(['campaign 4'])
     expect(cart()?.discountCampaignId).toBe(4)
 
     calls = []
     await ready({ campaignId: 5 })
     addFrom(CREAM, 5)
     await idle()
-    expect(appliedCodes()).toEqual([GIFT_CODE])
+    expect(applied()).toEqual(['campaign 5'])
 
     // Vio.init says 4, but the page's element says 5: the element's campaign is the page's.
     calls = []
@@ -1074,7 +1176,7 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     await ready({ campaignId: 4 })
     addFrom(CREAM, 5)
     await idle()
-    expect(appliedCodes()).toEqual([GIFT_CODE])
+    expect(applied()).toEqual(['campaign 5'])
     expect(cart()?.discountCampaignId).toBe(5)
   })
 
@@ -1084,11 +1186,11 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     addFrom(CREAM, 5)
     addFrom(LIPSTICK, 5, TINT)
     await idleBoth()
-    const tintCart = Vio.cart.getCart(TINT)?.cartId
-    expect(calls.filter((c) => c.op === 'ApplyDiscount').map((c) => c.variables.cartId)).toEqual([cartIdNow()])
-    expect(Vio.cart.getCart(TINT)).not.toHaveProperty('discountCode')
-    // Tint's cart is read as it always was: its GetCarts do not even ask about a code.
-    expect(calls.filter((c) => c.op === 'GetCart' && c.variables.cartId === tintCart).every((c) => !c.query.includes('discount_code'))).toBe(true)
+    const otherCart = Vio.cart.getCart(TINT)?.cartId
+    expect(calls.filter((c) => c.op === 'ApplyCampaignDiscount').map((c) => c.variables.cartId)).toEqual([cartIdNow()])
+    expect(Vio.cart.hasDiscountCode(TINT)).toBe(false)
+    // The other brand's cart is read as it always was: its GetCarts do not even ask about a code.
+    expect(calls.filter((c) => c.op === 'GetCart' && c.variables.cartId === otherCart).every((c) => !c.query.includes('discount_code'))).toBe(true)
 
     calls = []
     dashboard = { '5:7': 'TI', '5:8': 'TINT20' }
@@ -1096,16 +1198,16 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     addFrom(CREAM, 5)
     addFrom(LIPSTICK, 5, TINT)
     await idleBoth()
-    const applied = calls.filter((c) => c.op === 'ApplyDiscount')
-    expect(applied.map((c) => [c.key, c.variables.code])).toEqual(
+    const asked = calls.filter((c) => c.op === 'ApplyCampaignDiscount')
+    expect(asked.map((c) => [c.key, c.variables.campaignId])).toEqual(
       expect.arrayContaining([
-        ['key-484', 'TI'],
-        ['key-490', 'TINT20'],
+        ['key-484', 5],
+        ['key-490', 5],
       ]),
     )
-    expect(applied).toHaveLength(2)
-    expect(Vio.cart.getCart(TINT)?.discountCode).toBe('TINT20')
-    expect(Vio.cart.getCart(FAVES)?.discountCode).toBe('TI')
+    expect(asked).toHaveLength(2)
+    expect(cartCodes.get(Vio.cart.getCart(TINT)!.cartId!)).toBe('TINT20')
+    expect(cartCodes.get(cartIdNow())).toBe('TI')
   })
 
   it('the page\'s own code is the override, for every cart: Vio.init({ discountCode }) or ?vio_discount=', async () => {
@@ -1113,27 +1215,42 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     await ready({ campaignId: 5, discountCode: 'TI' })
     addFrom(CREAM, 5)
     await idle()
-    expect(appliedCodes()).toEqual(['TI'])
-    // The page's own code is not the campaign's: no campaign to follow.
+    expect(applied()).toEqual(['TI'])
+    // The page's own code is not the campaign's: no campaign to follow, and it shows.
     expect(cart()).not.toHaveProperty('discountCampaignId')
+    expect(cart()).toMatchObject({ discountCode: 'TI' })
 
     calls = []
     vi.stubGlobal('location', { href: 'https://host.example/a?vio_discount=TI', pathname: '/a', search: '?vio_discount=TI', host: 'host.example' })
     await ready({ campaignId: 5 })
     addFrom(CREAM, 5)
     await idle()
-    expect(appliedCodes()).toEqual(['TI'])
+    expect(applied()).toEqual(['TI'])
   })
 
-  it('refused (the coupon is unknown in the brand\'s shop): asked once, in silence, and the purchase goes on at its prices', async () => {
-    dashboard = { '5:7': 'FINNESIKKE' }
+  it('refused (the code is unknown in the brand\'s shop): asked once, in silence, and the purchase goes on at its prices', async () => {
+    dashboard = { '5:7': 'UNKNOWN_CODE' }
     await ready({ campaignId: 5 })
     addFrom(CREAM, 5)
     await idle()
     await Vio.checkout.startVippsExpress(FAVES)
-    expect(appliedCodes()).toEqual(['FINNESIKKE'])
+    expect(applied()).toEqual(['campaign 5'])
     expect(charged).toEqual([349])
-    expect(cart()).not.toHaveProperty('discountCode')
+    expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
+  })
+
+  it('a gateway that does not take a campaign: asked once, no code, nothing more asked on this page load — and the purchase goes on', async () => {
+    gateway.knowsCampaign = false
+    dashboard = { '5:7': 'TI' }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+    addFrom(LIPSTICK, 5)
+    await idle()
+    await Vio.checkout.startVippsExpress(FAVES)
+    expect(count('ApplyCampaignDiscount')).toBe(1)
+    expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
+    expect(charged).toEqual([548])
   })
 
   it('paying: the campaign\'s code and its gift are on the cart before the checkout and the payment — waited for, as the page\'s own', async () => {
@@ -1154,7 +1271,7 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     gateway.applyGate = null
     await starting
     expect(started).toMatchObject({ payment_url: 'https://vipps.test/pay' })
-    expect(ops().indexOf('ApplyDiscount')).toBeLessThan(ops().indexOf('CreateCheckout'))
+    expect(ops().indexOf('ApplyCampaignDiscount')).toBeLessThan(ops().indexOf('CreateCheckout'))
     expect(ops().lastIndexOf('AddItem')).toBeLessThan(ops().indexOf('CreateCheckout'))
     expect(serverLines()).toEqual([`${CREAM}×1`, `${MASK}×1`])
     expect(charged).toEqual([349])
@@ -1166,28 +1283,93 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
     expect(Vio.cart.discountGiftExpected(TINT)).toBe(false)
     addFrom(LIPSTICK, 5, TINT)
     await Vio.checkout.startVippsExpress(TINT)
-    expect(count('ApplyDiscount')).toBe(0)
+    expect(applied()).toEqual([])
     expect(ops()).toEqual(['CreateCart', 'AddItem', 'GetCart', 'CreateCheckout', 'UpdateCheckout', 'CreatePaymentVipps'])
   })
 
+  describe('a brand none of whose ways to pay takes codes', () => {
+    it('discountMethods empty: neither the campaign\'s code nor the page\'s own — the calls it always made', async () => {
+      dashboard = { '5:7': 'TI' }
+      discountMethodsOf = { [FAVES]: [] }
+      for (const config of [{ campaignId: 5 }, { campaignId: 5, discountCode: 'TI' }]) {
+        calls = []
+        await ready(config)
+        addFrom(CREAM, 5)
+        await idle()
+        await Vio.checkout.startVippsExpress(FAVES)
+        expect(ops()).toEqual(['CreateCart', 'AddItem', 'GetCart', 'CreateCheckout', 'UpdateCheckout', 'CreatePaymentVipps'])
+        expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
+        Vio.checkout.close()
+      }
+    })
+
+    it('a bootstrap without discountMethods: paid with Vipps takes codes, without Vipps none', async () => {
+      dashboard = { '5:7': 'TI' }
+      discountMethodsOf = { [FAVES]: null }
+      paymentMethodsOf = { [FAVES]: ['klarna', 'apple_pay'] }
+      await ready({ campaignId: 5, discountCode: 'TI' })
+      addFrom(CREAM, 5)
+      await idle()
+      expect(applied()).toEqual([])
+
+      paymentMethodsOf = { [FAVES]: ['klarna', 'vipps'] }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      expect(applied()).toEqual(['campaign 5'])
+    })
+
+    it('a code the shopper types is still asked: Commerce answers for it', async () => {
+      discountMethodsOf = { [FAVES]: [] }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      await expect(Vio.applyDiscountCode('TI')).resolves.toMatchObject({ status: 'applied' })
+      expect(cart()).toMatchObject({ discountCode: 'TI' })
+    })
+  })
+
+  it('the page\'s own code waits for the bootstrap (it says whether the brand takes codes), then goes on — even when no campaign gives one', async () => {
+    const key = `surface-key-${++keySeq}`
+    Vio.init({ apiKey: key, environment: 'testing' } as never)
+    Vio.cart.clearAllCarts()
+    Vio.checkout.close()
+    await Vio.bootstrap()
+    addFrom(CREAM, 5)
+    await idle()
+    calls = []
+
+    Vio.init({ apiKey: key, environment: 'testing', discountCode: 'TI' } as never)
+    await idle()
+    expect(ops()).toEqual([])
+
+    await Vio.bootstrap()
+    await idle()
+    expect(ops()).toEqual(['ApplyDiscount', 'GetCart'])
+    expect(cart()).toMatchObject({ discountCode: 'TI' })
+  })
+
   describe('dynamic: the cart follows what the dashboard says now', () => {
-    it('the code changes: at the next bootstrap the old one comes off the cart with its gift, and the new one goes on', async () => {
+    it('the code changes (a new reference): at the next bootstrap the old one comes off with its gift — without naming it — and the campaign\'s goes on again', async () => {
       dashboard = { '5:7': GIFT_CODE }
       await ready({ campaignId: 5 })
       addFrom(CREAM, 5)
       await idle()
       const cartId = cartIdNow()
+      const before = cart()?.discountRef
       expect(cartCodes.get(cartId)).toBe(GIFT_CODE)
       calls = []
 
       dashboard = { '5:7': 'TI' }
       await tabBack()
 
-      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'ApplyDiscount', 'GetCart'])
-      expect(calls[0]).toMatchObject({ key: 'key-484', variables: { cartId, code: GIFT_CODE } })
-      expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId, code: 'TI' } })
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'DeleteItem', 'ApplyDiscount(campaign)', 'GetCart'])
+      expect(calls[0]).toMatchObject({ key: 'key-484', variables: { cartId } })
+      expect(calls[0]!.variables).not.toHaveProperty('code')
+      expect(calls[2]).toMatchObject({ key: 'key-484', variables: { cartId, campaignId: 5 } })
       expect(cartCodes.get(cartId)).toBe('TI')
-      expect(cart()).toMatchObject({ cartId, discountCode: 'TI', discountCampaignId: 5 })
+      expect(cart()).toMatchObject({ cartId, discountSource: 'CAMPAIGN', discountCampaignId: 5 })
+      expect(cart()?.discountRef).not.toBe(before)
       expect(cart()).not.toHaveProperty('gifts')
       // The gift went with its code; the cream is 10 % off now.
       expect(linesNow()).toEqual([`${CREAM}×1`])
@@ -1206,16 +1388,30 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       dashboard = {}
       await tabBack()
 
-      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'GetCart'])
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'DeleteItem', 'GetCart'])
       expect(cartCodes.has(cartIdNow())).toBe(false)
-      expect(cart()).not.toHaveProperty('discountCode')
+      expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
       expect(cart()).not.toHaveProperty('discountCampaignId')
+      expect(cart()).not.toHaveProperty('discountSource')
       expect(linesNow()).toEqual([`${CREAM}×1`])
       expect(Vio.cart.discountForSponsor(FAVES)).toBe(0)
       // Without a code, every way to pay is back: the next payment charges the list price.
       await Vio.checkout.startVippsExpress(FAVES)
       expect(charged).toEqual([349])
-      expect(count('ApplyDiscount')).toBe(0)
+      expect(applied()).toEqual([])
+    })
+
+    it('the brand loses its last way to pay that takes codes (the bootstrap sends no discount): the campaign\'s code comes off', async () => {
+      dashboard = { '5:7': 'TI' }
+      await ready({ campaignId: 5 })
+      addFrom(CREAM, 5)
+      await idle()
+      calls = []
+
+      discountMethodsOf = { [FAVES]: [] }
+      await tabBack()
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'GetCart'])
+      expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
     })
 
     it('a campaign that stops being the page\'s and the brand\'s (gone from the bootstrap): its code comes off', async () => {
@@ -1228,21 +1424,21 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       bootstrap = () => ({ ...campaignBoot(), campaigns: campaignBoot().campaigns!.filter((c) => c.id !== 5) })
       await tabBack()
 
-      expect(ops()).toEqual(['DeleteAppliedDiscount', 'GetCart'])
-      expect(cart()).not.toHaveProperty('discountCode')
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'GetCart'])
+      expect(Vio.cart.hasDiscountCode(FAVES)).toBe(false)
     })
 
     it('the campaign gives a code mid-visit: the cart that had none gets it at the refresh', async () => {
       await ready({ campaignId: 5 })
       addFrom(CREAM, 5)
       await idle()
-      expect(count('ApplyDiscount')).toBe(0)
+      expect(applied()).toEqual([])
       calls = []
 
       dashboard = { '5:7': 'TI' }
       await tabBack()
-      expect(ops()).toEqual(['ApplyDiscount', 'GetCart'])
-      expect(cart()).toMatchObject({ discountCode: 'TI', discountCampaignId: 5 })
+      expect(opsNamed()).toEqual(['ApplyDiscount(campaign)', 'GetCart'])
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5 })
     })
 
     it('a refresh that changes nothing asks nothing', async () => {
@@ -1254,7 +1450,7 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
 
       await tabBack()
       expect(ops()).toEqual([])
-      expect(cart()?.discountCode).toBe(GIFT_CODE)
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN' })
     })
 
     it('a code the shopper typed is theirs: the dashboard changing the campaign\'s does not touch it', async () => {
@@ -1271,20 +1467,14 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       expect(cart()?.discountCode).toBe('TI')
     })
 
-    it('the campaign\'s code the shopper then types themselves becomes theirs: removed in the dashboard, it stays', async () => {
+    it('a code the shopper types while the campaign\'s is on: refused as a second code — the campaign\'s stays', async () => {
       dashboard = { '5:7': 'TI' }
       await ready({ campaignId: 5 })
       addFrom(CREAM, 5)
       await idle()
-      expect(cart()?.discountCampaignId).toBe(5)
-      await expect(Vio.applyDiscountCode('TI')).resolves.toMatchObject({ status: 'applied' })
-      expect(cart()).not.toHaveProperty('discountCampaignId')
-      calls = []
-
-      dashboard = {}
-      await tabBack()
-      expect(ops()).toEqual([])
-      expect(cart()?.discountCode).toBe('TI')
+      await expect(Vio.applyDiscountCode('TINT20', FAVES)).resolves.toMatchObject({ status: 'refused', reason: 'COUPON_OTHER_APPLIED' })
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5 })
+      expect(cartCodes.get(cartIdNow())).toBe('TI')
     })
 
     it('the page\'s own code is not the campaign\'s to take off', async () => {
@@ -1300,19 +1490,21 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       expect(cart()?.discountCode).toBe('TI')
     })
 
-    it('Commerce says the code is not on its cart any more: the cart is read again, and the new one goes on', async () => {
+    it('Commerce says the cart carries no code any more: the cart is read again, and the new one goes on', async () => {
       dashboard = { '5:7': 'TI' }
       await ready({ campaignId: 5 })
       addFrom(CREAM, 5)
       await idle()
       // Something else took it off the server cart.
       cartCodes.delete(cartIdNow())
+      cartCampaigns.delete(cartIdNow())
       calls = []
 
       dashboard = { '5:7': GIFT_CODE }
       await tabBack()
-      expect(ops()).toEqual(['DeleteAppliedDiscount', 'GetCart', 'ApplyDiscount', 'AddItem', 'GetCart'])
-      expect(cart()).toMatchObject({ discountCode: GIFT_CODE, discountCampaignId: 5 })
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'GetCart', 'ApplyDiscount(campaign)', 'AddItem', 'GetCart'])
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5 })
+      expect(cartCodes.get(cartIdNow())).toBe(GIFT_CODE)
     })
 
     it('a code that could not be taken off stays — and is not tried again on every change of the cart', async () => {
@@ -1328,9 +1520,9 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       addFrom(CREAM, 5)
       await idle()
       await Vio.checkout.startVippsExpress(FAVES)
-      expect(count('DeleteAppliedDiscount')).toBe(1)
-      expect(count('ApplyDiscount')).toBe(0)
-      expect(cart()?.discountCode).toBe('TI')
+      expect(count('DeleteCartDiscount')).toBe(1)
+      expect(applied()).toEqual([])
+      expect(cartCodes.get(cartIdNow())).toBe('TI')
       // The purchase goes on with the code the cart has.
       expect(charged).toEqual([628.2])
     })
@@ -1352,8 +1544,9 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       await Vio.bootstrap()
       await idle()
 
-      expect(ops()).toEqual(['DeleteAppliedDiscount', 'DeleteItem', 'ApplyDiscount', 'GetCart'])
-      expect(cart()).toMatchObject({ discountCode: 'TI', discountCampaignId: 5 })
+      expect(opsNamed()).toEqual(['DeleteAppliedDiscount(cart)', 'DeleteItem', 'ApplyDiscount(campaign)', 'GetCart'])
+      expect(cart()).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5 })
+      expect(cartCodes.get(cartIdNow())).toBe('TI')
     })
 
     it('a later page with a code of its own, while the campaigns give theirs: the cart it opens with is asked once — the page\'s', async () => {
@@ -1364,7 +1557,7 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       await Vio.bootstrap()
       addFrom(CREAM, 5)
       await idle()
-      expect(count('ApplyDiscount')).toBe(0)
+      expect(applied()).toEqual([])
       calls = []
 
       dashboard = { '5:7': GIFT_CODE }
@@ -1390,13 +1583,13 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       for (const fn of visibilityListeners) fn()
       await Vio.checkout.startVippsExpress(FAVES)
 
-      expect(before('ApplyDiscount', 'CreateCheckout')).toBe(true)
+      expect(before('ApplyCampaignDiscount', 'CreateCheckout')).toBe(true)
       expect(cartCodes.get(cartIdNow())).toBe('TI')
       expect(charged).toEqual([314.1])
     })
   })
 
-  it('no code in the bootstrap (null everywhere, or a Commerce that predates the field) nor on the page: the calls it always made', async () => {
+  it('no discount in the bootstrap (null everywhere, or a Commerce that predates the field) nor on the page: the calls it always made', async () => {
     for (const make of [campaignBoot, boot]) {
       bootstrap = make
       calls = []
@@ -1413,5 +1606,19 @@ describe('the campaign\'s code (bootstrap) — the page names none, the dashboar
       expect(Vio.cart.discountGiftExpected(FAVES)).toBe(false)
       Vio.checkout.close()
     }
+  })
+
+  it('a bootstrap that still sends a code\'s text on the old field: not read — no code goes on', async () => {
+    dashboard = {}
+    bootstrap = () => {
+      const b = campaignBoot()
+      b.campaigns![1]!.primarySponsor = { ...b.campaigns![1]!.primarySponsor!, discountCode: 'TI', discount: null }
+      return b
+    }
+    await ready({ campaignId: 5 })
+    addFrom(CREAM, 5)
+    await idle()
+    expect(applied()).toEqual([])
+    expect(ops()).toEqual(['CreateCart', 'AddItem'])
   })
 })

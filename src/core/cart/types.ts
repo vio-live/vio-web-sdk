@@ -132,29 +132,39 @@ export interface SponsorCartState {
   availableShippingCountries?: string[]
   /**
    * The discount code on the backend cart — Commerce takes one per cart
-   * (`Vio.applyDiscountCode`, the page's `discountCode`, or the code the
-   * page's campaign gives the sponsor). Set once Commerce took it, gone when
-   * it is removed or the backend cart is; a new backend cart is given the
-   * page's code again.
+   * (`Vio.applyDiscountCode`, or the page's `discountCode`). Set once
+   * Commerce took it, gone when it is removed or the backend cart is; a new
+   * backend cart is given the page's code again. Absent for a campaign's
+   * code (`discountSource`), whose text the page is never told.
    */
   discountCode?: string
   /**
-   * The campaign `discountCode` came from, when the SDK put on the cart the
-   * code that campaign gives this sponsor (the bootstrap's `discountCode`):
-   * the code follows that campaign — when a newer bootstrap gives the sponsor
-   * another code there, it comes off (with the gifts the SDK put in for it)
-   * and the new one goes on; when it gives none, it comes off and the cart is
-   * given the page's code as any cart without one. Absent for a code the
-   * shopper typed, the page's own, or one the server cart had: those are
+   * `CAMPAIGN` when the code on the backend cart is a campaign's: set in
+   * Vio's dashboard for the campaign and this sponsor, put on the cart by
+   * reference — Commerce looks the code up and never sends it back. The
+   * «Rabatt» row then shows no code.
+   */
+  discountSource?: 'CAMPAIGN'
+  /**
+   * The campaign the code came from, when the SDK put on the cart the code
+   * that campaign gives this sponsor (bootstrap `discount`): the code
+   * follows that campaign — when a newer bootstrap gives the sponsor another
+   * one there (a new `ref`), it comes off (with the gifts the SDK put in for
+   * it) and the new one goes on; when it gives none, it comes off and the
+   * cart is given the page's code as any cart without one. Absent for a code
+   * the shopper typed, the page's own, or one the server cart had: those are
    * never taken off by the SDK.
    */
   discountCampaignId?: number
-  /** The gifts that code brings, and what became of each in this cart. Goes with `discountCode`. */
+  /** The reference (bootstrap `discount.ref`) the campaign's code went on with: another one is another code. */
+  discountRef?: string
+  /** The gifts that code brings, and what became of each in this cart. Goes with the code. */
   gifts?: CartGift[]
   /**
    * A code Commerce refused for this cart for a reason that does not change
    * with what the cart holds (expired, unknown, used up, not for here): the
-   * page's own code is not asked for again on this cart.
+   * page's own code — or the campaign's, with that `ref` (`code` is then
+   * `''`) — is not asked for again on this cart.
    */
-  discountRefusal?: { code: string; reason: string }
+  discountRefusal?: { code: string; reason: string; ref?: string }
 }

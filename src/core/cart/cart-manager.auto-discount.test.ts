@@ -24,6 +24,8 @@ const gql = vi.hoisted(() => ({
   getCart: vi.fn(),
   applyDiscount: vi.fn(),
   deleteAppliedDiscount: vi.fn(),
+  applyCampaignDiscount: vi.fn(),
+  deleteCartDiscount: vi.fn(),
 }))
 
 vi.mock('../api/cart-queries.js', async (importOriginal) => ({
@@ -70,6 +72,8 @@ async function idle(m: CartManager) {
 let order: string[]
 /** The fake server's cart: the code it carries (set when an ApplyDiscount is taken) and its lines. */
 let serverCode: string | null
+/** The campaign whose code the server cart carries (an ApplyDiscount by campaign that was taken): its text is never sent. */
+let serverCampaign: number | null
 let serverLines: Array<ReturnType<typeof line>>
 const record = (name: string, fn: ReturnType<typeof vi.fn>) =>
   fn.mockImplementation(async () => undefined).mockName(name)
@@ -107,6 +111,7 @@ function page(config: { discountCode?: string } = {}) {
 beforeEach(() => {
   order = []
   serverCode = null
+  serverCampaign = null
   serverLines = [JUMPER]
   ensureLocalStorage().clear()
   resetStorageMemory()
@@ -117,7 +122,8 @@ beforeEach(() => {
   gql.createCart.mockReset().mockImplementation(async () => (order.push('CreateCart'), { cart_id: `cart-${++carts}`, line_items: [] }))
   gql.getCart.mockImplementation(async (cartId: string, _o: unknown, extra?: { discountCode?: boolean }) => {
     order.push(extra?.discountCode ? 'GetCart+code' : 'GetCart')
-    return serverCart(serverLines, extra?.discountCode ? { discount_code: serverCode } : {}, cartId)
+    const discount = { discount_code: serverCode, discount_source: serverCode ? 'CODE' : serverCampaign !== null ? 'CAMPAIGN' : null }
+    return serverCart(serverLines, extra?.discountCode ? discount : {}, cartId)
   })
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -558,119 +564,310 @@ describe('a page without a discount code', () => {
 })
 
 describe('the code a campaign gives the sponsor (hooks: the facade answers them from the bootstrap)', () => {
-  /** What the page's campaign gives each sponsor now; `undefined` for a sponsor: cannot tell. */
-  let campaign: { id: number; codes: Record<number, string | null | undefined> }
+  /** What the page's campaign gives each sponsor now — a reference; `undefined` for a sponsor: cannot tell. */
+  let campaign: { id: number; refs: Record<number, string | null | undefined> }
+  /** Whether each sponsor's ways to pay take codes; absent: yes. `undefined`: cannot tell yet. */
+  let allowed: Record<number, boolean | undefined>
   const hooks = {
     campaignDiscount: (sponsorId: number) => {
-      const code = campaign.codes[sponsorId]
-      return code ? { code, campaignId: campaign.id } : undefined
+      const ref = campaign.refs[sponsorId]
+      return ref ? { ref, campaignId: campaign.id } : undefined
     },
     campaignDiscountNow: (sponsorId: number, campaignId: number) =>
-      campaignId === campaign.id ? campaign.codes[sponsorId] : null,
+      campaignId === campaign.id ? campaign.refs[sponsorId] : null,
+    discountAllowed: (sponsorId: number) => (sponsorId in allowed ? allowed[sponsorId] : true),
+  }
+  /** Commerce's answer to an ApplyDiscount by campaign (the last one repeats): taken puts that campaign's code on the server cart. */
+  function campaignAnswers(...answers: Array<{ executed: boolean; message: string } | Error | null>) {
+    let i = 0
+    gql.applyCampaignDiscount.mockImplementation(async (_cartId: string, campaignId: number) => {
+      order.push(`ApplyDiscount(campaign ${campaignId})`)
+      const answer = answers[Math.min(i++, answers.length - 1)]!
+      if (answer instanceof Error) throw answer
+      if (answer?.executed) {
+        serverCode = null
+        serverCampaign = campaignId
+      }
+      return answer
+    })
   }
 
   beforeEach(() => {
-    campaign = { id: 5, codes: { [SPONSOR]: 'GAVE' } }
+    campaign = { id: 5, refs: { [SPONSOR]: 'ref-a' } }
+    allowed = {}
     gql.deleteAppliedDiscount.mockImplementation(async () => (order.push('DeleteAppliedDiscount'), (serverCode = null), { executed: true, message: '' }))
+    gql.deleteCartDiscount.mockImplementation(async () => {
+      order.push('DeleteAppliedDiscount(cart)')
+      serverCode = null
+      serverCampaign = null
+      return { executed: true, message: '' }
+    })
   })
 
-  it('goes on the cart as the page\'s own code does, and the cart remembers the campaign it follows', async () => {
+  it('goes on the cart by campaign — the page never sees the code — and the cart remembers the campaign and reference it follows', async () => {
     page()
-    applyAnswers(TAKEN)
+    campaignAnswers(TAKEN)
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
-    expect(order).toEqual(['CreateCart', 'AddItem', 'ApplyDiscount', 'GetCart+code'])
-    expect(m.getCart(SPONSOR)).toMatchObject({ discountCode: 'GAVE', discountCampaignId: 5 })
+    expect(order).toEqual(['CreateCart', 'AddItem', 'ApplyDiscount(campaign 5)', 'GetCart+code'])
+    expect(gql.applyCampaignDiscount).toHaveBeenCalledWith('cart-1', 5, OPTS)
+    expect(gql.applyDiscount).not.toHaveBeenCalled()
+    expect(m.getCart(SPONSOR)).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5, discountRef: 'ref-a' })
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCode')
+    expect(m.hasDiscountCode(SPONSOR)).toBe(true)
+    expect(m.discountCodeForSponsor(SPONSOR)).toBeUndefined()
+    expect(m.discountSourceForSponsor(SPONSOR)).toBe('CAMPAIGN')
     // Kept with the cart, for the next page of the visit.
-    expect(new CartManager('').getCart(SPONSOR)).toMatchObject({ discountCode: 'GAVE', discountCampaignId: 5 })
+    expect(new CartManager('').getCart(SPONSOR)).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5, discountRef: 'ref-a' })
+  })
+
+  it('while it goes on, nobody is shown a code: discountBusy says none', async () => {
+    page()
+    let answer!: (v: typeof TAKEN) => void
+    gql.applyCampaignDiscount.mockImplementation(() => new Promise((resolve) => (answer = resolve)))
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await m.waitForCartMutations(SPONSOR)
+    await tick()
+    expect(m.discountBusy(SPONSOR)).toEqual({ kind: 'applying', code: '', sponsorId: SPONSOR, asked: false })
+    serverCampaign = 5
+    answer(TAKEN)
+    await idle(m)
+    expect(m.discountBusy()).toBeUndefined()
   })
 
   it('the page\'s own code wins over it, and is nobody\'s campaign', async () => {
     page({ discountCode: 'SIDE' })
     applyAnswers(TAKEN)
+    campaignAnswers(TAKEN)
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
     expect(gql.applyDiscount).toHaveBeenCalledWith('cart-1', 'SIDE', OPTS)
+    expect(gql.applyCampaignDiscount).not.toHaveBeenCalled()
     expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCampaignId')
   })
 
-  it('changed: off, and the new one on — one piece of work, whatever else settles the cart meanwhile', async () => {
+  it('a new reference (the dashboard set the code again): off, and the campaign\'s on again — one piece of work, whatever else settles the cart meanwhile', async () => {
     page()
-    applyAnswers(TAKEN)
+    campaignAnswers(TAKEN)
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
     order = []
 
-    campaign.codes[SPONSOR] = 'NY'
+    campaign.refs[SPONSOR] = 'ref-b'
     m.ensureDiscountCodes()
     m.ensureDiscountCodes()
     void m.settleDiscountCode(SPONSOR)
     await idle(m)
-    expect(order).toEqual(['DeleteAppliedDiscount', 'ApplyDiscount', 'GetCart+code'])
-    expect(gql.applyDiscount).toHaveBeenLastCalledWith('cart-1', 'NY', OPTS)
-    expect(m.getCart(SPONSOR)).toMatchObject({ discountCode: 'NY', discountCampaignId: 5 })
+    expect(order).toEqual(['DeleteAppliedDiscount(cart)', 'ApplyDiscount(campaign 5)', 'GetCart+code'])
+    expect(gql.deleteCartDiscount).toHaveBeenCalledWith('cart-1', OPTS)
+    expect(m.getCart(SPONSOR)).toMatchObject({ discountSource: 'CAMPAIGN', discountCampaignId: 5, discountRef: 'ref-b' })
   })
 
-  it('cannot be told (no bootstrap yet, another connection): nothing comes off', async () => {
+  it('the campaign gives none any more: it comes off, and the lines are read again', async () => {
     page()
-    applyAnswers(TAKEN)
+    campaignAnswers(TAKEN)
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
     order = []
 
-    campaign.codes[SPONSOR] = undefined
+    campaign.refs[SPONSOR] = null
+    m.ensureDiscountCodes()
+    await idle(m)
+    // Read as a cart without a code: no code is in play any more.
+    expect(order).toEqual(['DeleteAppliedDiscount(cart)', 'GetCart'])
+    expect(m.hasDiscountCode(SPONSOR)).toBe(false)
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountSource')
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountRef')
+  })
+
+  it('a cart that carries the campaign\'s code by its text (put on before references): swapped for the campaign\'s by reference', async () => {
+    page()
+    campaignAnswers(TAKEN)
+    localStorage.setItem(
+      cartStorageKey(''),
+      JSON.stringify({
+        [SPONSOR]: {
+          sponsorId: SPONSOR,
+          currency: 'NOK',
+          cartId: 'cart-9',
+          discountCode: 'GAVE',
+          discountCampaignId: 5,
+          items: [{ id: 'li_1', productId: 146, quantity: 1, unitPrice: 100, currency: 'NOK', name: 'Item', brand: 'Brand', imageUrl: '', cartItemId: 'srv-1' }],
+        },
+      }),
+    )
+    serverCode = 'GAVE'
+    const m = new CartManager('', hooks)
+    m.ensureDiscountCodes()
+    await idle(m)
+    expect(order).toEqual(['DeleteAppliedDiscount', 'ApplyDiscount(campaign 5)', 'GetCart+code'])
+    expect(gql.deleteAppliedDiscount).toHaveBeenCalledWith('cart-9', 'GAVE', OPTS)
+    expect(m.getCart(SPONSOR)).toMatchObject({ discountSource: 'CAMPAIGN', discountRef: 'ref-a' })
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCode')
+  })
+
+  it('cannot be told (no bootstrap yet, another connection): nothing comes off', async () => {
+    page()
+    campaignAnswers(TAKEN)
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await idle(m)
+    order = []
+
+    campaign.refs[SPONSOR] = undefined
     m.ensureDiscountCodes()
     await m.settleDiscountCode(SPONSOR)
     await idle(m)
     expect(order).toEqual([])
-    expect(m.getCart(SPONSOR)?.discountCode).toBe('GAVE')
-  })
-
-  it('the shopper typing that very code while it goes on makes it theirs: no campaign to follow', async () => {
-    page()
-    let answer!: (v: typeof TAKEN) => void
-    gql.applyDiscount.mockImplementation(() => new Promise((resolve) => (answer = resolve)))
-    const m = new CartManager('', hooks)
-    addJumper(m)
-    await m.waitForCartMutations(SPONSOR)
-    await tick()
-    expect(m.discountBusy(SPONSOR)).toMatchObject({ code: 'GAVE', asked: false })
-
-    const typed = m.applyDiscountCode('GAVE', SPONSOR)
-    await tick()
-    serverCode = 'GAVE'
-    answer(TAKEN)
-    await typed
-    await idle(m)
-    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
-    expect(m.getCart(SPONSOR)?.discountCode).toBe('GAVE')
-    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCampaignId')
+    expect(m.getCart(SPONSOR)?.discountRef).toBe('ref-a')
   })
 
   it('the server cart says another code: it is not the campaign\'s any more', async () => {
     page()
-    applyAnswers(TAKEN)
+    campaignAnswers(TAKEN)
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
     serverCode = 'ANNEN'
+    serverCampaign = null
     await m.refreshFromServer(SPONSOR)
     expect(m.getCart(SPONSOR)).toMatchObject({ discountCode: 'ANNEN' })
     expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCampaignId')
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountSource')
+  })
+
+  it('the server cart says a campaign\'s code the SDK did not put on: kept as it is, never taken off by the SDK', async () => {
+    page({ discountCode: 'SIDE' })
+    applyAnswers({ executed: false, message: 'COUPON_OTHER_APPLIED' })
+    campaign.refs = {}
+    serverCampaign = 7
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await idle(m)
+    await m.refreshFromServer(SPONSOR)
+    m.ensureDiscountCodes()
+    await idle(m)
+    expect(gql.applyDiscount).toHaveBeenCalledTimes(1)
+    expect(m.getCart(SPONSOR)).toMatchObject({ discountSource: 'CAMPAIGN' })
+    expect(m.getCart(SPONSOR)).not.toHaveProperty('discountCampaignId')
+    expect(m.hasDiscountCode(SPONSOR)).toBe(true)
+    expect(gql.deleteCartDiscount).not.toHaveBeenCalled()
+  })
+
+  it('removeDiscountCode takes a campaign\'s code off without naming it', async () => {
+    page()
+    campaignAnswers(TAKEN)
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await idle(m)
+    order = []
+
+    const removal = await m.removeDiscountCode(SPONSOR)
+    expect(removal).toMatchObject({ removed: true, carts: [{ sponsorId: SPONSOR, code: '', source: 'CAMPAIGN', status: 'removed' }] })
+    expect(order).toEqual(['DeleteAppliedDiscount(cart)', 'GetCart'])
+    expect(m.hasDiscountCode(SPONSOR)).toBe(false)
+    // Nothing goes on again this page load.
+    m.ensureDiscountCodes()
+    await idle(m)
+    expect(gql.applyCampaignDiscount).toHaveBeenCalledTimes(1)
+  })
+
+  it('refused (the campaign gives no code there): asked once for that reference, in silence', async () => {
+    page()
+    campaignAnswers({ executed: false, message: 'COUPON_NOT_FOUND' })
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await idle(m)
+    plusOne(m)
+    await idle(m)
+    await m.settleDiscountCode(SPONSOR)
+    expect(gql.applyCampaignDiscount).toHaveBeenCalledTimes(1)
+    expect(m.getCart(SPONSOR)?.discountRefusal).toEqual({ code: '', ref: 'ref-a', reason: 'COUPON_NOT_FOUND' })
+    expect(m.hasDiscountCode(SPONSOR)).toBe(false)
+
+    // A new reference is a new code: asked.
+    campaign.refs[SPONSOR] = 'ref-b'
+    m.ensureDiscountCodes()
+    await idle(m)
+    expect(gql.applyCampaignDiscount).toHaveBeenCalledTimes(2)
+  })
+
+  it('a gateway that does not take a campaign: no code, and not asked again on this page load', async () => {
+    page()
+    campaignAnswers(null)
+    const m = new CartManager('', hooks)
+    addJumper(m)
+    await idle(m)
+    expect(gql.applyCampaignDiscount).toHaveBeenCalledTimes(1)
+    expect(m.hasDiscountCode(SPONSOR)).toBe(false)
   })
 
   it('another sponsor\'s cart is not given it', async () => {
     page()
-    applyAnswers(TAKEN)
-    campaign.codes = { 99: 'GAVE' }
+    campaignAnswers(TAKEN)
+    campaign.refs = { 99: 'ref-a' }
     const m = new CartManager('', hooks)
     addJumper(m)
     await idle(m)
-    expect(gql.applyDiscount).not.toHaveBeenCalled()
+    expect(gql.applyCampaignDiscount).not.toHaveBeenCalled()
     expect(order).toEqual(['CreateCart', 'AddItem'])
+  })
+
+  describe('a brand none of whose ways to pay takes codes', () => {
+    it('gets neither the campaign\'s code nor the page\'s own — and its cart is read as without codes', async () => {
+      page()
+      campaignAnswers(TAKEN)
+      allowed = { [SPONSOR]: false }
+      const m = new CartManager('', hooks)
+      addJumper(m)
+      await idle(m)
+      await m.settleDiscountCode(SPONSOR)
+      await m.refreshFromServer(SPONSOR)
+      expect(order).toEqual(['CreateCart', 'AddItem', 'GetCart'])
+      expect(m.discountGiftExpected(SPONSOR)).toBe(false)
+
+      Configuration.reset()
+      page({ discountCode: 'SIDE' })
+      applyAnswers(TAKEN)
+      m.ensureDiscountCodes()
+      await m.settleDiscountCode(SPONSOR)
+      await idle(m)
+      expect(gql.applyDiscount).not.toHaveBeenCalled()
+      expect(gql.applyCampaignDiscount).not.toHaveBeenCalled()
+    })
+
+    it('a code the shopper types is still asked (Commerce answers for it)', async () => {
+      page()
+      applyAnswers(TAKEN)
+      allowed = { [SPONSOR]: false }
+      const m = new CartManager('', hooks)
+      addJumper(m)
+      await idle(m)
+      await expect(m.applyDiscountCode('EGEN', SPONSOR)).resolves.toMatchObject({ status: 'applied' })
+      expect(gql.applyDiscount).toHaveBeenCalledWith('cart-1', 'EGEN', OPTS)
+    })
+
+    it('not known yet (no bootstrap): the page\'s code waits — and goes on once it is known', async () => {
+      page({ discountCode: 'SIDE' })
+      applyAnswers(TAKEN)
+      campaign.refs = {}
+      allowed = { [SPONSOR]: undefined }
+      const m = new CartManager('', hooks)
+      addJumper(m)
+      await idle(m)
+      m.ensureDiscountCodes()
+      await idle(m)
+      expect(gql.applyDiscount).not.toHaveBeenCalled()
+
+      allowed = { [SPONSOR]: true }
+      m.ensureDiscountCodes()
+      await idle(m)
+      expect(gql.applyDiscount).toHaveBeenCalledWith('cart-1', 'SIDE', OPTS)
+    })
   })
 })

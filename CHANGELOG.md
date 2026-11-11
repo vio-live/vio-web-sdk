@@ -16,6 +16,12 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.39.0 — 2026-11-11
+
+The campaign's discount code is applied by reference — the code never reaches the page — and only on brands
+with a way to pay that takes discounts. Needs the Commerce release that serves `discount: { ref }`; see the
+upgrade notes.
+
 ### Added
 - **The campaign's code is applied by reference: the code never reaches the page.** The bootstrap names it
   only by an opaque reference (`discount: { ref } | null` on every sponsor block); the SDK asks Commerce to

@@ -16,13 +16,13 @@ describe('the campaign\'s code: the URL names none', () => {
 
   it('the bar says the code the campaign gives the brand once the bootstrap is in — or that it gives none', () => {
     const c = readQaConfig('?campaignId=18', { VITE_VIO_API_KEY: 'k' })
-    expect(describeQaConfig(c, 'qa_gave')).toContain('código qa_gave (campaña)')
+    expect(describeQaConfig(c, 'r1')).toContain('código de la campaña (ref r1; el código no llega a la página)')
     expect(describeQaConfig(c, null)).toContain('sin código (la campaña no da ninguno)')
   })
 
   it('a page\'s own code (config or ?vio_discount=) is what the bar says: it wins over the campaign\'s', () => {
-    expect(describeQaConfig(readQaConfig('?apiKey=k&discountCode=SIDE'), 'qa_gave')).toContain('código SIDE (config)')
-    expect(describeQaConfig(readQaConfig('?apiKey=k&vio_discount=LENKE'), 'qa_gave')).toContain('código LENKE (?vio_discount)')
+    expect(describeQaConfig(readQaConfig('?apiKey=k&discountCode=SIDE'), 'r1')).toContain('código SIDE (config)')
+    expect(describeQaConfig(readQaConfig('?apiKey=k&vio_discount=LENKE'), 'r1')).toContain('código LENKE (?vio_discount)')
   })
 })
 

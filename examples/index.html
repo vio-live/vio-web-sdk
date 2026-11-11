@@ -78,9 +78,10 @@
           </li>
           <li>
             El código de descuento es el de la campaña: se pone en el dashboard (QA), en la campaña,
-            por sponsor. El SDK lo pone solo en el carrito de esa marca; la barra de arriba dice cuál.
-            Cambiarlo o quitarlo en el dashboard y volver a la pestaña tras más de 5 min (o recargar):
-            el carrito lo cambia o lo quita, con su regalo.
+            por sponsor. El código no llega a la página (el bootstrap trae solo una referencia): el SDK
+            lo aplica por campaña en el carrito de esa marca, que lo muestra como «Rabatt», sin código;
+            la barra de arriba dice si la campaña da uno. Cambiarlo o quitarlo en el dashboard y volver
+            a la pestaña tras más de 5 min (o recargar): el carrito lo cambia o lo quita, con su regalo.
           </li>
           <li>
             <code>apiKey</code> (si no, <code>VITE_VIO_API_KEY</code> en <code>.env.local</code>) ·

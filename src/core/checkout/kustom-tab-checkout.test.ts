@@ -194,6 +194,27 @@ describe('a checkout another tab replaced', () => {
     expect(m.state.checkoutId).toBe(first.checkout_id)
   })
 
+  it('a sync waits for the cart change still on its way to Commerce, with the widget suspended (QA 2026-11-12)', async () => {
+    const m = manager()
+    await openAndMount(m)
+    let land!: () => void
+    m.cartManager.waitForCartMutations = vi.fn(() => new Promise<void>((resolve) => (land = resolve)))
+    vi.mocked(kustom.syncPaymentKustom).mockResolvedValue({ order_id: 'KCO-x' } as never)
+    vi.mocked(kustom.suspendKustom).mockClear()
+    vi.mocked(kustom.resumeKustom).mockClear()
+
+    const syncing = m.syncKustomOrder(SPONSOR)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(kustom.suspendKustom).toHaveBeenCalledTimes(1)
+    expect(kustom.syncPaymentKustom).not.toHaveBeenCalled()
+    expect(kustom.resumeKustom).not.toHaveBeenCalled()
+
+    land()
+    await syncing
+    expect(kustom.syncPaymentKustom).toHaveBeenCalledTimes(1)
+    expect(kustom.resumeKustom).toHaveBeenCalledTimes(1)
+  })
+
   it('isCheckoutSuperseded reads Commerce\'s code or its sentence', () => {
     expect(isCheckoutSuperseded(SUPERSEDED)).toBe(true)
     expect(isCheckoutSuperseded(new Error('[CHECKOUT_SUPERSEDED]'))).toBe(true)

@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.39.2 — 2026-11-12
+
+Two fixes found in QA on the day of 0.39.1: a product added while the Kustom widget is open reaches the order,
+and the gift of a discount code shows its picture in the cart.
+
 ### Fixed
 - **Kustom: a product added while the widget is open reaches the order.** The update of the open Kustom order
   now waits for the cart change still on its way to Commerce (the widget stays suspended meanwhile). Before, it

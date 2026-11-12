@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.39.1 — 2026-11-12
+
+Two Kustom fixes: reopening the checkout keeps one order, and a tab whose checkout another tab replaced
+stops instead of writing into the other tab's order.
+
 ### Fixed
 - **Kustom: reopening the checkout no longer leaves an order behind.** Closed and opened again in the same
   tab, on the same page and for the same cart, the checkout takes up the checkout it already has while

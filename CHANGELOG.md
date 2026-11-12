@@ -16,6 +16,10 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.39.3 — 2026-11-12
+
+A coupon the brand changed in its shop after it was applied is said on the cart.
+
 ### Fixed
 - **A coupon the brand changed in its shop is said on the cart.** Commerce refuses the first payment when the
   coupon on the cart changed in the shop since it was applied (`COUPON_CHANGED`), so the shopper sees the new price

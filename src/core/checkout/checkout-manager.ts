@@ -158,6 +158,43 @@ function describeError(err: unknown): string {
   return String(err)
 }
 
+/**
+ * Commerce refused because this checkout is no longer the cart's: another tab
+ * or window opened a checkout for the same cart after it
+ * (`CHECKOUT_SUPERSEDED`, shopcart's checkout guard).
+ */
+export function isCheckoutSuperseded(err: unknown): boolean {
+  const text = describeError(err)
+  return text.includes('CHECKOUT_SUPERSEDED') || text.toLowerCase().includes('replaced by a newer')
+}
+
+/**
+ * sessionStorage key of the checkout this TAB's Kustom order belongs to, per
+ * sponsor: `{ [sponsorId]: { checkoutId, cartId, href } }`. Per tab on
+ * purpose — another tab's checkout is never resumed here.
+ */
+const KUSTOM_TAB_CHECKOUT_KEY = 'vio.kustom.checkout.v1'
+
+interface TabCheckout {
+  checkoutId: string
+  cartId: string
+  href: string
+}
+
+function readTabCheckouts(): Record<string, TabCheckout> {
+  try {
+    const parsed = JSON.parse(storageGet('session', KUSTOM_TAB_CHECKOUT_KEY) ?? '{}')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeTabCheckouts(entries: Record<string, TabCheckout>): void {
+  if (Object.keys(entries).length === 0) storageRemove('session', KUSTOM_TAB_CHECKOUT_KEY)
+  else storageSet('session', KUSTOM_TAB_CHECKOUT_KEY, JSON.stringify(entries))
+}
+
 /** sessionStorage key of the last confirmed Klarna token (a retry never confirms it twice). */
 const KLARNA_CONFIRMED_KEY = 'vio.klarna.confirmed.v1'
 /** sessionStorage key for a pending Klarna purchase (survives redirect). */
@@ -854,8 +891,18 @@ export class CheckoutManager extends EventTarget {
    * born attributed when the facade knows the attribution. `paymentMethod` is
    * the method it is created to pay with, when the caller knows it (else the
    * state's): it goes on `vio:checkout-created`.
+   *
+   * `resume.href`: the checkout this tab already has for this cart on this
+   * page is taken up again instead, while it is still open (see
+   * `resumeTabCheckout`). Kustom asks for it: a new checkout means a new
+   * Kustom order, and closing and reopening the checkout left one behind
+   * every time (QA, 2026-11-11).
    */
-  async createCheckout(sponsorId: number, paymentMethod?: PaymentMethod | string): Promise<any> {
+  async createCheckout(
+    sponsorId: number,
+    paymentMethod?: PaymentMethod | string,
+    resume?: { href: string },
+  ): Promise<any> {
     // A line changed a moment ago may still be syncing — the checkout must be
     // built on the cart that change produced, not on the one before it.
     await this.cartManager.waitForCartMutations(sponsorId)
@@ -875,6 +922,10 @@ export class CheckoutManager extends EventTarget {
       }
     }
     const opts = await this.gqlOptions(sponsorId)
+    if (resume) {
+      const resumed = await this.resumeTabCheckout(sponsorId, cartId, resume.href, opts)
+      if (resumed) return resumed
+    }
     const attribution = await this.attributionFor(sponsorId)
     const checkout = attribution
       ? await gqlCreateCheckout(cartId, opts, { attribution })
@@ -911,6 +962,74 @@ export class CheckoutManager extends EventTarget {
       }
     }
     return checkout
+  }
+
+  /**
+   * The checkout this tab kept for the sponsor's cart, taken up again: only
+   * the same cart, on the same page (the order returns there, and it is the
+   * page the checkout was attributed to), and only while Commerce still has
+   * it open — one another tab replaced, or one already paid, is never
+   * resumed. Null when there is nothing to resume; a failed read is nothing
+   * to resume either (a new checkout is created as before).
+   */
+  private async resumeTabCheckout(
+    sponsorId: number,
+    cartId: string,
+    href: string,
+    opts: CartQueryOptions,
+  ): Promise<any | null> {
+    const kept = readTabCheckouts()[String(sponsorId)]
+    if (!kept || kept.cartId !== cartId || kept.href !== href) return null
+    let checkout: any
+    try {
+      checkout = await gqlGetCheckout(kept.checkoutId, opts)
+    } catch {
+      return null
+    }
+    const open =
+      checkout?.id === kept.checkoutId &&
+      String(checkout?.status ?? '').toUpperCase() === 'ACTIVE' &&
+      checkout?.buyer_accepts_purchase_conditions !== false &&
+      checkout?.buyer_accepts_terms_conditions !== false
+    if (!open) {
+      this.forgetTabCheckout(sponsorId)
+      return null
+    }
+    this.state = {
+      ...(this.state ?? { sponsorId, subtotal: 0, currency: getGlobalCurrency() }),
+      sponsorId,
+      checkoutId: checkout.id,
+      checkout,
+    }
+    this.emit()
+    return checkout
+  }
+
+  /** The checkout this tab's Kustom order belongs to, kept to resume on the next opening. */
+  private rememberTabCheckout(sponsorId: number, kept: TabCheckout): void {
+    const entries = readTabCheckouts()
+    entries[String(sponsorId)] = kept
+    writeTabCheckouts(entries)
+  }
+
+  private forgetTabCheckout(sponsorId: number): void {
+    const entries = readTabCheckouts()
+    if (!(String(sponsorId) in entries)) return
+    delete entries[String(sponsorId)]
+    writeTabCheckouts(entries)
+  }
+
+  /**
+   * Commerce answered that the open checkout was replaced by another tab's:
+   * it is dropped here, with what this tab kept of it, so the next attempt
+   * builds a checkout of its own instead of asking again with a dead one.
+   */
+  private dropIfSuperseded(sponsorId: number, err: unknown): void {
+    if (!isCheckoutSuperseded(err)) return
+    this.forgetTabCheckout(sponsorId)
+    if (this.state?.sponsorId === sponsorId && this.state.checkoutId) {
+      this.state = { ...this.state, checkoutId: undefined, checkout: undefined }
+    }
   }
 
   /**
@@ -1578,7 +1697,11 @@ export class CheckoutManager extends EventTarget {
       // made every embedded method fail whenever IT was the one to create the
       // checkout — which is the normal path when the shopper picks the method
       // straight from the cart.
-      const checkoutRes = await this.createCheckout(spId, 'kustom')
+      //
+      // Reopened in this tab, on this page, for the same cart: the checkout
+      // it already has, while it is open — Commerce updates its Kustom order
+      // instead of leaving one behind per opening.
+      const checkoutRes = await this.createCheckout(spId, 'kustom', { href: kustomCleanHref() })
       checkoutId = checkoutRes?.id
       if (checkoutId && this.state) {
         this.state = { ...this.state, checkoutId }
@@ -1589,19 +1712,30 @@ export class CheckoutManager extends EventTarget {
     }
     // href MUST be query-less: shopcart appends ?order_id=…&payment_processor=KUSTOM
     const href = kustomCleanHref()
-    const order = await gqlCreatePaymentKustom(
-      {
-        checkoutId,
-        countryCode: getGlobalCountryCode(),
-        href,
-        email: this.state?.address?.email || undefined,
-        client: `web-sdk ${SDK_VERSION}`,
-      },
-      opts,
-    )
+    let order: KustomOrder | null
+    try {
+      order = await gqlCreatePaymentKustom(
+        {
+          checkoutId,
+          countryCode: getGlobalCountryCode(),
+          href,
+          email: this.state?.address?.email || undefined,
+          client: `web-sdk ${SDK_VERSION}`,
+        },
+        opts,
+      )
+    } catch (err) {
+      this.dropIfSuperseded(spId, err)
+      throw err
+    }
     if (!order?.html_snippet) {
       throw new Error('Kustom order creation failed: missing html_snippet')
     }
+    this.rememberTabCheckout(spId, {
+      checkoutId,
+      cartId: this.cartManager.getCart(spId)?.cartId ?? cartId,
+      href,
+    })
     // The snippet defines window._klarnaCheckout; listeners registered right
     // after it are queued until the iframe has rendered.
     this.destroyKustomListeners()
@@ -1632,6 +1766,11 @@ export class CheckoutManager extends EventTarget {
     suspendKustom()
     try {
       return await gqlSyncPaymentKustom(checkoutId, opts)
+    } catch (err) {
+      // Another tab took the cart (its checkout replaced this one): this
+      // order is dead, and Commerce no longer writes this page into theirs.
+      this.dropIfSuperseded(spId, err)
+      throw err
     } finally {
       resumeKustom()
     }

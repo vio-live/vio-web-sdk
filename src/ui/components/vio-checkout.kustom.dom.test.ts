@@ -150,6 +150,26 @@ describe('Kustom in <vio-checkout>', () => {
     expect(el.kustomMountedKey).toBe(JSON.stringify([[[1, 9, 3]], 4999]))
   })
 
+  it('another tab replaced the checkout (VIO-4707): the widget comes down, Kustom is unselected, nothing mounts by itself', async () => {
+    const mountSpy = spyMount()
+    vi.spyOn(manager, 'syncKustomOrder').mockRejectedValue(
+      new Error('This checkout was replaced by a newer one (the cart was opened in another tab or window); reload the page [CHECKOUT_SUPERSEDED]'),
+    )
+    const el = await openWithKustom()
+    expect(mountSpy).toHaveBeenCalledTimes(1)
+
+    // The cart changed — in the other tab, the one the shopper is paying in.
+    el.items = [{ productId: 1, variantId: 9, quantity: 3 }]
+    await renderCycles(el)
+
+    // Mounting again here would build a checkout for this tab and replace
+    // the other tab's, refusing the payment the shopper is making there.
+    expect(mountSpy).toHaveBeenCalledTimes(1)
+    expect(lightContainer(el)).toBeNull()
+    expect(manager.state.paymentMethod).toBeFalsy()
+    expect(shadowText(el)).toContain('Handlekurven ble endret i en annen fane')
+  })
+
   it('closing takes the widget down and disarms its listeners; reopening asks the backend again', async () => {
     const mountSpy = spyMount()
     const el = await openWithKustom()

@@ -61,6 +61,7 @@ import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { isCheckoutSuperseded } from '../../core/checkout/checkout-manager.js'
 import { isGiftOnlyCart } from '../../core/cart/discount.js'
 import {
   discountRow,
@@ -3508,6 +3509,13 @@ export class VioCheckout extends LitElement {
    * cart into the same order, resume it. Never a second order, never a
    * widget showing a total the backend will not charge (the validation
    * callback would refuse it). A failed sync takes the widget down.
+   *
+   * Refused because another tab replaced this checkout (the cart is shared
+   * between tabs; the change usually comes FROM that tab): the widget comes
+   * down and the method is unselected, so nothing mounts again by itself.
+   * Mounting again on its own would create a checkout for this tab and
+   * replace the other tab's — the one the shopper is actually paying in.
+   * Picking Kustom again here builds a checkout of this tab's own.
    */
   private syncKustomIfStale(): void {
     if (!this.kustomMountedOrderId || this.kustomMounting || this.kustomSyncing) return
@@ -3527,6 +3535,11 @@ export class VioCheckout extends LitElement {
           console.warn('[VioCheckout] Kustom sync failed:', err)
         }
         this.unmountKustom()
+        if (isCheckoutSuperseded(err)) {
+          this.paymentError = friendlyPaymentError(errorText(err), 'kustom')
+          Vio.checkout.selectPaymentMethod('' as PaymentMethod)
+          return
+        }
         this.kustomNotice = 'Bestillingen ble endret. Last inn betalingen på nytt.'
       })
       .finally(() => {

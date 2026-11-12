@@ -16,6 +16,23 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Kustom: reopening the checkout no longer leaves an order behind.** Closed and opened again in the same
+  tab, on the same page and for the same cart, the checkout takes up the checkout it already has while
+  Commerce still has it open. Commerce then updates the same Kustom order instead of creating a new one each
+  time. The tab keeps that checkout in `sessionStorage` (`vio.kustom.checkout.v1`), so it survives a reload,
+  and never takes up another tab's.
+- **Kustom with the same cart open in two tabs.** When another tab has replaced this tab's checkout, Commerce
+  refuses this tab's update (`CHECKOUT_SUPERSEDED`). The widget comes down, Kustom is unselected and
+  «Handlekurven ble endret i en annen fane…» shows; nothing mounts again by itself. Picking Kustom again
+  builds a checkout of this tab's own. Before, the stale tab wrote its page into the other tab's order, and
+  the shopper who paid there returned to the wrong article (QA, VIO-4707).
+
+### ⚠️ Upgrade notes
+- The two-tab fix needs the Commerce release where a Kustom order belongs to the checkout that asks for it
+  ([vio-shopcart-microservice#120](https://github.com/vio-live/vio-shopcart-microservice/pull/120)). With an
+  older Commerce, reopening works as above and two tabs behave as in 0.39.0.
+
 ## 0.39.0 — 2026-11-11
 
 The campaign's discount code is applied by reference — the code never reaches the page — and only on brands

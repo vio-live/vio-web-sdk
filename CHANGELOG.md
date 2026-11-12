@@ -16,6 +16,12 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **A coupon the brand changed in its shop is said on the cart.** Commerce refuses the first payment when the
+  coupon on the cart changed in the shop since it was applied (`COUPON_CHANGED`), so the shopper sees the new price
+  first. The SDK did not know that word: the cart said nothing and opened the checkout. Now the cart says «Rabatten er
+  endret av butikken. Handlekurven er oppdatert – prøv igjen.» and stays where it is (QA, 2026-11-12).
+
 ## 0.39.2 — 2026-11-12
 
 Two fixes found in QA on the day of 0.39.1: a product added while the Kustom widget is open reaches the order,

@@ -345,6 +345,22 @@ function normId(val: unknown): string {
   return String(val).trim()
 }
 
+/**
+ * The image of a backend cart line. The commerce gateway answers `image` as a
+ * LIST (`image: [{ id, url }]`); a bare string or object is read too. Before,
+ * only the object was read: a line the page never drew itself — the gift of a
+ * discount code, a line another tab added — showed no image (QA, 2026-11-12,
+ * Alan: the gift's picture in the cart stayed grey while the carousel had it).
+ */
+export function lineImageUrl(image: unknown): string {
+  const first = Array.isArray(image) ? image.find((i) => i != null) : image
+  if (typeof first === 'string') return first
+  if (first && typeof first === 'object' && typeof (first as { url?: unknown }).url === 'string') {
+    return (first as { url: string }).url
+  }
+  return ''
+}
+
 export class CartManager extends EventTarget {
   private cartsBySponsor: Map<number, SponsorCartState>
   /** In-flight CreateCart per sponsor — two quick adds must share ONE backend
@@ -858,7 +874,7 @@ export class CartManager extends EventTarget {
         brand?: string | null
         title?: string | null
         quantity: number
-        image?: string | { url?: string } | null
+        image?: string | { url?: string } | Array<string | { url?: string } | null> | null
         imageUrl?: string | null
         image_url?: string | null
         price?: {
@@ -945,11 +961,7 @@ export class CartManager extends EventTarget {
           removedBeforeSync.push(li.id)
           return []
         }
-        const urlFromBackend =
-          (typeof li.image === 'string' ? li.image : li.image?.url) ||
-          li.imageUrl ||
-          li.image_url ||
-          ''
+        const urlFromBackend = lineImageUrl(li.image) || li.imageUrl || li.image_url || ''
         // Match the backend line to a local one to preserve display fields the
         // backend may omit (image, brand, name, price).
         const matchedLocal = existingItems.find((existing) => {

@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **The gift of a discount code shows its picture in the cart.** A line the page never drew itself — the gift a
+  code adds, or a line another tab put in the cart — takes its image from Commerce, which sends it as a list; only
+  an object was read, so those lines showed a grey square (QA, 2026-11-12).
+
 ## 0.39.1 — 2026-11-12
 
 Two Kustom fixes: reopening the checkout keeps one order, and a tab whose checkout another tab replaced

@@ -1765,6 +1765,13 @@ export class CheckoutManager extends EventTarget {
     const opts = await this.gqlOptions(spId)
     suspendKustom()
     try {
+      // The order is pushed from the cart the change produced, not the one
+      // before it: a line added a moment ago may still be on its way to
+      // Commerce, and the sync reads the cart there. QA 2026-11-12: a product
+      // added under the widget reached Commerce 100 ms after the sync read
+      // the cart, and Kustom kept two lines while the page showed three. The
+      // widget stays suspended meanwhile, so nothing is paid on the old order.
+      await this.cartManager.waitForCartMutations(spId)
       return await gqlSyncPaymentKustom(checkoutId, opts)
     } catch (err) {
       // Another tab took the cart (its checkout replaced this one): this

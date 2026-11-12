@@ -16,6 +16,12 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Kustom: a product added while the widget is open reaches the order.** The update of the open Kustom order
+  now waits for the cart change still on its way to Commerce (the widget stays suspended meanwhile). Before, it
+  could read the cart a moment too early: Kustom kept the old lines and total while the page showed the new ones
+  (QA, 2026-11-12).
+
 ## 0.39.1 — 2026-11-12
 
 Two Kustom fixes: reopening the checkout keeps one order, and a tab whose checkout another tab replaced

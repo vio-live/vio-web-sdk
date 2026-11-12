@@ -75,7 +75,10 @@ export function normalizeDiscountCode(value: unknown): string | undefined {
  * - `COUPON_NOT_SUPPORTED` — it cannot be used here (a kind of coupon Vio does not take);
  * - `COUPON_MIN_AMOUNT` — the cart does not reach the amount it asks for;
  * - `COUPON_OTHER_APPLIED` — the cart already has another code: take it off first;
- * - `COUPON_UNAVAILABLE` — the brand's shop could not be asked right now.
+ * - `COUPON_UNAVAILABLE` — the brand's shop could not be asked right now;
+ * - `COUPON_CHANGED` — at payment only: the brand changed the coupon in its shop
+ *   since the cart got it. The cart keeps the code with its new terms; the
+ *   payment is refused once so the shopper sees the new price first.
  */
 export const COUPON_REASONS = [
   'COUPON_NOT_FOUND',
@@ -85,6 +88,7 @@ export const COUPON_REASONS = [
   'COUPON_MIN_AMOUNT',
   'COUPON_OTHER_APPLIED',
   'COUPON_UNAVAILABLE',
+  'COUPON_CHANGED',
 ] as const
 
 /**

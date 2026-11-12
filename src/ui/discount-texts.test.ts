@@ -25,6 +25,8 @@ describe('what the SDK says about a discount code', () => {
     expect(couponReasonText('COUPON_NOT_SUPPORTED')).toBe('Rabattkoden kan ikke brukes her.')
     expect(couponReasonText('COUPON_MIN_AMOUNT')).toBe('Handlekurven er under minstebeløpet for rabattkoden.')
     expect(couponReasonText('COUPON_OTHER_APPLIED')).toBe('Du har allerede en rabattkode. Fjern den først.')
+    expect(couponReasonText('COUPON_CHANGED')).toBe('Rabatten er endret av butikken.')
+    expect(discountPaymentText('COUPON_CHANGED')).toBe('Rabatten er endret av butikken. Handlekurven er oppdatert – prøv igjen.')
     expect(couponReasonText('COUPON_UNAVAILABLE')).toBe('Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.')
   })
 

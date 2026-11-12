@@ -192,6 +192,28 @@ describe('Vipps refuses the payment because of the discount code', () => {
     expect(opened).not.toHaveBeenCalled()
   })
 
+  it('the brand changed the coupon in its shop since it was applied (COUPON_CHANGED): said on the cart, no checkout opened', async () => {
+    // QA 2026-11-12 (Alan, #480): qa20 raised in Woo with the cart holding it.
+    // Commerce refused the first Vipps tap; the SDK did not know the word, so
+    // the cart said nothing and opened the checkout with the new price.
+    vi.spyOn(Vio.checkout, 'getVippsExpressEnabled').mockResolvedValue(true)
+    const message = 'Payment Vipps not initialize: The coupon qa20 changed in the shop; check the cart again [COUPON_CHANGED]'
+    vi.spyOn(Vio.checkout, 'startVippsExpress').mockRejectedValue(
+      Object.assign(new Error(message), { graphql: { hasData: false, errors: [{ message, extensions: { code: 'BAD_REQUEST' } }] } }),
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const el = await cart([CREAM])
+    const opened = vi.fn()
+    document.addEventListener('vio:checkout-open', opened)
+
+    tapVipps(el)
+    for (let i = 0; i < 5; i++) await settle(el)
+    document.removeEventListener('vio:checkout-open', opened)
+
+    expect(row(el, '.cart-notice')).toBe('Rabatten er endret av butikken. Handlekurven er oppdatert – prøv igjen.')
+    expect(opened).not.toHaveBeenCalled()
+  })
+
   it('a gift with two units, the same way; the next tap clears what was said', async () => {
     vi.spyOn(Vio.checkout, 'getVippsExpressEnabled').mockResolvedValue(true)
     const express = vi

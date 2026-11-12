@@ -97,6 +97,8 @@ describe('discountReasonOfError — a payment Commerce would not start', () => {
     expect(discountReasonOfError(gatewayError([{ message: 'Payment Vipps not initialize: nothing to pay [CHECKOUT_AMOUNT_ZERO]' }]))).toBe('CHECKOUT_AMOUNT_ZERO')
     expect(discountReasonOfError(new Error('[CheckoutManager] could not persist checkout details: x [COUPON_EXPIRED]'))).toBe('COUPON_EXPIRED')
     expect(discountReasonOfError('Payment Vipps not initialize: y [DISCOUNT_UNAVAILABLE]')).toBe('DISCOUNT_UNAVAILABLE')
+    // The brand changed the coupon in its shop after the cart got it (QA 2026-11-12, shopcart's own words).
+    expect(discountReasonOfError(gatewayError([{ message: 'Payment Vipps not initialize: The coupon qa20 changed in the shop; check the cart again [COUPON_CHANGED]', extensions: { code: 'BAD_REQUEST' } }]))).toBe('COUPON_CHANGED')
     expect(discountReasonOfError('Payment Klarna not initialize: z [DISCOUNT_PAYMENT_METHOD_UNSUPPORTED]')).toBe(
       'DISCOUNT_PAYMENT_METHOD_UNSUPPORTED',
     )
@@ -147,7 +149,8 @@ describe('the gifts of a code', () => {
 describe('isFinalCouponReason', () => {
   it('the refusals that do not change with the cart', () => {
     for (const reason of ['COUPON_NOT_FOUND', 'COUPON_EXPIRED', 'COUPON_USAGE_LIMIT', 'COUPON_NOT_SUPPORTED']) expect(isFinalCouponReason(reason)).toBe(true)
-    for (const reason of ['COUPON_MIN_AMOUNT', 'COUPON_OTHER_APPLIED', 'COUPON_UNAVAILABLE', 'GIFT_MAX_ONE_UNIT', undefined, 'x']) {
+    // COUPON_CHANGED keeps the code (with its new terms): not final.
+    for (const reason of ['COUPON_MIN_AMOUNT', 'COUPON_OTHER_APPLIED', 'COUPON_UNAVAILABLE', 'COUPON_CHANGED', 'GIFT_MAX_ONE_UNIT', undefined, 'x']) {
       expect(isFinalCouponReason(reason)).toBe(false)
     }
   })

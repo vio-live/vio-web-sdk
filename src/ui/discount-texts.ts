@@ -71,6 +71,7 @@ export const DISCOUNT_TEXT = {
   couponMinAmount: 'Handlekurven er under minstebeløpet for rabattkoden.',
   couponOtherApplied: 'Du har allerede en rabattkode. Fjern den først.',
   couponUnavailable: 'Vi kunne ikke sjekke rabattkoden akkurat nå. Prøv igjen.',
+  couponChanged: 'Rabatten er endret av butikken.',
   /** Any other refusal. */
   couponRefused: 'Rabattkoden kunne ikke brukes.',
 } as const
@@ -100,6 +101,8 @@ export function couponReasonText(reason: string | null | undefined): string {
       return DISCOUNT_TEXT.couponMinAmount
     case 'COUPON_OTHER_APPLIED':
       return DISCOUNT_TEXT.couponOtherApplied
+    case 'COUPON_CHANGED':
+      return DISCOUNT_TEXT.couponChanged
     case 'COUPON_UNAVAILABLE':
     case 'DISCOUNT_UNAVAILABLE':
       return DISCOUNT_TEXT.couponUnavailable

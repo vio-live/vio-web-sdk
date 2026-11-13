@@ -361,6 +361,27 @@ export function lineImageUrl(image: unknown): string {
   return ''
 }
 
+/**
+ * The same cart line: normalised product + variant ids (backend-synced lines
+ * may carry ids as strings or omit fields), with a name fallback.
+ */
+function isSameLine(
+  line: { productId?: unknown; variantId?: unknown; name?: string },
+  want: { productId?: unknown; variantId?: unknown; name?: string },
+): boolean {
+  const p1 = normId(line.productId)
+  const p2 = normId(want.productId)
+  const v1 = normId(line.variantId)
+  const v2 = normId(want.variantId)
+  if (p1 && p2 && p1 === p2 && v1 === v2) return true
+  if (v1 && v2 && v1 === v2) return true
+  if (p1 && p2 && p1 === p2 && !v1 && !v2) return true
+  const n1 = (line.name || '').trim().toLowerCase()
+  const n2 = (want.name || '').trim().toLowerCase()
+  if (n1 && n2 && n1 === n2 && v1 === v2) return true
+  return false
+}
+
 export class CartManager extends EventTarget {
   private cartsBySponsor: Map<number, SponsorCartState>
   /** In-flight CreateCart per sponsor — two quick adds must share ONE backend
@@ -1042,6 +1063,17 @@ export class CartManager extends EventTarget {
     }
   }
 
+  /**
+   * The cart's line for this product (and variant) when the cart's discount
+   * code gives it away. That line is one unit: an add of the same product
+   * changes nothing (`addManual`), so a product's page turns its «Legg i
+   * handlekurv» off and says why. `undefined` otherwise.
+   */
+  giftLineFor(sponsorId: number, productId: unknown, variantId?: unknown): CartLineItem | undefined {
+    const cart = this.cartsBySponsor.get(sponsorId)
+    return cart?.items.find((i) => isSameLine(i, { productId, variantId }) && isGiftLine(i))
+  }
+
   // MARK: - Mutations
 
   /** Add a Product DTO to a sponsor's cart. Bumps quantity if already present.
@@ -1092,19 +1124,7 @@ export class CartManager extends EventTarget {
 
     // Robust dedupe: backend-synced lines may carry ids as strings / omit
     // fields, so match on normalised product+variant ids with a name fallback.
-    const existing = cart.items.find((i) => {
-      const p1 = normId(i.productId)
-      const p2 = normId(opts.productId)
-      const v1 = normId(i.variantId)
-      const v2 = normId(opts.variantId)
-      if (p1 && p2 && p1 === p2 && v1 === v2) return true
-      if (v1 && v2 && v1 === v2) return true
-      if (p1 && p2 && p1 === p2 && !v1 && !v2) return true
-      const n1 = (i.name || '').trim().toLowerCase()
-      const n2 = (opts.name || '').trim().toLowerCase()
-      if (n1 && n2 && n1 === n2 && v1 === v2) return true
-      return false
-    })
+    const existing = cart.items.find((i) => isSameLine(i, opts))
     if (existing) {
       // A line the discount code gives away is one unit: adding it again
       // changes nothing (Commerce would refuse to be paid for two).

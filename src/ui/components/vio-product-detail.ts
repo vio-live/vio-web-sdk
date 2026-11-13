@@ -2228,8 +2228,19 @@ export class VioProductDetail extends LitElement {
     return variant?.id
   }
 
+  /**
+   * This product (the variant chosen) is the cart's gift already: the code
+   * gives one unit, and an add changes nothing. «Legg i handlekurv» is off,
+   * with a note — never a «Lagt i handlekurven» for units that were not added
+   * (QA 2026-11-12).
+   */
+  private get giftInCart(): boolean {
+    if (!this.product) return false
+    return !!Vio.cart.giftLineFor(this.sponsorId, this.product.id, this.selectedVariant()?.id)
+  }
+
   private async addToCart(): Promise<void> {
-    if (!this.product || this.availableQuantity <= 0 || this.adding) return
+    if (!this.product || this.availableQuantity <= 0 || this.adding || this.giftInCart) return
     if (!this.requireSelection()) return
     this.adding = true
     try {
@@ -3184,7 +3195,7 @@ export class VioProductDetail extends LitElement {
               part="add-to-cart"
               data-vio-cta="add_to_cart"
               @click=${this.addToCart}
-              ?disabled=${this.availableQuantity <= 0 || this.adding}
+              ?disabled=${this.availableQuantity <= 0 || this.adding || this.giftInCart}
             >
               ${this.adding
                 ? 'Legger til…'
@@ -3193,6 +3204,9 @@ export class VioProductDetail extends LitElement {
                 : 'Legg i handlekurv'}
             </button>
           </div>
+          ${this.giftInCart
+            ? html`<p class="gift-in-cart-note" part="gift-in-cart-note" role="note">${DISCOUNT_TEXT.giftInCart}</p>`
+            : nothing}
 
           ${this.availableQuantity > 0 &&
           this.methodEnabled(...NO_EXPRESS_BUTTON_METHODS)

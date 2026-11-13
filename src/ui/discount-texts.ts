@@ -28,6 +28,8 @@ export const DISCOUNT_TEXT = {
   giftMaxOne: 'Du kan bare få én gave per bestilling. Reduser antallet og prøv igjen.',
   /** On the «+» of a gift line, which does nothing. */
   giftMaxOneShort: 'Maks én gave per bestilling',
+  /** On a product's page when the product is the cart's gift already: «Legg i handlekurv» is off. */
+  giftInCart: 'Produktet er allerede med som gave. Maks én gave per bestilling.',
 
   // ── With a code on the cart, only Vipps ───────────────────────────────────
   /** Under the ways to pay that are off while a discount code is on the cart (they would charge list prices). */

@@ -60,7 +60,7 @@ import { DialogFocus } from '../dialog-focus.js'
 import { trackCtaClicks } from '../cta.js'
 import type { CtaInput } from '../../core/analytics/cta.js'
 import { BottomSheet } from '../bottom-sheet.js'
-import { errorText, friendlyPaymentError, paymentErrorText, CART_PAID_MESSAGE } from '../checkout-errors.js'
+import { errorText, friendlyPaymentError, paymentErrorText, withoutOtherMethodHint, CART_PAID_MESSAGE } from '../checkout-errors.js'
 import { isCheckoutSuperseded } from '../../core/checkout/checkout-manager.js'
 import { isGiftOnlyCart } from '../../core/cart/discount.js'
 import {
@@ -2114,6 +2114,19 @@ export class VioCheckout extends LitElement {
   private get discountOnCart(): boolean {
     const id = this.checkoutState?.sponsorId
     return !!id && (!!Vio.cart.discountCodeForSponsor(id) || Vio.cart.discountSourceForSponsor(id) === 'CAMPAIGN')
+  }
+
+  /**
+   * The payment error as shown: with a discount code on the cart and at most
+   * one way to pay on offer that takes it (Vipps), no «velg en annen
+   * betalingsmåte» — there is no other one to pick.
+   */
+  private get paymentErrorShown(): string | null {
+    const text = this.paymentError
+    if (!text || !this.discountOnCart) return text
+    const offered = Array.isArray(this.offeredMethodInfo) ? this.offeredMethodInfo : []
+    const takers = offered.filter((m) => methodTakesDiscounts(m?.name, this.offeredMethodInfo)).length
+    return takers <= 1 ? withoutOtherMethodHint(text) : text
   }
 
   /** A way to pay the cart's discount code turns off: one that does not take discounts (its `discounts` config), while a code is on. */
@@ -4455,7 +4468,7 @@ export class VioCheckout extends LitElement {
           ? html`<div class="payment-notice">${this.paymentNotice}</div>`
           : ''}
         ${this.paymentError
-          ? html`<div class="payment-error">${this.paymentError}</div>`
+          ? html`<div class="payment-error">${this.paymentErrorShown}</div>`
           : ''}
       </section>
     `
@@ -4847,7 +4860,7 @@ export class VioCheckout extends LitElement {
               ? html`<div class="payment-notice">${this.paymentNotice}</div>`
               : ''}
             ${this.paymentError
-              ? html`<div class="payment-error">${this.paymentError}</div>`
+              ? html`<div class="payment-error">${this.paymentErrorShown}</div>`
               : ''}
           </section>
 

@@ -34,6 +34,16 @@ export const CART_PAID_MESSAGE = 'Denne handlekurven er allerede betalt. Start e
 export const PAYMENT_START_FAILED_MESSAGE =
   'Betalingen kunne ikke startes. Prøv igjen, eller velg en annen betalingsmåte.'
 
+/**
+ * A payment error without «…, eller velg en annen betalingsmåte»: for a cart
+ * only one way to pay can take — a discount code, which only Vipps takes.
+ * QA 2026-11-12: a refused Vipps payment told the shopper to pick another
+ * method while every other button was off. Every other text is unchanged.
+ */
+export function withoutOtherMethodHint(text: string): string {
+  return String(text ?? '').replace(/,\s*eller velg en annen betalingsmåte\./g, '.')
+}
+
 /** The one backend message that is already written for the shopper. */
 const SHIPS_APART = 'kan ikke sendes sammen'
 

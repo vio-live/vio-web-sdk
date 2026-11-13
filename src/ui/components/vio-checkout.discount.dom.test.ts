@@ -417,3 +417,41 @@ describe('which ways to pay take a discount: each method\'s own config', () => {
     })
   })
 })
+
+describe('a payment that could not start, with a code on the cart (QA 2026-11-12)', () => {
+  async function payAndBreak() {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.spyOn(manager, 'updateShippingsBySupplier').mockResolvedValue({ cart_id: 'cart-1' })
+    vi.spyOn(manager, 'startVippsPayment').mockRejectedValue(new Error('Payment Vipps not initialize: 503 Service Unavailable'))
+    const el = await openWithVipps()
+    el.form = { firstName: 'Kari', lastName: 'Nordmann', email: 'kari@example.no', phone: '91234567', address: 'Storgata 1', postalCode: '0155', city: 'Oslo' }
+    await cycles(el)
+    await el.onPay('vipps')
+    await cycles(el)
+    return el
+  }
+  const shown = (el: HTMLElement) => text(el.shadowRoot!.querySelector('.payment-error'))
+
+  it('only Vipps takes the code: «prøv igjen», never «velg en annen betalingsmåte»', async () => {
+    const el = await payAndBreak()
+    expect(shown(el)).toBe('Betalingen kunne ikke startes. Prøv igjen.')
+  })
+
+  it('another way to pay on offer takes discounts too: the hint stays', async () => {
+    vi.spyOn(manager, 'getAvailablePaymentMethods').mockResolvedValue([
+      { name: 'Vipps' },
+      { name: 'Stripe', config: [{ name: 'discounts', value: true }] },
+    ])
+    const el = await payAndBreak()
+    expect(shown(el)).toBe('Betalingen kunne ikke startes. Prøv igjen, eller velg en annen betalingsmåte.')
+  })
+
+  it('no code on the cart: the hint stays, as before', async () => {
+    vi.mocked(Vio.cart.discountCodeForSponsor).mockReturnValue(undefined as any)
+    vi.spyOn(Vio.cart, 'discountSourceForSponsor').mockReturnValue(undefined as any)
+    state = { subtotal: 401 }
+    items = [CREAM, { ...MASK, discount: undefined }]
+    const el = await payAndBreak()
+    expect(shown(el)).toBe('Betalingen kunne ikke startes. Prøv igjen, eller velg en annen betalingsmåte.')
+  })
+})

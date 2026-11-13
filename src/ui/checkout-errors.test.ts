@@ -7,6 +7,7 @@ import {
   errorText,
   friendlyPaymentError,
   paymentErrorText,
+  withoutOtherMethodHint,
 } from './checkout-errors.js'
 
 /** The two messages a QA tester saw on screen, as they came (2026-10-09). */
@@ -97,5 +98,20 @@ describe('a payment refused because of the cart\'s discount code', () => {
     expect(paymentErrorText(new Error(STRIPE_UNDEFINED_ID), 'stripe')).toBe(PAYMENT_START_FAILED_MESSAGE)
     expect(paymentErrorText('boom', 'vipps')).toBe(PAYMENT_START_FAILED_MESSAGE)
     expect(paymentErrorText(refused('INTERNAL_SERVER_ERROR', 'Payment Vipps not initialize: 503'), 'vipps')).toBe(PAYMENT_START_FAILED_MESSAGE)
+  })
+})
+
+describe('withoutOtherMethodHint — a cart only Vipps can pay (discount code)', () => {
+  it('drops «…, eller velg en annen betalingsmåte» and keeps the rest of the sentence', () => {
+    expect(withoutOtherMethodHint(PAYMENT_START_FAILED_MESSAGE)).toBe('Betalingen kunne ikke startes. Prøv igjen.')
+    expect(withoutOtherMethodHint('Betalingen ble ikke gjennomført. Prøv igjen, eller velg en annen betalingsmåte.')).toBe(
+      'Betalingen ble ikke gjennomført. Prøv igjen.',
+    )
+  })
+
+  it('leaves every other text as it was', () => {
+    for (const text of [EMPTY_CART_MESSAGE, CART_CHANGED_MESSAGE, CART_PAID_MESSAGE, 'Rabatten er endret av butikken.', '']) {
+      expect(withoutOtherMethodHint(text)).toBe(text)
+    }
   })
 })

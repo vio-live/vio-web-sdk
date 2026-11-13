@@ -127,7 +127,8 @@ export const vippsOnlyStyles = css`
     cursor: not-allowed !important;
     filter: grayscale(1);
   }
-  .vipps-only-note {
+  .vipps-only-note,
+  .gift-in-cart-note {
     margin: 8px 0;
     font-size: 13px;
     line-height: 1.35;

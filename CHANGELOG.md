@@ -16,6 +16,19 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.39.4 — 2026-11-13
+
+The cart's gift is not added again from the product page, and a refused payment with a discount code no longer
+suggests another way to pay.
+
+### Fixed
+- **The cart's gift is not added again.** A product the discount code gives away is one unit, and adding it again
+  already changed nothing in the cart — but the product page still said «Lagt i handlekurven» and sent
+  `vio:added-to-cart`. While the product is the gift, «Legg i handlekurv» is off, with «Produktet er allerede med som
+  gave. Maks én gave per bestilling.» (`CartManager.giftLineFor`).
+- **No «velg en annen betalingsmåte» when only Vipps can pay.** With a discount code on the cart and at most one
+  offered way to pay that takes discounts, a payment error says «Prøv igjen.» only.
+
 ## 0.39.3 — 2026-11-12
 
 A coupon the brand changed in its shop after it was applied is said on the cart.

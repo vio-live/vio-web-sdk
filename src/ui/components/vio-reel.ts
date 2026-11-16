@@ -25,6 +25,12 @@
  *   - only declarative config: the `theme` tokens are applied as `--vio-*`
  *     custom properties on the element, nothing else executes.
  *
+ * Analytics (ADR-0043): the reel's impression, a `view_item_list` per video
+ * and the product clicks carry the experience and the video; what the reader
+ * does with each video — start, 25/50/75 %, end, seconds watched, sound on —
+ * goes out as the `video_*` events (./reel-tracker.ts). The seconds still
+ * owed are reported before the analytics flushes on a hidden page.
+ *
  * Preview for editors: set the `experience` PROPERTY (the same JSON the API
  * answers, e.g. the draft resolved by `?preview=draft`) and nothing is fetched.
  */
@@ -32,6 +38,7 @@
 import { LitElement, css, html, nothing } from 'lit'
 import { property, state } from 'lit/decorators.js'
 import { Vio } from '../../core/client.js'
+import { ReelTracker, type ReelEventFields, type ReelVideoEvent, type ReelVideoRef } from './reel-tracker.js'
 import type { AnalyticsCommerce } from '../../core/analytics/analytics-manager.js'
 import {
   cueProductAt,
@@ -98,6 +105,16 @@ export class VioReel extends LitElement {
   private observer: IntersectionObserver | null = null
   private unobserveImpression: (() => void) | null = null
   private listTracked = new Set<string>()
+  /** The video events of the experience on screen (null before it is ready). */
+  private tracker: ReelTracker | null = null
+  /** The next `play` of the active video comes from `activate` (autoplay), not from a tap. */
+  private autoplayIntent = false
+  /* Before the analytics manager's own listeners (which flush by beacon): a
+     capture listener on window runs first for both events. */
+  private readonly onPageHidden = (ev: Event) => {
+    if (ev.type === 'visibilitychange' && document.visibilityState !== 'hidden') return
+    this.tracker?.flush()
+  }
   private loadToken = 0
   private readonly onFullscreenChange = () => {
     this.fullscreen = typeof document !== 'undefined' && document.fullscreenElement === this
@@ -195,6 +212,10 @@ export class VioReel extends LitElement {
     super.connectedCallback()
     this.slotRegistration.connect(this.slotAttributes())
     if (typeof document !== 'undefined') document.addEventListener('fullscreenchange', this.onFullscreenChange)
+    if (typeof window !== 'undefined') {
+      window.addEventListener('visibilitychange', this.onPageHidden, { capture: true })
+      window.addEventListener('pagehide', this.onPageHidden, { capture: true })
+    }
     void this.load()
   }
 
@@ -202,6 +223,10 @@ export class VioReel extends LitElement {
     super.disconnectedCallback()
     this.loadToken++
     this.teardownPlayback()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('visibilitychange', this.onPageHidden, { capture: true })
+      window.removeEventListener('pagehide', this.onPageHidden, { capture: true })
+    }
     this.unobserveImpression?.()
     this.unobserveImpression = null
     this.slotRegistration.clear()
@@ -233,6 +258,7 @@ export class VioReel extends LitElement {
     const token = ++this.loadToken
     this.loadedFor = this.loadKey()
     this.teardownPlayback()
+    this.tracker = null
     this.doc = null
     this.products = new Map()
 
@@ -285,6 +311,7 @@ export class VioReel extends LitElement {
     if (token !== this.loadToken) return
     this.products = products
     this.active = 0
+    this.tracker = new ReelTracker((name, video, fields) => this.trackVideo(name, video, fields))
     this.status = 'ready'
     this.observeForAnalytics()
   }
@@ -417,6 +444,7 @@ export class VioReel extends LitElement {
   }
 
   private teardownPlayback(): void {
+    this.tracker?.flush()
     this.observer?.disconnect()
     this.observer = null
     this.feedEl?.removeEventListener('scroll', this.onFeedScroll)
@@ -433,6 +461,8 @@ export class VioReel extends LitElement {
     // Unconditional: pausing a paused video is free, and `paused` lies in some environments.
     for (const v of this.videoEls) v.pause?.()
     this.playing = false
+    // The reel left the screen: what the active video played is reported now.
+    this.tracker?.flush()
   }
 
   /** Make `index` THE video: wire it and the next one, play it, pause the rest, unload the far ones. */
@@ -442,6 +472,10 @@ export class VioReel extends LitElement {
     if (!doc || !videos[index]) return
     this.activatedOnce = true
     const sameVideo = this.active === index && this.attached.has(index)
+    if (this.active !== index) {
+      const previous = this.videoRef(this.active)
+      if (previous) this.tracker?.pause(previous)
+    }
     this.active = index
     if (!sameVideo) this.progress = 0
     this.cueProductId = cueProductAt(doc.videos[index]!.cues, 0)
@@ -463,7 +497,10 @@ export class VioReel extends LitElement {
     if (this.active !== index) return
     const video = videos[index]!
     video.muted = this.muted
-    if (!this.noAutoplay && this.visible && video.paused) this.tryPlay(video)
+    if (!this.noAutoplay && this.visible && video.paused) {
+      this.autoplayIntent = true
+      this.tryPlay(video)
+    }
     if (this.visible) this.trackVideoList(index)
   }
 
@@ -503,8 +540,10 @@ export class VioReel extends LitElement {
   private togglePlay(): void {
     const video = this.videoEls[this.active]
     if (!video) return
-    if (video.paused) this.tryPlay(video)
-    else {
+    if (video.paused) {
+      this.autoplayIntent = false
+      this.tryPlay(video)
+    } else {
       video.pause()
       this.playing = false
     }
@@ -513,6 +552,28 @@ export class VioReel extends LitElement {
   private toggleMute(): void {
     this.muted = !this.muted
     for (const v of this.videoEls) v.muted = this.muted
+    const current = this.videoRef(this.active)
+    if (!this.muted && current) this.tracker?.unmute(current)
+  }
+
+  /** The id and position of the video at `index`, or null. */
+  private videoRef(index: number): ReelVideoRef | null {
+    const video = this.doc?.videos[index]
+    return video ? { id: video.id, index } : null
+  }
+
+  private onPlay(index: number): void {
+    if (index !== this.active) return
+    this.playing = true
+    const ref = this.videoRef(index)
+    if (ref) this.tracker?.play(ref, { autoplay: this.autoplayIntent })
+    this.autoplayIntent = false
+  }
+
+  private onPause(index: number): void {
+    if (index === this.active) this.playing = false
+    const ref = this.videoRef(index)
+    if (ref) this.tracker?.pause(ref)
   }
 
   private toggleFullscreen(): void {
@@ -534,6 +595,8 @@ export class VioReel extends LitElement {
     const video = ev.currentTarget as HTMLVideoElement
     const d = video.duration
     this.progress = Number.isFinite(d) && d > 0 ? Math.min(100, (video.currentTime / d) * 100) : 0
+    const ref = this.videoRef(index)
+    if (ref) this.tracker?.time(ref, video.currentTime, d)
     const cue = cueProductAt(this.doc.videos[index]!.cues, video.currentTime)
     if (cue !== this.cueProductId) {
       this.cueProductId = cue
@@ -569,6 +632,7 @@ export class VioReel extends LitElement {
           campaignId: doc.campaignId,
           experienceId: doc.id,
           videoId: video.id,
+          videoIndex: doc.videos.indexOf(video),
           revision: doc.revision,
         },
       }),
@@ -620,7 +684,7 @@ export class VioReel extends LitElement {
     const doc = this.doc
     if (!doc || this.unobserveImpression || !this.isConnected) return
     try {
-      this.unobserveImpression = Vio.analytics.observeImpression(this, this.attribution(doc), {
+      this.unobserveImpression = Vio.analytics.observeImpression(this, { ...this.attribution(doc), ...this.experienceContext(doc) }, {
         key: `reel:${this.effectiveSlot || doc.id}`,
         commerce: () => this.commerceOf(doc.videos),
         props: { experience_id: doc.id, revision: doc.revision, videos: doc.videos.length },
@@ -637,9 +701,31 @@ export class VioReel extends LitElement {
     if (!doc || !video || this.listTracked.has(video.id) || !video.products.length) return
     this.listTracked.add(video.id)
     this.trackSafe('view_item_list', {
-      context: this.attribution(doc),
+      context: { ...this.attribution(doc), ...this.experienceContext(doc), videoId: video.id, videoIndex: index },
       commerce: this.commerceOf([video]) ?? undefined,
       props: { experience_id: doc.id, video_id: video.id, revision: doc.revision, list_name: video.title ?? doc.title },
+    })
+  }
+
+  /** The experience and the revision the reader got (ADR-0043). */
+  private experienceContext(doc: Experience): { experienceId: number; experienceRevision?: number } {
+    return { experienceId: doc.id, ...(doc.revision !== null ? { experienceRevision: doc.revision } : {}) }
+  }
+
+  /** One `video_*` event of the experience on screen (./reel-tracker.ts). */
+  private trackVideo(name: ReelVideoEvent, video: ReelVideoRef, fields: ReelEventFields): void {
+    const doc = this.doc
+    if (!doc) return
+    this.trackSafe(name, {
+      context: {
+        ...this.attribution(doc),
+        ...this.experienceContext(doc),
+        videoId: video.id,
+        videoIndex: video.index,
+        ...(fields.videoPercent !== undefined ? { videoPercent: fields.videoPercent } : {}),
+        ...(fields.watchSeconds !== undefined ? { watchSeconds: fields.watchSeconds } : {}),
+      },
+      ...(fields.autoplay !== undefined ? { props: { autoplay: fields.autoplay } } : {}),
     })
   }
 
@@ -693,8 +779,8 @@ export class VioReel extends LitElement {
           preload=${i === 0 ? 'auto' : 'metadata'}
           poster=${video.media.posterUrl ?? ''}
           @timeupdate=${(ev: Event) => this.onTimeUpdate(i, ev)}
-          @play=${() => isActive && (this.playing = true)}
-          @pause=${() => isActive && (this.playing = false)}
+          @play=${() => this.onPlay(i)}
+          @pause=${() => this.onPause(i)}
           aria-hidden=${isActive ? 'false' : 'true'}
         ></video>
         <div class="shade"></div>

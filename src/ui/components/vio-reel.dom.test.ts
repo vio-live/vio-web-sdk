@@ -368,3 +368,100 @@ describe('vio-reel — what it refuses and what it keeps', () => {
     expect(cards(el)[0]!.textContent?.trim()).toBe('')
   })
 })
+
+describe('vio-reel — video analytics (ADR-0043)', () => {
+  // The auto listeners (select_item from vio:product-click) and the hide flush live in the started manager.
+  beforeEach(() => Vio.analytics.start({ host: 'replit' }))
+  afterEach(() => Vio.analytics.stop())
+
+  async function playing(props: Record<string, unknown> = {}) {
+    const el = await mountReel(props)
+    FakeIntersectionObserver.instances.filter((o) => o.observed.includes(el)).forEach((o) => o.show(1))
+    for (let i = 0; i < 3; i++) await settle(el)
+    const video = root(el).querySelectorAll('video')[0]!
+    const at = (t: number, duration = 12) => {
+      Object.defineProperty(video, 'currentTime', { configurable: true, value: t })
+      Object.defineProperty(video, 'duration', { configurable: true, value: duration })
+      video.dispatchEvent(new Event('timeupdate'))
+    }
+    return { el, video, at }
+  }
+  const named = (name: string) => events.filter((e) => e.name === name)
+
+  it('start (autoplay), 25 %, and the seconds watched on pause — with the experience, revision, video and position', async () => {
+    const { video, at } = await playing({ vioSlot: 'reel-v' })
+    video.dispatchEvent(new Event('play'))
+    for (let t = 0; t <= 3.5; t += 0.5) at(t)
+    video.dispatchEvent(new Event('pause'))
+    const start = named('video_start')
+    expect(start).toHaveLength(1)
+    expect(start[0]!.context).toMatchObject({
+      experience_id: 7,
+      experience_revision: 3,
+      video_id: 'influencer',
+      video_index: 0,
+      sponsor_id: 1338,
+      location_id: 'reel-v',
+      component_template_id: 'reel',
+    })
+    expect(start[0]!.props).toEqual({ autoplay: true })
+    expect(named('video_progress').map((e) => e.context.video_percent)).toEqual([25])
+    expect(named('video_watch').map((e) => e.context.watch_seconds)).toEqual([3.5])
+  })
+
+  it('a tap on a paused video starts it as not autoplay; sound on is a video_unmute of the video on screen', async () => {
+    const { el, video } = await playing({ noAutoplay: true })
+    ;(root(el).querySelector('.item[data-index="0"] .tap') as HTMLButtonElement).click()
+    video.dispatchEvent(new Event('play'))
+    expect(named('video_start')[0]!.props).toEqual({ autoplay: false })
+    ;(root(el).querySelector('.item[data-index="0"] .controls .ctrl') as HTMLButtonElement).click()
+    expect(named('video_unmute').map((e) => e.context.video_id)).toEqual(['influencer'])
+  })
+
+  it('the list, the impression and the product click carry the experience (and the click, the video)', async () => {
+    const { el } = await playing()
+    expect(named('view_item_list')[0]!.context).toMatchObject({ experience_id: 7, experience_revision: 3, video_id: 'influencer', video_index: 0 })
+    cards(el)[1]!.click()
+    const click = named('select_item')
+    expect(click).toHaveLength(1)
+    expect(click[0]!.context).toMatchObject({ experience_id: 7, experience_revision: 3, video_id: 'influencer', video_index: 0 })
+    expect(click[0]!.commerce.items.map((i: any) => i.product_id)).toEqual(['416053'])
+  })
+
+  it('swiping reports what the previous video played; the page hiding sends the rest before the analytics beacon', async () => {
+    const { el, video, at } = await playing()
+    video.dispatchEvent(new Event('play'))
+    for (let t = 0; t <= 2; t += 0.5) at(t)
+    await (el as any).activate(1)
+    for (let i = 0; i < 3; i++) await settle(el)
+    expect(named('video_watch').map((e) => [e.context.video_id, e.context.watch_seconds])).toEqual([['influencer', 2]])
+
+    const second = root(el).querySelectorAll('video')[1]!
+    second.dispatchEvent(new Event('play'))
+    for (let t = 0; t <= 1.5; t += 0.5) {
+      Object.defineProperty(second, 'currentTime', { configurable: true, value: t })
+      Object.defineProperty(second, 'duration', { configurable: true, value: 6 })
+      second.dispatchEvent(new Event('timeupdate'))
+    }
+    const beacon = vi.fn(() => true)
+    Object.defineProperty(navigator, 'sendBeacon', { configurable: true, value: beacon })
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange', { bubbles: true }))
+    expect(named('video_watch').map((e) => [e.context.video_id, e.context.watch_seconds])).toEqual([
+      ['influencer', 2],
+      ['spray', 1.5],
+    ])
+    // the beacon the analytics manager sent on hiding already carries it
+    const sent = (beacon.mock.calls as unknown as Array<[string, Blob]>).map(([, body]) => body)
+    // jsdom's Blob has no text(): a FileReader reads it
+    const read = (b: Blob) =>
+      new Promise<string>((resolve) => {
+        const r = new FileReader()
+        r.onload = () => resolve(String(r.result))
+        r.readAsText(b)
+      })
+    const texts = await Promise.all(sent.map(read))
+    expect(texts.some((t) => t.includes('"watch_seconds":1.5'))).toBe(true)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+  })
+})

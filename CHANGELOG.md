@@ -16,6 +16,19 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **Video analytics of the reel (ADR-0043).** `<vio-reel>` reports what the reader does with each video:
+  `video_start` (with `props.autoplay`), `video_progress` at 25/50/75 %, `video_complete`, `video_watch` (seconds
+  played, on pause, swipe, leaving the screen, the page hiding and every 30 s) and `video_unmute`. The reel's
+  impression, list and product clicks carry `experience_id` / `experience_revision`, and the list and the click
+  also `video_id` / `video_index`. New `AnalyticsContext` fields `experienceId`, `experienceRevision`, `videoId`,
+  `videoIndex`, `videoPercent`, `watchSeconds` for a host's own player
+  ([README «Shoppable reel analytics»](README.md#shoppable-reel-analytics--the-video-events)).
+
+### ⚠️ Upgrade notes
+- The collector must know the video events before a page sends them (vio-analytics with ADR-0043); an older
+  collector rejects them one by one and keeps the rest of the batch.
+
 ## 0.39.4 — 2026-11-13
 
 The cart's gift is not added again from the product page, and a refused payment with a discount code no longer

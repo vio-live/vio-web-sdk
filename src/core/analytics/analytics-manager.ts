@@ -83,6 +83,12 @@ export const ANALYTICS_EVENT_NAMES = [
   'contest_impression',
   // which button a shopper tapped (see ./cta.ts, README «Button tracking»)
   'cta_click',
+  // what the reader did with each video of a shoppable reel (ADR-0043, ../../ui/components/reel-tracker.ts)
+  'video_start',
+  'video_progress',
+  'video_complete',
+  'video_watch',
+  'video_unmute',
   // session
   'session_start',
   'session_end',
@@ -141,6 +147,20 @@ export interface AnalyticsContext {
   optionValue?: string
   productId?: string
   productVariantId?: string
+  /**
+   * Shoppable reel (ADR-0043): the experience and its published revision,
+   * the video (`video_id`, its 0-based `video_index` in the reel), the mark a
+   * `video_progress` / `video_complete` reached (25 | 50 | 75 | 100) and the
+   * seconds a `video_watch` reports. On the video events and on the reel's
+   * impression, list and product click. `<vio-reel>` fills them; a host's own
+   * player sends the same (README «Shoppable reel»).
+   */
+  experienceId?: number
+  experienceRevision?: number
+  videoId?: string
+  videoIndex?: number
+  videoPercent?: number
+  watchSeconds?: number
   /**
    * The slot (ADR-0027) the component sits in — its `vio-slot`. Attribution
    * follows it: the event's `campaign_id` is the campaign assigned to the slot
@@ -732,6 +752,13 @@ export class AnalyticsManager extends EventTarget {
       option_value: this.options.privateContent ? undefined : ctx.optionValue,
       product_id: ctx.productId,
       product_variant_id: ctx.productVariantId,
+      // Shoppable reel (ADR-0043): ids and numbers, nothing personal.
+      experience_id: ctx.experienceId,
+      experience_revision: ctx.experienceRevision,
+      video_id: ctx.videoId,
+      video_index: ctx.videoIndex,
+      video_percent: ctx.videoPercent,
+      watch_seconds: ctx.watchSeconds,
     })
 
     const com = opts.commerce
@@ -1009,11 +1036,23 @@ export class AnalyticsManager extends EventTarget {
         contentId?: string | number
         contentTitle?: string
         componentTemplateId?: string
+        experienceId?: number
+        revision?: number | null
+        videoId?: string
+        videoIndex?: number
       }>).detail ?? {}
       if (d.productId === undefined) return
       const price = Number(d.price)
       this.track('select_item', {
-        context: { sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined, campaignId: campaignOf(d), slot: slotOf(d), componentTemplateId: templateOf(d), ...contentOf(d) },
+        context: {
+          sponsorId: d.sponsorId !== undefined ? Number(d.sponsorId) : undefined,
+          campaignId: campaignOf(d),
+          slot: slotOf(d),
+          componentTemplateId: templateOf(d),
+          ...contentOf(d),
+          // A product card of a reel's video (ADR-0043): which experience and video.
+          ...reelOf(d),
+        },
         commerce: {
           items: [
             {
@@ -1680,6 +1719,22 @@ function slotOf(detail: { slot?: unknown }): string | undefined {
 function templateOf(detail: { componentTemplateId?: unknown }): string | undefined {
   const value = typeof detail.componentTemplateId === 'string' ? detail.componentTemplateId.trim() : ''
   return fitsId(value || undefined)
+}
+
+/** The reel fields a `vio:product-click` of a reel's card carries (ADR-0043); only the valid ones. */
+function reelOf(detail: {
+  experienceId?: unknown
+  revision?: unknown
+  videoId?: unknown
+  videoIndex?: unknown
+}): Pick<AnalyticsContext, 'experienceId' | 'experienceRevision' | 'videoId' | 'videoIndex'> {
+  const out: Pick<AnalyticsContext, 'experienceId' | 'experienceRevision' | 'videoId' | 'videoIndex'> = {}
+  const int = (v: unknown) => (typeof v === 'number' && Number.isInteger(v) ? v : Number.NaN)
+  if (int(detail.experienceId) > 0) out.experienceId = detail.experienceId as number
+  if (int(detail.revision) >= 0) out.experienceRevision = detail.revision as number
+  if (typeof detail.videoId === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(detail.videoId)) out.videoId = detail.videoId
+  if (int(detail.videoIndex) >= 0 && (detail.videoIndex as number) <= 255) out.videoIndex = detail.videoIndex as number
+  return out
 }
 
 /** The per-element content override a `vio:*` event detail carries (`vio-content-id` / `vio-content-title`). */

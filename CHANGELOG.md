@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **«Kjøp nå» on the page of the cart's gift.** With the product already in the cart as the gift, the Vipps note
+  counted it once more («Betaler hele handlekurven · 3 varer · 2 625 Kr» for a cart of 2 lines and 1 260 kr). Now
+  the note shows the cart as it is, and a «Kjøp nå» from that page adds nothing: it pays the cart as it is (#162).
+
 ## 0.40.0 — 2026-11-16
 
 The reel reports what readers do with each video, so the dashboard can show views, watch time, retention and

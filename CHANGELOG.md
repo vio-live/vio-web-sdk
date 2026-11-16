@@ -16,6 +16,11 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.40.0 — 2026-11-16
+
+The reel reports what readers do with each video, so the dashboard can show views, watch time, retention and
+product clicks per video. Also brings the fixes of 0.39.4, which was never published to npm.
+
 ### Added
 - **Video analytics of the reel (ADR-0043).** `<vio-reel>` reports what the reader does with each video:
   `video_start` (with `props.autoplay`), `video_progress` at 25/50/75 %, `video_complete`, `video_watch` (seconds
@@ -30,6 +35,8 @@ and *when*, and links there.
   collector rejects them one by one and keeps the rest of the batch.
 
 ## 0.39.4 — 2026-11-13
+
+> Prepared but **never published to npm**; these fixes ship in 0.40.0.
 
 The cart's gift is not added again from the product page, and a refused payment with a discount code no longer
 suggests another way to pay.

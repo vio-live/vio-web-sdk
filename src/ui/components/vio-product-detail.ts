@@ -2208,6 +2208,9 @@ export class VioProductDetail extends LitElement {
   private addCurrentToCart(): number | undefined {
     if (!this.product) return undefined
     const variant = this.selectedVariant()
+    // The cart's gift already: nothing to add (the code gives one unit). Every
+    // «Kjøp nå» then pays the cart as it is (QA 2026-11-16).
+    if (this.giftInCart) return variant?.id
     // The brand's display name by the one rule (config and campaigns[] sponsors).
     const sponsorName = resolveSponsorIdentity(this.sponsorId)?.name || undefined
     // Where these units come from: the campaign the place showed, the place,
@@ -2481,9 +2484,13 @@ export class VioProductDetail extends LitElement {
     const cart = Vio.cart.getCart(this.sponsorId)
     const items = cart?.items ?? []
     if (items.length === 0) return null
-    const units = items.reduce((n, i) => n + (Number(i.quantity) || 0), 0) + this.quantity
+    // This product is added — unless it is the cart's gift already, which adds
+    // nothing (QA 2026-11-16: the gift's page said «3 varer · 2 625 Kr» for a
+    // cart of 2 and 1 260).
+    const adds = this.giftInCart ? 0 : this.quantity
+    const units = items.reduce((n, i) => n + (Number(i.quantity) || 0), 0) + adds
     // The cart's lines as they are paid for (a discount code counted) plus this product at its price.
-    const total = cartNetTotal(items) + this.unitPrice * this.quantity
+    const total = cartNetTotal(items) + this.unitPrice * adds
     return { units, total, currency: cart?.currency || this.currency }
   }
 

@@ -156,6 +156,63 @@ describe('vio-product-detail — the product is the cart\'s gift already', () =>
   })
 })
 
+describe('vio-product-detail — «Kjøp nå» on the gift\'s own page (QA 2026-11-16)', () => {
+  beforeEach(() => {
+    storage.clear()
+    Vio.cart.clearAllCarts()
+    resetFailedLogos()
+    facade().cachedBootstrap = BOOT
+    const proto = VioProductDetail.prototype as unknown as Record<string, unknown>
+    for (const m of ['loadAvailablePaymentMethods', 'loadVippsButton']) {
+      if (typeof proto[m] === 'function') vi.spyOn(proto as never, m as never).mockResolvedValue(undefined as never)
+    }
+    vi.spyOn(Vio.checkout, 'prepareApplePayFor').mockResolvedValue({ available: false, show: async () => {} } as never)
+    vi.spyOn(Vio.checkout, 'getVippsExpressEnabled').mockResolvedValue(true)
+    vi.spyOn(Vio, 'commerceFor').mockReturnValue({
+      channel: {
+        product: {
+          getByIds: vi.fn().mockResolvedValue([product]),
+          getSellerCompany: vi.fn().mockResolvedValue('Careless AS'),
+        },
+      },
+    } as never)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  })
+  afterEach(async () => {
+    await Vio.cart.waitForCartMutations(SPONSOR)
+    unmountAll()
+    Vio.cart.clearAllCarts()
+    facade().cachedBootstrap = null
+    vi.restoreAllMocks()
+  })
+
+  type Detail = HTMLElement & { wholeCartToPay: () => { units: number; total: number } | null; addCurrentToCart: () => unknown }
+
+  it('what Vipps pays is the cart as it is: the gift is not counted a second time', async () => {
+    seedGift()
+    const el = (await openDetail()) as unknown as Detail
+    // The cart: the gift (899, all of it discounted) and a paid 1 299.
+    expect(el.wholeCartToPay()).toMatchObject({ units: 2, total: 1299 })
+  })
+
+  it('a «Kjøp nå» adds nothing to the cart', async () => {
+    seedGift()
+    const el = (await openDetail()) as unknown as Detail
+    const add = vi.spyOn(Vio.cart, 'addProduct')
+    el.addCurrentToCart()
+    expect(add).not.toHaveBeenCalled()
+  })
+
+  it('another product: counted and added as always', async () => {
+    seedGift(55)
+    const el = (await openDetail()) as unknown as Detail
+    expect(el.wholeCartToPay()).toMatchObject({ units: 3, total: 1299 + 899 })
+    const add = vi.spyOn(Vio.cart, 'addProduct')
+    el.addCurrentToCart()
+    expect(add).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('CartManager.giftLineFor', () => {
   afterEach(() => Vio.cart.clearAllCarts())
 

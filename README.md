@@ -736,11 +736,47 @@ Rules it keeps, so a page published once never needs republishing:
   `hls.js` (pinned, `HLS_JS_URL`) is loaded once from the CDN, **only when a
   reel is on the page** — the bundle does not grow without one. A plain file
   (`url` media) goes straight into `<video src>`.
-- **Analytics.** `component_impression` (products shown as `commerce.items`,
-  `props.experience_id` / `revision`), `view_item_list` per video when it
-  becomes the one on screen (`props.video_id`), and the usual `select_item`,
-  `add_to_cart`… from the detail. `Vio.analytics.setInternal(true)` applies as
-  everywhere.
+- **Analytics.** `component_impression` (products shown as `commerce.items`),
+  `view_item_list` per video when it becomes the one on screen, and the usual
+  `select_item`, `add_to_cart`… from the detail. All of them carry
+  `context.experience_id` and `experience_revision`; the list and the product
+  click also `video_id` and `video_index`. What the reader does with each
+  video goes out as the **video events** below. `Vio.analytics.setInternal(true)`
+  applies as everywhere.
+
+### Shoppable reel analytics — the video events
+
+What the reader did with each video
+([ADR-0043](https://github.com/vio-live/vio-handbook/blob/main/docs/decisions/0043-analitica-del-reel.md)):
+`<vio-reel>` sends them by itself. **A host with its own player (Replit)
+sends the same events with the same rules** through `Vio.analytics.track`, and
+the dashboard reads both alike:
+
+| Event | When | Once per |
+|---|---|---|
+| `video_start` | first play of the video (`props.autoplay`: true when it started by itself, false after a tap) | page view × video |
+| `video_progress` | 25 / 50 / 75 % of its length reached (`context.videoPercent`) | page view × video × mark |
+| `video_complete` | its end reached the first time (a loop wrapping from the last tenth to the first counts); `videoPercent: 100` | page view × video |
+| `video_watch` | seconds actually played since the last report (`context.watchSeconds`): the advance of `currentTime`, a jump of more than 2.5 s is a seek and does not count. Sent on pause, when another video takes over, when the reel leaves the screen, when the page hides (before the analytics beacon) and every 30 s of play | — |
+| `video_unmute` | the reader turned the sound on | page view × video |
+
+Every one carries the experience (`experienceId`, `experienceRevision`), the
+video (`videoId`, its 0-based `videoIndex`) and the attribution the reel's
+other events carry (`sponsorId`, `campaignId`, `slot`, content):
+
+```ts
+Vio.analytics.track('video_progress', {
+  context: {
+    experienceId: 7, experienceRevision: 3, videoId: 'influencer', videoIndex: 0,
+    videoPercent: 50, sponsorId: 1338, campaignId: 12, slot: 'article-192-reel',
+  },
+})
+Vio.analytics.track('video_watch', { context: { experienceId: 7, videoId: 'influencer', videoIndex: 0, watchSeconds: 12.4 /* … */ } })
+```
+
+A product card of a host's player that emits `vio:product-click` with
+`experienceId`, `revision`, `videoId` and `videoIndex` in its detail gets them
+on its `select_item`, as `<vio-reel>`'s cards do.
 
 React: `import { VioReel } from '@vio-live/web-sdk/react'`.
 

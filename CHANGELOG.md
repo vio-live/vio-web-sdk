@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.40.2 — 2026-11-24
+
 ### Fixed
 - **Kustom: the summary no longer says «Gratis» before Kustom names the shipping.** With Kustom picked, the
   shipping and its name are the widget's own pick, never a Vio rate it did not choose. Until the shopper has

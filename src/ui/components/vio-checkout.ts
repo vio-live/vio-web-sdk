@@ -2978,8 +2978,12 @@ export class VioCheckout extends LitElement {
     if (this.checkoutState?.paymentMethod === 'nexi' && typeof this.nexiShipping?.shipping_price === 'number') {
       return this.nexiShipping.shipping_price
     }
-    if (this.checkoutState?.paymentMethod === 'kustom' && typeof this.kustomShipping?.price === 'number') {
-      return this.kustomShipping.price
+    // Kustom decides the shipping inside its widget (the brand's own rates
+    // with its Shipping Assistant, or ours preselected): until the widget
+    // names a price there is none yet. Falling back to the brand's Vio rate
+    // showed «Gratis» for a placeholder rate of 0 (Boots, 2026-11-24).
+    if (this.checkoutState?.paymentMethod === 'kustom') {
+      return typeof this.kustomShipping?.price === 'number' ? this.kustomShipping.price : null
     }
     if (!this.express && this.availableShippingsList.length === 0) return null
     const o = this.shippingOption
@@ -2997,6 +3001,10 @@ export class VioCheckout extends LitElement {
     }
     if (this.checkoutState?.paymentMethod === 'nexi' && this.nexiShipping) {
       return this.nexiShipping.shipping_name ?? ''
+    }
+    // Kustom's own pick, never the name of a Vio rate it did not choose.
+    if (this.checkoutState?.paymentMethod === 'kustom') {
+      return this.kustomShipping?.name ?? ''
     }
     const o = this.shippingOption
     return o ? o.method || o.name || '' : ''

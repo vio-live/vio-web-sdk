@@ -117,6 +117,35 @@ describe('Kustom in <vio-checkout>', () => {
     expect(shadowText(el)).toContain('Velg en annen betalingsmåte')
   })
 
+  it('before the widget names a rate the shipping is «Beregnes ved kasse», never the brand’s Vio rate', async () => {
+    // Boots, 2026-11-24: Kustom's Shipping Assistant picks the rate; the
+    // brand's only Vio rate is a 0 NOK placeholder, so falling back to it
+    // read «Gratis» until the shopper typed an address.
+    vi.spyOn(manager, 'mountKustomCheckout').mockImplementation(async (...args: unknown[]) => {
+      ;(args[0] as HTMLElement).innerHTML = ORDER.html_snippet
+      return { ...ORDER, shipping_name: null, shipping_price: null, total_price: 89.4 }
+    })
+    const el = await mount<HTMLElement & Record<string, any>>('vio-checkout')
+    manager.open(SPONSOR)
+    manager.selectPaymentMethod('kustom')
+    el.show()
+    await renderCycles(el)
+    el.availableShippingsList = [{ id: 'placeholder', method: 'Levering velges i kassen', price: 0, priceMajor: 0 }]
+    await renderCycles(el)
+    expect(el.shippingOption?.id).toBe('placeholder')
+    expect(el.shippingInEffect()).toBeNull()
+    expect(el.summaryShippingName()).toBe('')
+    expect(el.shippingMajor()).toBe(0)
+    // The summary's row then reads its label, not a price.
+    expect(el.shippingLabel).toBe('Beregnes ved kasse')
+
+    // The widget's pick replaces it, under Kustom's name.
+    el.kustomHandlers().onShippingOptionChange({ id: 'pp', name: 'Postnord – Utleveringssted', price: 4900 })
+    await renderCycles(el)
+    expect(el.shippingInEffect()).toBe(49)
+    expect(el.summaryShippingName()).toBe('Postnord – Utleveringssted')
+  })
+
   it('a cart change under the widget updates the SAME order: suspend → sync → resume, no second mount', async () => {
     const mountSpy = spyMount()
     const sync = vi.spyOn(manager, 'syncKustomOrder').mockResolvedValue({ ...ORDER, total_price: 10397 })

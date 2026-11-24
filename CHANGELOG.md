@@ -16,6 +16,14 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **Kustom: the summary no longer says «Gratis» before Kustom names the shipping.** With Kustom picked, the
+  shipping and its name are the widget's own pick, never a Vio rate it did not choose. Until the shopper has
+  given an address and Kustom has a rate, the row reads «Beregnes ved kasse» and the total is the products alone.
+  Before, the summary fell back to the brand's first Vio rate. Boots's only Vio rate is a 0 NOK placeholder,
+  because its Shipping Assistant decides the shipping, so the summary read «Gratis» until the address was in
+  (prod, 2026-11-24). After an address, the name was still that Vio rate's, next to Kustom's price.
+
 ## 0.40.1 — 2026-11-17
 
 ### Fixed

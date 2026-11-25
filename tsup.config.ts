@@ -28,6 +28,8 @@ export default defineConfig({
     'core/index': 'src/core/index.ts',
     'ui/index': 'src/ui/index.ts',
     'react/index': 'src/react/index.ts',
+    // A few hundred bytes a host calls before the SDK loads (see src/preload).
+    'preload/index': 'src/preload/index.ts',
   },
   format: ['esm'],
   target: 'es2022',

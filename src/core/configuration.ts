@@ -11,8 +11,9 @@
 
 import { toCampaignId } from './slots.js'
 import { normalizeDiscountCode } from './cart/discount-code.js'
+import { ENVIRONMENT_URLS, type Environment } from './environments.js'
 
-export type Environment = 'development' | 'testing' | 'production'
+export type { Environment }
 
 /**
  * Platform type of the surface this page belongs to (ADR-0027). It travels
@@ -92,6 +93,13 @@ export interface VioConfig {
    * always wins.
    */
   privacyMode?: 'standard' | 'minimal'
+  /**
+   * Read the surface's snapshot from the CDN (`container.vio.live`, a
+   * `<script>`) so the bootstrap and the product cards paint without waiting
+   * for the API. On by default; `false` for a page whose Content-Security-Policy
+   * does not allow scripts from `https://container.vio.live`.
+   */
+  snapshot?: boolean
   /** Override REST API base. Defaults are env-aware. */
   apiBase?: string
   /** Override GraphQL base. Defaults are env-aware. */
@@ -135,6 +143,8 @@ export interface ResolvedConfig {
   discountField?: boolean
   debug: boolean
   privacyMode?: 'standard' | 'minimal'
+  /** Whether the CDN snapshot is read (`snapshot` of the config; `true` unless it said `false`). */
+  snapshot: boolean
   apiBase: string
   graphQLBase: string
   eventsBase: string
@@ -143,29 +153,7 @@ export interface ResolvedConfig {
   klarnaEnvironment: 'playground' | 'production'
 }
 
-const DEFAULT_URLS: Record<
-  Environment,
-  { apiBase: string; graphQLBase: string; eventsBase: string }
-> = {
-  // The Vio Backend development environment was removed on 2026-09-16; its REST
-  // and events hosts now point at staging (Commerce GraphQL dev is unaffected).
-  development: {
-    apiBase: 'https://api-staging.vio.live',
-    graphQLBase: 'https://graph-ql-dev.vio.live',
-    eventsBase: 'https://events-staging.vio.live',
-  },
-  // No separate staging GraphQL deployment yet — shares dev's.
-  testing: {
-    apiBase: 'https://api-staging.vio.live',
-    graphQLBase: 'https://graph-ql-dev.vio.live',
-    eventsBase: 'https://events-staging.vio.live',
-  },
-  production: {
-    apiBase: 'https://api.vio.live',
-    graphQLBase: 'https://graph-ql.vio.live',
-    eventsBase: 'https://events.vio.live',
-  },
-}
+const DEFAULT_URLS = ENVIRONMENT_URLS
 
 class ConfigurationSingleton {
   private resolved: ResolvedConfig | null = null
@@ -190,6 +178,7 @@ class ConfigurationSingleton {
       // Only the two words the backend knows; anything else is "not said".
       privacyMode:
         input.privacyMode === 'minimal' || input.privacyMode === 'standard' ? input.privacyMode : undefined,
+      snapshot: input.snapshot !== false,
       apiBase: input.apiBase ?? defaults.apiBase,
       graphQLBase: input.graphQLBase ?? defaults.graphQLBase,
       eventsBase: input.eventsBase ?? defaults.eventsBase,

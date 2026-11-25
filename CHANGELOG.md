@@ -16,6 +16,40 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **The surface's CDN snapshot paints the first products without the API.** `Vio.init()` loads the snapshot
+  campaigns publishes every ~90 s (`container.vio.live`, a `<script>`). While it is fresh, `Vio.bootstrap()` and
+  `getByIds()` answer from it, and the API's bootstrap still replaces it in place. See the
+  [README](README.md#loading-fast-the-cdn-snapshot-and-preloadvio).
+- **`@vio-live/web-sdk/preload`**: `preloadVio({ apiKey, environment, platform })`, a few KB to call before the SDK
+  loads. It starts the snapshot and opens the connections to the API, GraphQL and the CDN.
+- **`Vio.init({ snapshot: false })`** turns the snapshot off, for a page whose CSP does not allow scripts from
+  `https://container.vio.live`.
+- `Vio.init()` adds `preconnect` hints to the API, GraphQL and the CDN.
+- **`loadVioElements()`** (from `./ui`): loads and defines the detail, the cart and the checkout now, and resolves
+  with their classes.
+
+### Changed
+- **`./ui` loads the detail, the cart and the checkout in a second step.** Importing `./ui` defines the cards at
+  once (`vio-product`, `vio-product-carousel`, `vio-reel`). The other three, about 80 % of the UI's code, come in
+  their own chunk when the browser is idle, or at once when the page needs one. Before the first products the
+  SDK now weighs about 78 KB gzipped instead of 138 KB. Nothing done meanwhile is lost: `show()` / `close()` on
+  one already in the document, and a card's `vio:product-click`, are replayed once it is defined. The React entry
+  is unchanged: it defines everything at once.
+
+### ⚠️ Upgrade notes
+- **`VioCart`, `VioCheckout` and `VioProductDetail` are no longer values exported by `./ui`** (types only).
+  A host that used the classes takes them from `await loadVioElements()` or from `./react`. A host that creates
+  one of these elements and calls `show()` in the same task should `await loadVioElements()` first. One already
+  in the document waits by itself.
+- **Replit:** drop the server-side bootstrap (`/api/vio/bootstrap`) and the `cachedBootstrap` assignment. Call
+  `preloadVio()` as soon as the key is known, then `Vio.init()` and `await Vio.bootstrap()`. A bootstrap set from
+  outside skips the snapshot.
+- With a strict Content-Security-Policy, add `https://container.vio.live` to `script-src` or pass
+  `snapshot: false`.
+- Nothing changes until campaigns publishes the per-platform snapshot (`<hash>.<platform>.js`). Until then the
+  SDK asks the API exactly as before.
+
 ## 0.40.2 — 2026-11-24
 
 ### Fixed

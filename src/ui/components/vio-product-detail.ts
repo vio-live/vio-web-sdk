@@ -1603,6 +1603,14 @@ export class VioProductDetail extends LitElement {
     this.open = true
     this.hideAddedToast()
   }
+
+  /**
+   * @internal A card's `vio:product-click` that came while this element was
+   * still loading (lazy-elements.ts): handled as if it had heard it.
+   */
+  replayProductClick(e: Event): void {
+    this.boundProductClick(e)
+  }
   close(): void {
     this.open = false
     // Reset state after the slide-out animation completes.

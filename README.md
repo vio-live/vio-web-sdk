@@ -112,6 +112,47 @@ Hosts with their own quantity stepper: change a line with
 live quantity, so quick taps before a re-render never ask for the same target
 twice, and the backend sees one request in flight per line.
 
+## Loading fast: the CDN snapshot and `preloadVio`
+
+Every ~90 s Vio publishes a **snapshot** of each surface on its CDN
+(`container.vio.live`): what the bootstrap answers for the key and platform, plus the
+products of the channels of its active campaigns. `Vio.init()` starts loading it, and
+while it is fresh (under 10 minutes old):
+
+- `Vio.bootstrap()` answers from it at once; the API is still asked and its answer
+  replaces the snapshot's in place.
+- `commerce.channel.product.getByIds()` answers from it without asking GraphQL — only
+  for the page's market (currency and country), `image_size: 'large'`, a key and ids
+  the snapshot has, and never for `useCache: false` (the cart and checkout read live).
+
+A missing, failed or old snapshot changes nothing: everything is asked as before.
+It is a `<script>` from `https://container.vio.live`; a page whose
+Content-Security-Policy does not allow that turns it off with `Vio.init({ snapshot: false })`.
+
+A host that imports the SDK lazily starts the snapshot and the connections earlier with
+the tiny preload entry (a few KB, no SDK in it), as soon as it knows the key:
+
+```ts
+import { preloadVio } from '@vio-live/web-sdk/preload'
+preloadVio({ apiKey: '…', environment: 'production', platform: 'web' })
+// …later, when the SDK has loaded:
+Vio.init({ apiKey: '…', environment: 'production', platform: 'web' })
+```
+
+`./ui` defines the cards at once and the product detail, the cart and the checkout a
+moment later, in their own chunk. A `show()` on one of them already in the document, or a
+card click, is kept until it is defined. Code that creates one and calls `show()` straight
+away awaits `loadVioElements()` first:
+
+```ts
+import { loadVioElements } from '@vio-live/web-sdk/ui'
+await loadVioElements()   // the three are defined now
+```
+
+Do not set `Vio.cachedBootstrap` yourself or fetch the bootstrap through your own
+server: `Vio.bootstrap()` already answers from the snapshot, and a bootstrap set from
+outside skips it.
+
 ## Slots — where things happen on a page
 
 A **slot** is a named place on a page (ADR-0027). Each page declares its slots to

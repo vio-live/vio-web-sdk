@@ -411,9 +411,12 @@ describe('which ways to pay take a discount: each method\'s own config', () => {
     })
 
     it('without a code on the cart: no «Fjern», every method on', async () => {
-      const el = await openList([{ name: 'Kustom' }], null)
+      // Two methods: with a sole one the checkout selects it by itself and the
+      // list never shows (this passed only after a test that left a method chosen).
+      const el = await openList([{ name: 'Kustom' }, { name: 'Stripe', config: [] }], null)
       expect(el.shadowRoot!.querySelector('.discount-dead-end')).toBeNull()
       expect(choice(el, 'select_kustom')?.disabled).toBe(false)
+      expect(choice(el, 'select_stripe')?.disabled).toBe(false)
     })
   })
 })

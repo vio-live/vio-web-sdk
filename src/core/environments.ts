@@ -12,6 +12,8 @@ export interface EnvironmentUrls {
   /**
    * Where campaigns publishes each surface's snapshot (config + products,
    * every ~90 s): `<snapshotBase><sha256(apiKey)[:32]>.<platform>.js`.
+   * Production goes through Cloudflare (`container.vio.live`); QA's storage
+   * account is not behind it, so its blob URL is used as is.
    */
   snapshotBase: string
 }
@@ -23,14 +25,14 @@ export const ENVIRONMENT_URLS: Record<Environment, EnvironmentUrls> = {
     apiBase: 'https://api-staging.vio.live',
     graphQLBase: 'https://graph-ql-dev.vio.live',
     eventsBase: 'https://events-staging.vio.live',
-    snapshotBase: 'https://container.vio.live/reachu-uploads-qa/snapshots/',
+    snapshotBase: 'https://containerqasc.blob.core.windows.net/reachu-uploads-qa/snapshots/',
   },
   // No separate staging GraphQL deployment yet — shares dev's.
   testing: {
     apiBase: 'https://api-staging.vio.live',
     graphQLBase: 'https://graph-ql-dev.vio.live',
     eventsBase: 'https://events-staging.vio.live',
-    snapshotBase: 'https://container.vio.live/reachu-uploads-qa/snapshots/',
+    snapshotBase: 'https://containerqasc.blob.core.windows.net/reachu-uploads-qa/snapshots/',
   },
   production: {
     apiBase: 'https://api.vio.live',

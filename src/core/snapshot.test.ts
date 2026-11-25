@@ -146,7 +146,7 @@ describe('startSnapshot (the script on the page)', () => {
   it('uses QA’s container for development and testing', async () => {
     void startSnapshot({ apiKey: KEY, environment: 'testing' })
     await vi.waitFor(() => expect(script()).not.toBeNull())
-    expect(script()!.src).toBe(`https://container.vio.live/reachu-uploads-qa/snapshots/${HASH}.web.js`)
+    expect(script()!.src).toBe(`https://containerqasc.blob.core.windows.net/reachu-uploads-qa/snapshots/${HASH}.web.js`)
   })
 
   it('resolves null on a script error, and the page goes on as before', async () => {

@@ -19,6 +19,7 @@ import { beginPaymentRedirect, type PaymentRedirectHandle } from '../payment-red
 import { resolveVippsCartPayment } from '../vipps-cart-payment.js'
 import { Vio } from '../../core/client.js'
 import { formatPrice } from '../../core/types.js'
+import { shippingPickedAtCheckout } from '../../core/shipping-at-checkout.js'
 import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/analytics-manager.js'
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
@@ -1077,11 +1078,27 @@ export class VioCart extends LitElement {
    * checkout preselects). null when some cart has no known rate — the footer
    * says it is worked out in the checkout then.
    */
+  /**
+   * Whether a cart's delivery is picked inside the checkout — its brand is
+   * paid only with ways whose widget picks it, as Kustom's
+   * (`shippingPickedAtCheckout`). Its rate in Vio is then only a placeholder:
+   * no price and no total with it before the checkout.
+   */
+  private shippingPickedAtCheckoutOf(cart: { sponsorId: number; channelId?: string }): boolean {
+    try {
+      const block = Vio.sponsorCommerce(cart.sponsorId, cart.channelId ? { channelId: cart.channelId, retired: true } : {})
+      return shippingPickedAtCheckout(block?.commerce)
+    } catch {
+      return false
+    }
+  }
+
   private get shippingAcrossSponsors(): number | null {
     let sum = 0
     let any = false
     for (const cart of this.carts.values()) {
       if (cart.items.length === 0) continue
+      if (this.shippingPickedAtCheckoutOf(cart)) return null
       const rate = cartShipping(cart.items, cart.currency)
       if (rate === null) return null
       sum += rate
@@ -1341,8 +1358,16 @@ export class VioCart extends LitElement {
               <span>${formatPrice(this.payableTotal, this.primaryCurrency)}</span>
             </div>`
           : ''}
-      <p class="shipping-hint" part="cart-shipping-hint">Frakt velger du i Vipps eller i neste steg.</p>
+      <p class="shipping-hint" part="cart-shipping-hint">${this.everyCartPicksShippingAtCheckout()
+        ? 'Frakt velger du i kassen.'
+        : 'Frakt velger du i Vipps eller i neste steg.'}</p>
     `
+  }
+
+  /** Every cart with lines has its delivery picked in the checkout (no Vipps to pick it in). */
+  private everyCartPicksShippingAtCheckout(): boolean {
+    const carts = [...this.carts.values()].filter((cart) => cart.items.length > 0)
+    return carts.length > 0 && carts.every((cart) => this.shippingPickedAtCheckoutOf(cart))
   }
 
   /** «Rabatt (KODE)  −52 Kr» — what the discount code takes off the lines; nothing without one. */

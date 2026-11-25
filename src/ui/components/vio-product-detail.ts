@@ -21,6 +21,7 @@ import { discountReasonOfError } from '../../core/cart/discount-code.js'
 import { DISCOUNT_TEXT, discountPaymentText } from '../discount-texts.js'
 import { cartCarriesDiscount, methodTakesDiscounts, renderVippsOnlyNote, vippsOnlyStyles, type OfferedMethod } from '../discount.js'
 import { shippingDescriptionOf } from '../../core/api/commerce.js'
+import { shippingPickedAtCheckout } from '../../core/shipping-at-checkout.js'
 import {
   formatPrice,
   getGlobalCurrency,
@@ -321,6 +322,13 @@ export class VioProductDetail extends LitElement {
    * right of withdrawal is said then.
    */
   @state() private shippingFrom: { price: number; currency: string } | null = null
+  /**
+   * The brand's delivery, and its price, is picked inside the checkout (every
+   * way to pay it is one whose widget picks it, as Kustom's: see
+   * `shippingPickedAtCheckout`): «Frakt beregnes i kassen» under the price and
+   * no rates in «Frakt & retur» — its rate in Vio is only a placeholder.
+   */
+  @state() private shippingAtCheckout = false
   /** Every rate for the page's country, cheapest first — for «Frakt & retur». */
   @state() private shippingRates: Array<{ name: string; price: number; currency: string; description: string; logoUrl: string }> = []
   @state() private isLoading = false
@@ -1626,6 +1634,7 @@ export class VioProductDetail extends LitElement {
         this.sellerName = null
         this.sellerSettled = false
         this.shippingFrom = null
+        this.shippingAtCheckout = false
         this.selectedOptions = {}
         this.selectionPrompt = ''
         this.quantity = 1
@@ -1651,6 +1660,7 @@ export class VioProductDetail extends LitElement {
     this.sellerName = null
     this.sellerSettled = false
     this.shippingFrom = null
+    this.shippingAtCheckout = false
 
     // Fetch with retry: the commerce backend intermittently returns
     // "Authentication failed" under concurrent requests (many cards + the
@@ -2647,6 +2657,15 @@ export class VioProductDetail extends LitElement {
    * product's price is not shown (never a price the shopper would not pay).
    */
   private async loadShippingFrom(productId: number, seq: number): Promise<void> {
+    // A brand whose checkout picks the delivery: no rate to ask for or show.
+    const selling = Vio.sponsorCommerce(this.sponsorId, { campaignId: this.commerceCampaigns() })
+    if (shippingPickedAtCheckout(selling?.commerce)) {
+      if (seq !== this.fetchSeq) return
+      this.shippingFrom = null
+      this.shippingRates = []
+      this.shippingAtCheckout = true
+      return
+    }
     let rates: Array<{ name?: string; price: number; currency: string; description?: string; logoUrl?: string }> | null = null
     try {
       const product = Vio.commerceFor(this.sponsorId, { campaignId: this.commerceCampaigns() }).channel.product as {
@@ -2662,6 +2681,7 @@ export class VioProductDetail extends LitElement {
       rates = null
     }
     if (seq !== this.fetchSeq) return // another product opened meanwhile
+    this.shippingAtCheckout = false
     const currency = String(this.product?.price?.currency_code ?? this.currency ?? '').toUpperCase()
     const usable = (rates ?? []).filter((r) => !r.currency || r.currency.toUpperCase() === currency)
     const cheapest = usable[0]
@@ -2851,10 +2871,19 @@ export class VioProductDetail extends LitElement {
     </details>`
   }
 
-  /** Under the price: «Frakt fra X · 14 dagers angrerett» (or «Gratis frakt · …»). */
+  /**
+   * Under the price: «Frakt fra X · 14 dagers angrerett» (or «Gratis frakt · …»,
+   * or «Frakt beregnes i kassen · …» when the checkout picks the delivery).
+   */
   private renderDeliveryNote() {
     const ship = this.shippingFrom
-    const shipping = ship ? (ship.price <= 0 ? 'Gratis frakt' : `Frakt fra ${formatPrice(ship.price, ship.currency)}`) : ''
+    const shipping = this.shippingAtCheckout
+      ? 'Frakt beregnes i kassen'
+      : ship
+        ? ship.price <= 0
+          ? 'Gratis frakt'
+          : `Frakt fra ${formatPrice(ship.price, ship.currency)}`
+        : ''
     return html`<div class="delivery-note" part="delivery-note">
       ${shipping ? html`<span part="delivery-shipping">${shipping}</span><span aria-hidden="true"> · </span>` : ''}<span
         part="delivery-withdrawal"

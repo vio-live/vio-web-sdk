@@ -16,6 +16,15 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Fixed
+- **A brand paid only with Kustom no longer shows its Vio rate as a shipping price before the checkout.** Kustom picks
+  the delivery and its price inside its widget (the brand's Shipping Assistant), so the brand's rate in Vio is only a
+  placeholder: Boots has one at 1 kr so that a host does not read it as free shipping. The product detail now says
+  «Frakt beregnes i kassen · 14 dagers angrerett» instead of «Frakt fra 1 Kr», and «Frakt & retur» lists no rates.
+  The cart says «Frakt: Beregnes i kassen», shows no total with that rate, and says «Frakt velger du i kassen.»
+  A brand also paid with something else (Vipps…) keeps its rates as before. The rule is
+  `shippingPickedAtCheckout(sponsor.commerce)`: every `paymentMethods` entry is `kustom`.
+
 ## 0.41.0 — 2026-11-25
 
 ### Added

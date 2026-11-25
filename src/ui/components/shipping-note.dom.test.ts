@@ -82,6 +82,45 @@ describe('under the price in the detail', () => {
   })
 })
 
+describe('a brand whose checkout picks the delivery (Kustom only, Boots 2026-11-25)', () => {
+  const kustomOnly = () =>
+    vi.spyOn(Vio, 'sponsorCommerce').mockReturnValue({ id: 4, name: 'Boots', commerce: { apiKey: 'k', paymentMethods: ['kustom'] } } as any)
+
+  it('the detail says «Frakt beregnes i kassen», never its placeholder rate, and asks for no rates', async () => {
+    kustomOnly()
+    rates = [{ id: 'a', name: 'Levering velges i kassen', price: 1, currency: 'NOK', default: true }]
+    const el = await open()
+    expect(note(el)).toBe('Frakt beregnes i kassen · 14 dagers angrerett')
+    const product = (Vio.commerceFor as any).mock.results[0].value.channel.product
+    expect(product.getShippingRates).not.toHaveBeenCalled()
+    expect(el.shadowRoot!.querySelector('.sr-rates')).toBeNull()
+  })
+
+  it('a brand also paid with Vipps keeps «Frakt fra» its rates', async () => {
+    vi.spyOn(Vio, 'sponsorCommerce').mockReturnValue({ id: 4, name: 'B', commerce: { apiKey: 'k', paymentMethods: ['kustom', 'vipps'] } } as any)
+    rates = [{ id: 'a', name: 'Standard', price: 49, currency: 'NOK', default: true }]
+    const el = await open()
+    expect(note(el)).toBe('Frakt fra 49 Kr · 14 dagers angrerett')
+  })
+
+  it('the cart: «Beregnes i kassen», no total with the placeholder, and the delivery is picked in the checkout', async () => {
+    kustomOnly()
+    vi.spyOn(Vio.checkout, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Kustom' }] as any)
+    const el = await mount<HTMLElement & Record<string, any>>('vio-cart')
+    const placeholder = { id: 'r', name: 'Levering velges i kassen', price: { amount: 0.8, amount_incl_taxes: 1, currency_code: 'NOK' } }
+    el.carts = new Map([
+      [4, { sponsorId: 4, currency: 'NOK', items: [{ id: 'i1', productId: 1, name: 'Skin Sip', quantity: 1, unitPrice: 183.92, currency: 'NOK', availableShippings: [placeholder] }] }],
+    ])
+    el.itemCount = 1
+    el.open = true
+    await settle(el)
+    const row = (sel: string) => el.shadowRoot!.querySelector(sel)?.textContent?.replace(/\s+/g, ' ').trim()
+    expect(row('.shipping-row')).toBe('Frakt Beregnes i kassen')
+    expect(el.shadowRoot!.querySelector('.total-row')).toBeNull()
+    expect(row('.shipping-hint')).toBe('Frakt velger du i kassen.')
+  })
+})
+
 describe('the cart drawer', () => {
   const rate = (amount: number) => ({ id: 'r', name: 'Posten', price: { amount: amount * 0.8, amount_incl_taxes: amount, currency_code: 'NOK' } })
   async function cart(item: Record<string, unknown>) {

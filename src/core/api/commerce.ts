@@ -321,8 +321,10 @@ class ChannelProduct {
   /**
    * The product's shipping rates for the page's market (or `country`),
    * cheapest first; `[]` when it has none there, `null` when they could not
-   * be read. Never throws. Never from the cache, for the reason given at
-   * getSellerCompany.
+   * be read. Never throws. Never from the gateway's cache, for the reason
+   * given at getSellerCompany — but from the surface's CDN snapshot when it
+   * has the product for this market (`shippingFromSource`): one query per
+   * card was the heaviest thing left on an article's load (Boots, 2026-11-25).
    */
   async getShippingRates(
     productId: number,
@@ -335,6 +337,8 @@ class ChannelProduct {
       currency: options.currency ?? getGlobalCurrency(),
       shippingCountryCode: country,
     }
+    const fromSource = this.shippingFromSource(productId, variables.currency, country)
+    if (fromSource) return fromSource
     type Answer = { Channel: { GetProductsByIds: Array<{ id: number; product_shipping?: unknown }> } }
     try {
       let data: Answer
@@ -352,6 +356,31 @@ class ChannelProduct {
       }
       const product = data.Channel?.GetProductsByIds?.[0]
       if (!product) return null
+      return shippingRatesFor(product.product_shipping, country)
+    } catch {
+      return null
+    }
+  }
+
+  /**
+   * A product's rates from the source `getByIds` reads first (the CDN
+   * snapshot), when it answers at once for this market and its copy of the
+   * product carries `product_shipping` (campaigns writes it since
+   * 2026-11-25). Anything else — still loading, another market, an older
+   * snapshot without the rates — is `null`: the API answers, as before.
+   */
+  private shippingFromSource(productId: number, currency: string, country: string): ProductShippingRate[] | null {
+    try {
+      const answer = this.source?.({
+        productIds: [productId],
+        currency,
+        shippingCountryCode: country,
+        imageSize: 'large',
+        useCache: true,
+      })
+      if (!Array.isArray(answer)) return null
+      const product = answer[0] as { product_shipping?: unknown } | undefined
+      if (!product || !Array.isArray(product.product_shipping)) return null
       return shippingRatesFor(product.product_shipping, country)
     } catch {
       return null

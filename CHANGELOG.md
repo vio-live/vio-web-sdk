@@ -16,6 +16,17 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Changed
+- **The shipping rates of a product come from the CDN snapshot too.** `getShippingRates()` answers from the
+  surface's snapshot when it has the product for the page's market and its copy carries the rates (campaigns writes
+  them since 2026-11-25). Until now it asked GraphQL once per card, without cache: 17 queries on the Boots article's
+  load. Anything the snapshot cannot answer (still loading, another market, an older snapshot without the rates) asks
+  GraphQL as before.
+
+### ⚠️ Upgrade notes
+- Nothing to do in the host. Until campaigns writes the rates into the snapshot (vio-campaigns-microservice#48), the
+  SDK asks GraphQL as before.
+
 ## 0.41.1 — 2026-11-25
 
 ### Fixed

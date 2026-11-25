@@ -64,7 +64,23 @@ function snapshotDoc(channelKey = 'snap-channel-key') {
     config: { primarySponsor: sponsorBlock(channelKey, 487), campaigns: [] },
     catalogs: [{ campaignId: 8, sponsorId: 10, channelId: '487', productIds: [421638, 421579] }],
     products: [
-      { id: 421638, title: 'Skin Sip', sku: '767390', price: { amount: 183.92, currency_code: 'NOK' } },
+      {
+        id: 421638,
+        title: 'Skin Sip',
+        sku: '767390',
+        price: { amount: 183.92, currency_code: 'NOK' },
+        product_shipping: [
+          {
+            id: 'ship-1',
+            name: 'Levering velges i kassen',
+            description: 'Leveringsalternativer og pris velges i kassen',
+            logo_url: null,
+            default: true,
+            shipping_country: [{ country: 'NO', price: { amount: 0.8, amount_incl_taxes: 1, currency_code: 'NOK' } }],
+          },
+        ],
+      },
+      // A product written before campaigns added the rates: the API answers for them.
       { id: 421579, title: 'Julekalender', sku: '767377', price: { amount: 1749.5, currency_code: 'NOK' } },
     ],
   }
@@ -181,5 +197,40 @@ describe('Vio + CDN snapshot', () => {
     await vi.waitFor(() => expect(state.graphql).toHaveLength(1))
     publish('web')
     expect((await pending)[0]!.title).toBe('Skin Sip')
+  })
+
+  it('getShippingRates answers from the snapshot without asking GraphQL', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    publish('web')
+    await Vio.bootstrap()
+    const rates = await Vio.commerceFor(10).channel.product.getShippingRates(421638, { currency: 'NOK', country: 'NO' })
+    expect(rates).toEqual([
+      {
+        id: 'ship-1',
+        name: 'Levering velges i kassen',
+        price: 1,
+        currency: 'NOK',
+        default: true,
+        description: 'Leveringsalternativer og pris velges i kassen',
+        logoUrl: '',
+      },
+    ])
+    expect(state.graphql).toHaveLength(0)
+  })
+
+  it('getShippingRates asks GraphQL when the snapshot cannot answer (no rates on its product, another market)', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    publish('web')
+    await Vio.bootstrap()
+    const product = Vio.commerceFor(10).channel.product
+    const old = product.getShippingRates(421579, { currency: 'NOK', country: 'NO' })
+    const sweden = product.getShippingRates(421638, { currency: 'SEK', country: 'SE' })
+    await vi.waitFor(() => expect(state.graphql).toHaveLength(2))
+    expect(state.graphql.map((c) => c.variables.productIds)).toEqual([[421579], [421638]])
+    for (const call of state.graphql) call.resolve({ Channel: { GetProductsByIds: [{ id: 1, product_shipping: [] }] } })
+    expect(await old).toEqual([])
+    expect(await sweden).toEqual([])
   })
 })

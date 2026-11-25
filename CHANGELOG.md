@@ -16,6 +16,26 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **The surface's CDN snapshot paints the first products without the API.** `Vio.init()` loads the snapshot
+  campaigns publishes every ~90 s (`container.vio.live`, a `<script>`). While it is fresh, `Vio.bootstrap()` and
+  `getByIds()` answer from it, and the API's bootstrap still replaces it in place. See the
+  [README](README.md#loading-fast-the-cdn-snapshot-and-preloadvio).
+- **`@vio-live/web-sdk/preload`**: `preloadVio({ apiKey, environment, platform })`, a few KB to call before the SDK
+  loads. It starts the snapshot and opens the connections to the API, GraphQL and the CDN.
+- **`Vio.init({ snapshot: false })`** turns the snapshot off, for a page whose CSP does not allow scripts from
+  `https://container.vio.live`.
+- `Vio.init()` adds `preconnect` hints to the API, GraphQL and the CDN.
+
+### ⚠️ Upgrade notes
+- **Replit:** drop the server-side bootstrap (`/api/vio/bootstrap`) and the `cachedBootstrap` assignment. Call
+  `preloadVio()` as soon as the key is known, then `Vio.init()` and `await Vio.bootstrap()`. A bootstrap set from
+  outside skips the snapshot.
+- With a strict Content-Security-Policy, add `https://container.vio.live` to `script-src` or pass
+  `snapshot: false`.
+- Nothing changes until campaigns publishes the per-platform snapshot (`<hash>.<platform>.js`). Until then the
+  SDK asks the API exactly as before.
+
 ## 0.40.2 — 2026-11-24
 
 ### Fixed

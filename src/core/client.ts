@@ -16,9 +16,12 @@
  *   })
  */
 
-import { Configuration, type VioConfig } from './configuration.js'
+import { Configuration, type VioConfig, type Environment } from './configuration.js'
 import { VioApiError, createVioApi, type VioApi } from './api/vio.js'
-import { createCommerceClient, type CommerceClient } from './api/commerce.js'
+import { createCommerceClient, type CommerceClient, type ProductSource } from './api/commerce.js'
+import { snapshotProducts, snapshotState, startSnapshot } from './snapshot.js'
+import { preconnect } from './preload.js'
+import { ENVIRONMENT_URLS } from './environments.js'
 import { CartManager, cartScopeOf } from './cart/cart-manager.js'
 import {
   rememberedDiscountCode,
@@ -90,6 +93,7 @@ import {
 import type { CartLineItem } from './cart/types.js'
 import type {
   Attribution,
+  Product,
   BootstrapCampaignEntry,
   BootstrapResponse,
   ManifestLocation,
@@ -228,6 +232,10 @@ class VioFacade {
     this.surfaceMode = null
     this.surfaceRequest = null
     this.preloadPrivacyMode()
+    // The surface's snapshot on the CDN (snapshot.ts) and the connections the
+    // first paint needs: started now, so the bootstrap and the first product
+    // cards can answer from it without waiting for the API.
+    this.startSnapshot()
     // Internal traffic (ADR-0041): a page opened with `?vio_internal=1|0`
     // marks or clears this browser now, whether or not it starts analytics.
     try {
@@ -559,29 +567,80 @@ class VioFacade {
       throw new Error('[Vio] bootstrap recently failed — backing off')
     }
     const generation = this.generation
-    const promise: Promise<BootstrapResponse> = this.api
-      .bootstrap(Configuration.get().platform)
-      .then(
+    const fromApi: Promise<BootstrapResponse> = this.api.bootstrap(Configuration.get().platform).then(
+      (res) => {
+        if (generation !== this.generation) return this.bootstrap()
+        // Also when the snapshot answered first: the API's answer replaces it in place.
+        this.adoptBootstrap(res)
+        this.bootstrapFailedAt = 0
+        // The slots that mounted before this answer can be declared now.
+        if (this.slotsDirty) this.scheduleSlotDeclaration()
+        // The surface's privacy mode, in case init's ask failed or expired.
+        this.preloadPrivacyMode()
+        return res
+      },
+      (err) => {
+        if (generation !== this.generation) return this.bootstrap()
+        // The snapshot's bootstrap stands: no backoff, the page already has one.
+        if (!this.cachedBootstrap) this.bootstrapFailedAt = Date.now()
+        throw err
+      },
+    )
+    // The CDN snapshot's bootstrap (snapshot.ts), when it comes first: the
+    // page goes on with it while the API's is on its way.
+    const fromSnapshot = this.snapshotBootstrap().then((res) => {
+      if (!res || generation !== this.generation) return null
+      if (!this.cachedBootstrap) {
+        this.adoptBootstrap(res)
+        if (this.slotsDirty) this.scheduleSlotDeclaration()
+      }
+      return this.cachedBootstrap
+    })
+    const promise: Promise<BootstrapResponse> = new Promise<BootstrapResponse>((resolve, reject) => {
+      let done = false
+      let apiFailed = false
+      let apiError: unknown = null
+      let snapshotDone = false
+      fromSnapshot.then(
         (res) => {
-          if (generation !== this.generation) return this.bootstrap()
-          this.adoptBootstrap(res)
-          this.bootstrapFailedAt = 0
-          // The slots that mounted before this answer can be declared now.
-          if (this.slotsDirty) this.scheduleSlotDeclaration()
-          // The surface's privacy mode, in case init's ask failed or expired.
-          this.preloadPrivacyMode()
-          return res
+          snapshotDone = true
+          if (done) return
+          if (res) {
+            done = true
+            resolve(res)
+          } else if (apiFailed) {
+            done = true
+            reject(apiError)
+          }
         },
-        (err) => {
-          if (generation !== this.generation) return this.bootstrap()
-          this.bootstrapFailedAt = Date.now()
-          throw err
+        () => {
+          snapshotDone = true
+          if (!done && apiFailed) {
+            done = true
+            reject(apiError)
+          }
         },
       )
-      .finally(() => {
-        // Only clear our own slot: after a re-init it may hold the new request.
-        if (this.bootstrapPromise === promise) this.bootstrapPromise = null
-      })
+      fromApi.then(
+        (res) => {
+          if (done) return
+          done = true
+          resolve(res)
+        },
+        (err) => {
+          apiFailed = true
+          apiError = err
+          if (done) return
+          if (snapshotDone) {
+            done = true
+            reject(err)
+          }
+        },
+      )
+    }).finally(() => {
+      // Only clear our own slot: after a re-init it may hold the new request.
+      if (this.bootstrapPromise === promise) this.bootstrapPromise = null
+    })
     this.bootstrapPromise = promise
     return promise
   }
@@ -786,7 +845,7 @@ class VioFacade {
     const existing = this.commerceClients.get(cacheKey)
     if (existing) return existing
     const cfg = Configuration.get()
-    const client = createCommerceClient({ endpoint: cfg.graphQLBase, apiKey })
+    const client = createCommerceClient({ endpoint: cfg.graphQLBase, apiKey, productSource: this.snapshotSource(apiKey) })
     this.commerceClients.set(cacheKey, client)
     return client
   }
@@ -794,7 +853,76 @@ class VioFacade {
   /** Get a CommerceClient using an explicit commerce apiKey (skip bootstrap). */
   commerceWithKey(commerceApiKey: string): CommerceClient {
     const cfg = Configuration.get()
-    return createCommerceClient({ endpoint: cfg.graphQLBase, apiKey: commerceApiKey })
+    return createCommerceClient({
+      endpoint: cfg.graphQLBase,
+      apiKey: commerceApiKey,
+      productSource: this.snapshotSource(commerceApiKey),
+    })
+  }
+
+  // MARK: - CDN snapshot (snapshot.ts)
+
+  /** Where this configuration's snapshot is: its key, environment and platform; null when it is not read. */
+  private snapshotTarget(): { apiKey: string; environment: Environment; platform: string } | null {
+    try {
+      if (!Configuration.isInitialized) return null
+      const cfg = Configuration.get()
+      if (cfg.snapshot === false) return null
+      return { apiKey: cfg.apiKey, environment: cfg.environment, platform: cfg.platform }
+    } catch {
+      return null
+    }
+  }
+
+  /** Start loading the snapshot and open the connections the first paint needs. Never throws. */
+  private startSnapshot(): void {
+    try {
+      const cfg = Configuration.get()
+      preconnect([
+        { href: cfg.apiBase, cors: true },
+        { href: cfg.graphQLBase, cors: true },
+        ...(cfg.snapshot === false ? [] : [{ href: ENVIRONMENT_URLS[cfg.environment].snapshotBase, cors: false }]),
+      ])
+      const target = this.snapshotTarget()
+      if (target) void startSnapshot(target)
+    } catch {
+      /* the snapshot is a shortcut, never a requirement */
+    }
+  }
+
+  /**
+   * The products a commerce key's `getByIds` may answer from the snapshot:
+   * now when it has arrived, a promise while it loads, null when there is
+   * none or it cannot answer for them all (see `snapshotProducts`).
+   */
+  private snapshotSource(commerceKey: string): ProductSource {
+    return (query) => {
+      const target = this.snapshotTarget()
+      if (!target) return null
+      const state = snapshotState(target)
+      const ask = { commerceKey, ...query }
+      if (state.status === 'ready') return snapshotProducts(state.snapshot, ask) as Product[] | null
+      if (state.status === 'pending') {
+        return state.promise.then((snapshot) => (snapshot ? (snapshotProducts(snapshot, ask) as Product[] | null) : null))
+      }
+      return null
+    }
+  }
+
+  /** The snapshot's bootstrap for this configuration: at once when it has arrived, when it does while loading, null when there is none. */
+  private snapshotBootstrap(): Promise<BootstrapResponse | null> {
+    try {
+      const target = this.snapshotTarget()
+      if (!target) return Promise.resolve(null)
+      const state = snapshotState(target)
+      const configOf = (c: unknown): BootstrapResponse | null =>
+        c && typeof c === 'object' ? (c as BootstrapResponse) : null
+      if (state.status === 'ready') return Promise.resolve(configOf(state.snapshot.config))
+      if (state.status === 'pending') return state.promise.then((s) => (s ? configOf(s.config) : null), () => null)
+      return Promise.resolve(null)
+    } catch {
+      return Promise.resolve(null)
+    }
   }
 
   // MARK: - Slots (ADR-0027 / ADR-0034)

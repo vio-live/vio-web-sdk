@@ -26,6 +26,10 @@
     "./react": {
       "types": "./dist/react/index.d.ts",
       "import": "./dist/react/index.js"
+    },
+    "./preload": {
+      "types": "./dist/preload/index.d.ts",
+      "import": "./dist/preload/index.js"
     }
   },
   "files": [

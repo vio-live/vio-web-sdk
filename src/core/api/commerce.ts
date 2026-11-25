@@ -25,7 +25,24 @@ export interface CommerceClientOptions {
   endpoint: string
   /** Per-sponsor commerce apiKey (from bootstrap.primarySponsor.commerce.apiKey). */
   apiKey: string
+  /**
+   * Where `getByIds` may answer from before asking the API (the surface's CDN
+   * snapshot, see `Vio.commerceFor`): the products, `null` when it cannot
+   * answer for all of them, or a promise of either while it is still loading.
+   */
+  productSource?: ProductSource
 }
+
+/** What `getByIds` asked, resolved (the page's currency and country filled in). */
+export interface ProductSourceQuery {
+  productIds: number[]
+  currency: string
+  shippingCountryCode: string
+  imageSize: string
+  useCache: boolean
+}
+
+export type ProductSource = (query: ProductSourceQuery) => Product[] | null | Promise<Product[] | null>
 
 const GET_PRODUCTS_BY_IDS = /* GraphQL */ `
   query GetProductsByIds(
@@ -234,7 +251,10 @@ export interface GetProductsByIdsOptions {
 }
 
 class ChannelProduct {
-  constructor(private readonly client: GraphQLClient) {}
+  constructor(
+    private readonly client: GraphQLClient,
+    private readonly source?: ProductSource,
+  ) {}
 
   /**
    * Fetch a batch of products by their numeric ids.
@@ -252,11 +272,29 @@ class ChannelProduct {
       shippingCountryCode: options.shipping_country_code ?? getGlobalCountryCode(),
     }
 
-    const data = await this.client.request<{
-      Channel: { GetProductsByIds: Product[] }
-    }>(GET_PRODUCTS_BY_IDS, variables)
+    const ask = () =>
+      this.client
+        .request<{ Channel: { GetProductsByIds: Product[] } }>(GET_PRODUCTS_BY_IDS, variables)
+        .then((data) => data.Channel?.GetProductsByIds ?? [])
 
-    return data.Channel?.GetProductsByIds ?? []
+    let fromSource: Product[] | null | Promise<Product[] | null> = null
+    try {
+      fromSource =
+        this.source?.({
+          productIds: options.product_ids,
+          currency: variables.currency,
+          shippingCountryCode: variables.shippingCountryCode,
+          imageSize: variables.imageSize,
+          useCache: variables.useCache,
+        }) ?? null
+    } catch {
+      fromSource = null
+    }
+    if (Array.isArray(fromSource)) return fromSource
+    if (fromSource && typeof (fromSource as Promise<unknown>).then === 'function') {
+      return firstOf(fromSource as Promise<Product[] | null>, ask())
+    }
+    return ask()
   }
 
   /**
@@ -378,11 +416,64 @@ export function shippingRatesFor(
   return out.sort((a, b) => a.price - b.price)
 }
 
+/**
+ * The source's products when they come before the API's answer; the API's
+ * otherwise (and the source's if the API then fails). The API is asked either
+ * way while the source is still loading.
+ */
+function firstOf(source: Promise<Product[] | null>, api: Promise<Product[]>): Promise<Product[]> {
+  return new Promise((resolve, reject) => {
+    let done = false
+    let sourceDone = false
+    let sourceValue: Product[] | null = null
+    let apiFailed = false
+    let apiError: unknown = null
+    source.then(
+      (value) => {
+        sourceDone = true
+        sourceValue = Array.isArray(value) ? value : null
+        if (done) return
+        if (sourceValue) {
+          done = true
+          resolve(sourceValue)
+        } else if (apiFailed) {
+          done = true
+          reject(apiError)
+        }
+      },
+      () => {
+        sourceDone = true
+        if (!done && apiFailed) {
+          done = true
+          reject(apiError)
+        }
+      },
+    )
+    api.then(
+      (value) => {
+        if (done) return
+        done = true
+        resolve(value)
+      },
+      (error) => {
+        apiFailed = true
+        apiError = error
+        if (done) return
+        if (sourceDone) {
+          done = true
+          if (sourceValue) resolve(sourceValue)
+          else reject(error)
+        }
+      },
+    )
+  })
+}
+
 class Channel {
   readonly product: ChannelProduct
 
-  constructor(client: GraphQLClient) {
-    this.product = new ChannelProduct(client)
+  constructor(client: GraphQLClient, source?: ProductSource) {
+    this.product = new ChannelProduct(client, source)
   }
 }
 
@@ -399,7 +490,7 @@ export class CommerceClient {
     this.raw = new GraphQLClient(options.endpoint, {
       headers: { Authorization: options.apiKey },
     })
-    this.channel = new Channel(this.raw)
+    this.channel = new Channel(this.raw, options.productSource)
   }
 }
 

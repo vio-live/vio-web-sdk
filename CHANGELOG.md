@@ -26,8 +26,22 @@ and *when*, and links there.
 - **`Vio.init({ snapshot: false })`** turns the snapshot off, for a page whose CSP does not allow scripts from
   `https://container.vio.live`.
 - `Vio.init()` adds `preconnect` hints to the API, GraphQL and the CDN.
+- **`loadVioElements()`** (from `./ui`): loads and defines the detail, the cart and the checkout now, and resolves
+  with their classes.
+
+### Changed
+- **`./ui` loads the detail, the cart and the checkout in a second step.** Importing `./ui` defines the cards at
+  once (`vio-product`, `vio-product-carousel`, `vio-reel`). The other three, about 80 % of the UI's code, come in
+  their own chunk when the browser is idle, or at once when the page needs one. Before the first products the
+  SDK now weighs about 78 KB gzipped instead of 138 KB. Nothing done meanwhile is lost: `show()` / `close()` on
+  one already in the document, and a card's `vio:product-click`, are replayed once it is defined. The React entry
+  is unchanged: it defines everything at once.
 
 ### ⚠️ Upgrade notes
+- **`VioCart`, `VioCheckout` and `VioProductDetail` are no longer values exported by `./ui`** (types only).
+  A host that used the classes takes them from `await loadVioElements()` or from `./react`. A host that creates
+  one of these elements and calls `show()` in the same task should `await loadVioElements()` first. One already
+  in the document waits by itself.
 - **Replit:** drop the server-side bootstrap (`/api/vio/bootstrap`) and the `cachedBootstrap` assignment. Call
   `preloadVio()` as soon as the key is known, then `Vio.init()` and `await Vio.bootstrap()`. A bootstrap set from
   outside skips the snapshot.

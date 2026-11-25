@@ -139,6 +139,16 @@ preloadVio({ apiKey: '…', environment: 'production', platform: 'web' })
 Vio.init({ apiKey: '…', environment: 'production', platform: 'web' })
 ```
 
+`./ui` defines the cards at once and the product detail, the cart and the checkout a
+moment later, in their own chunk. A `show()` on one of them already in the document, or a
+card click, is kept until it is defined. Code that creates one and calls `show()` straight
+away awaits `loadVioElements()` first:
+
+```ts
+import { loadVioElements } from '@vio-live/web-sdk/ui'
+await loadVioElements()   // the three are defined now
+```
+
 Do not set `Vio.cachedBootstrap` yourself or fetch the bootstrap through your own
 server: `Vio.bootstrap()` already answers from the snapshot, and a bootstrap set from
 outside skips it.

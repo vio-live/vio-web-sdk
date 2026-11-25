@@ -12,6 +12,7 @@
  */
 
 import { registerVioElements } from './elements.js'
+import { VioProductDetail, VioCart, VioCheckout } from './heavy-elements.js'
 
 /**
  * The `<vio-*>` tags are registered explicitly by `registerVioElements()`, not
@@ -20,7 +21,8 @@ import { registerVioElements } from './elements.js'
  * HTMLUnknownElement with no shadow root. Idempotent, so calling it from every
  * test file is fine.
  */
-registerVioElements()
+// All of them at once: a test mounts the cart or the checkout straight away.
+registerVioElements({ VioProductDetail, VioCart, VioCheckout })
 
 /** Wait for Lit to flush its update queue, and anything it awaited. */
 export async function settle(el?: unknown): Promise<void> {

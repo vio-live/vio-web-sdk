@@ -32,19 +32,22 @@ import {
   registerVioElements,
   VioProduct as VioProductEl,
   VioProductCarousel as VioProductCarouselEl,
+  VioReel as VioReelEl,
+} from '../ui/elements.js'
+// The wrappers need the classes themselves, so this entry defines all of them at once.
+import {
   VioProductDetail as VioProductDetailEl,
   VioCart as VioCartEl,
   VioCheckout as VioCheckoutEl,
-  VioReel as VioReelEl,
-} from '../ui/elements.js'
+} from '../ui/heavy-elements.js'
 // Not just for the re-export below — the import itself injects the default
 // design tokens as CSS custom properties on `:root` (see tokens.ts). Without
 // it, `elements.js` alone never pulls tokens.ts in, so this entry (the one
 // the Vev bundle actually goes through) never ran that injection.
 import '../ui/tokens.js'
 
-// Register the underlying custom elements when this entry is imported.
-registerVioElements()
+// Register the underlying custom elements when this entry is imported — all of them, now.
+registerVioElements({ VioProductDetail: VioProductDetailEl, VioCart: VioCartEl, VioCheckout: VioCheckoutEl })
 
 export const VioProduct = createComponent({
   react: React,

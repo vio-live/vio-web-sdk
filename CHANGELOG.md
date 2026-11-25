@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.41.0 — 2026-11-25
+
 ### Added
 - **The surface's CDN snapshot paints the first products without the API.** `Vio.init()` loads the snapshot
   campaigns publishes every ~90 s (`container.vio.live`, a `<script>`). While it is fresh, `Vio.bootstrap()` and

@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.41.2 — 2026-11-25
+
 ### Changed
 - **The shipping rates of a product come from the CDN snapshot too.** `getShippingRates()` answers from the
   surface's snapshot when it has the product for the page's market and its copy carries the rates (campaigns writes

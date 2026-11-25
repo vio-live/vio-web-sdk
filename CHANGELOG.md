@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.41.1 — 2026-11-25
+
 ### Fixed
 - **A brand paid only with Kustom no longer shows its Vio rate as a shipping price before the checkout.** Kustom picks
   the delivery and its price inside its widget (the brand's Shipping Assistant), so the brand's rate in Vio is only a

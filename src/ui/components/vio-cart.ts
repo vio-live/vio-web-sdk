@@ -41,7 +41,6 @@ import {
   methodTakesDiscounts,
   renderDiscountDeadEnd,
   renderLinePrice,
-  renderSavings,
   renderVippsOnlyNote,
   vippsOnlyStyles,
   type OfferedMethod,
@@ -1225,7 +1224,6 @@ export class VioCart extends LitElement {
                 </div>
                 ${this.renderDiscountRow()}
                 ${this.renderShippingRows()}
-                ${renderSavings([...this.carts.values()].flatMap((cart) => cart.items), this.primaryCurrency, 'cart-savings')}
                 ${this.renderCartNotice()}
                 <button
                   class="checkout-btn"

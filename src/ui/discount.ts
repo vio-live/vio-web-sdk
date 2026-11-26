@@ -6,16 +6,17 @@
  *   «før-pris») or the discount code: the price before struck through, then
  *   what it costs — «Gratis» when the code gives it away;
  * - a «Rabatt» row with what the code takes off, between «Sum» (the list
- *   prices) and «Totalt» (what is paid), so the rows add up;
- * - «Du sparer» with both together, right over the way to pay (cart and
- *   checkout; `--vio-savings-display: none` hides it).
+ *   prices) and «Totalt» (what is paid), so the rows add up.
+ *
+ * The price before and the price now, on the line, is all that is said of a
+ * price cut: no «Du sparer» row adds them up (Angelo, 2026-11-26).
  *
  * A line with neither is printed exactly as before.
  */
 import { css, html } from 'lit'
 import { formatPrice } from '../core/types.js'
 import { isGiftLine, lineNetTotal } from '../core/cart/discount.js'
-import { cartSavingsTotal, lineBeforeTotal, lineSavings, type SavingsLine } from '../core/cart/savings.js'
+import { lineBeforeTotal, lineSavings } from '../core/cart/savings.js'
 import { DISCOUNT_TEXT, discountRowLabel } from './discount-texts.js'
 
 /** The part of a line its price is drawn from. */
@@ -42,21 +43,6 @@ export function renderLinePrice(line: PricedLine, fallbackCurrency?: string) {
   const net = isGiftLine(line) ? DISCOUNT_TEXT.free : formatPrice(lineNetTotal(line), currency)
   return html`<span class="list-price" part="line-list-price"><span class="vh">${DISCOUNT_TEXT.listPrice} </span><s>${before}</s></span>
     <span class="net-price" part="line-net-price">${net}</span>`
-}
-
-/**
- * «Du sparer 120 Kr» — what the shopper saves on these lines, the shop's own
- * price cuts and the discount code together — or nothing when they save
- * nothing. It goes right over the way to pay, in the cart and the checkout.
- * `part` names it for the host (`cart-savings`, `summary-savings`…).
- */
-export function renderSavings(lines: ReadonlyArray<SavingsLine> | null | undefined, currency?: string, part = 'savings') {
-  const amount = cartSavingsTotal(lines)
-  if (!(amount > 0)) return ''
-  return html`<div class="savings-row" part=${part} role="note">
-    <span class="savings-label">${DISCOUNT_TEXT.savings}</span>
-    <span class="savings-value">${formatPrice(amount, currency)}</span>
-  </div>`
 }
 
 /** What a «Rabatt» row says: its label (with the code, when known) and its amount, as a minus. */
@@ -203,22 +189,6 @@ export const discountStyles = css`
     white-space: nowrap;
     text-align: right;
   }
-  /* «Du sparer 120 Kr», over the way to pay. */
-  .savings-row {
-    display: var(--vio-savings-display, flex);
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 12px;
-    margin: 0 0 var(--vio-space-md, 16px);
-    padding: 9px 12px;
-    border-radius: var(--vio-radius-md, 4px);
-    background: var(--vio-savings-bg, color-mix(in srgb, var(--vio-savings-color, #1a7f4b) 10%, transparent));
-    color: var(--vio-savings-color, #1a7f4b);
-    font-size: 14px;
-    font-weight: 600;
-    line-height: 1.3;
-  }
-  .savings-row .savings-value { white-space: nowrap; }
   /* Read out, not shown. */
   .vh {
     position: absolute;

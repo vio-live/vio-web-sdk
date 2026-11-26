@@ -82,8 +82,8 @@ export interface CartLineItem {
    * What one unit cost before the shop's own price cut — its «før-pris»
    * (Commerce's `compare_at_incl_taxes`, else `compare_at`), in major units.
    * Kept only while it is above `unitPrice`; absent otherwise. Struck through
-   * beside the line's price and counted in «Du sparer» (cart/savings.ts). It
-   * never changes what is charged: `unitPrice` is the cut price already.
+   * over the line's price (cart/savings.ts). It never changes what is
+   * charged: `unitPrice` is the cut price already.
    */
   compareAtPrice?: number
   /** Currency code (e.g. "NOK"). */

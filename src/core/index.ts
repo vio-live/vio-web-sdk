@@ -197,7 +197,7 @@ export {
   isGiftOnlyCart,
   type DiscountedLine,
 } from './cart/discount.js'
-// What the shopper saves on a line and on the cart — the shop's own price cut («før-pris») and the discount code together.
+// The price before of a line («før-pris») and what the shopper saves on it — the shop's own price cut and the discount code together.
 export {
   compareAtFromPrice,
   lineCompareAt,

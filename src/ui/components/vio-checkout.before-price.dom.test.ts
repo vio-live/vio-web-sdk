@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
 /**
- * The checkout and what the shopper saves (Boots, 2026-11-26).
+ * The checkout and a product the shop has cut the price of (Boots,
+ * 2026-11-26).
  *
- * The summary's lines show the price before struck through, then what the
- * line costs, as the cart does. «Du sparer» goes at the top of the payment
- * section — over the ways to pay and over the pay button, and over an
- * embedded checkout's own button, which the summary under it never reaches —
- * and is said once. What is paid does not change.
+ * The summary's lines show the price before struck through, over what the
+ * line costs, as the cart does — and that is all: no «Du sparer» row
+ * (Angelo, 2026-11-26). What is paid does not change.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, unmountAll, settle } from '../test-harness.js'
@@ -80,9 +79,6 @@ const summaryRows = (el: HTMLElement) =>
   [...(el.shadowRoot?.querySelectorAll<HTMLElement>('.order-summary .order-row') ?? [])].map((r) => text(r))
 const summaryRow = (el: HTMLElement, label: string) => summaryRows(el).find((t) => t.startsWith(label))
 const summaryLines = (el: HTMLElement) => [...(el.shadowRoot?.querySelectorAll<HTMLElement>('.order-summary .order-line') ?? [])]
-const savings = (el: HTMLElement) => [...(el.shadowRoot?.querySelectorAll<HTMLElement>('.savings-row') ?? [])]
-/** Whether `a` comes before `b` in the document. */
-const before = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
 
 describe('the summary', () => {
   it('a line the shop cut the price of: the price before struck through, then what it costs', async () => {
@@ -103,47 +99,35 @@ describe('the summary', () => {
   })
 })
 
-describe('«Du sparer»', () => {
-  it('once, over the pay button', async () => {
+describe('nothing else is said of it', () => {
+  it('no «Du sparer», with our own pay button', async () => {
     const el = await open('vipps')
-    const rows = savings(el)
-    expect(rows).toHaveLength(1)
-    expect(text(rows[0])).toBe('Du sparer 95,96 Kr')
-    expect(rows[0]!.getAttribute('part')).toBe('checkout-savings')
-    expect(before(rows[0]!, el.shadowRoot!.querySelector('.complete-cta')!)).toBe(true)
-    expect(before(rows[0]!, el.shadowRoot!.querySelector('.order-summary')!)).toBe(true)
+    expect(el.shadowRoot!.textContent).not.toMatch(/Du sparer/i)
   })
 
-  it('over the ways to pay while none is chosen', async () => {
-    methods = [{ name: 'Vipps' }, { name: 'Klarna' }]
-    const el = await open()
-    const rows = savings(el)
-    expect(rows).toHaveLength(1)
-    expect(before(rows[0]!, el.shadowRoot!.querySelector('.payment-grid')!)).toBe(true)
-  })
-
-  it('over an embedded checkout (Kustom), whose own buy button is above the summary', async () => {
+  it('nor over an embedded checkout (Kustom)', async () => {
     methods = [{ name: 'Kustom' }]
     const el = await open('kustom')
-    const rows = savings(el)
-    expect(rows).toHaveLength(1)
-    expect(text(rows[0])).toBe('Du sparer 95,96 Kr')
-    expect(before(rows[0]!, el.shadowRoot!.querySelector('.kustom-panel')!)).toBe(true)
+    expect(el.shadowRoot!.querySelector('.kustom-panel')).not.toBeNull()
+    expect(el.shadowRoot!.textContent).not.toMatch(/Du sparer/i)
+    // The summary under the widget still says the price before.
+    expect(text(summaryLines(el)[0]!.querySelector('.order-line-price s'))).toBe('239,90 Kr')
   })
 
-  it('the cuts and a discount code together', async () => {
+  it('with a discount code too: the «før-pris» struck through, over what the line costs with the code', async () => {
     items = [{ ...CREAM, discount: 14.39 }, BALM]
     state = { subtotal: 228.89, discount: 14.39 }
     const el = await open('vipps')
-    expect(text(savings(el)[0])).toBe('Du sparer 110,35 Kr')
+    const [cream] = summaryLines(el)
+    expect(text(cream!.querySelector('.order-line-price s'))).toBe('239,90 Kr')
+    expect(text(cream!.querySelector('.order-line-price .net-price'))).toBe('129,55 Kr')
     expect(summaryRow(el, 'Rabatt')).toMatch(/−14,39 Kr$/)
   })
 
-  it('nothing saved: no such row, and the summary is the one it always was', async () => {
+  it('a checkout without a cut: the summary is the one it always was', async () => {
     items = [BALM]
     state = { subtotal: 84.95 }
     const el = await open('vipps')
-    expect(savings(el)).toHaveLength(0)
     expect(el.shadowRoot!.querySelector('.order-summary s')).toBeNull()
   })
 })

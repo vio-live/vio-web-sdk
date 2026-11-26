@@ -10,9 +10,10 @@
  *
  * «Før» of a line is `compareAtPrice × quantity` (its list price when it has
  * none); what it costs is `lineNetTotal`; the saving is the difference. The
- * cart, the checkout's summary and the receipt strike the first through
- * beside the second, and «Du sparer» is the sum over the lines — the shop's
- * cuts and the code together, the code's gift included, as in «Rabatt».
+ * cart, the checkout's summary and the receipt strike the first through over
+ * the second — that is all the SDK draws of it. `cartSavingsTotal` adds the
+ * lines up (the shop's cuts and the code together, the code's gift included,
+ * as in «Rabatt») for a host that wants to say it in its own words.
  *
  * Pure; never throws on odd lines. A line with neither comes out exactly as
  * before savings existed.

@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.42.0 — 2026-11-26
+
 ### Added
 - **«Du sparer» and the price before, in the cart and the checkout.** A product whose shop cut its price (a «før-pris»
   in Commerce, `compare_at`) now shows that price struck through over what the line costs — in the cart, in the

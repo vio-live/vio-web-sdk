@@ -31,6 +31,7 @@ import {
   type ProductVariant,
 } from '../../core/types.js'
 import { isMethodEnabled, NO_EXPRESS_BUTTON_METHODS } from '../../core/checkout/method-taxonomy.js'
+import { paymentMarksStyles, renderPaymentMarks } from '../payment-marks.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { SlotRegistration } from '../slot-registration.js'
@@ -1382,6 +1383,7 @@ export class VioProductDetail extends LitElement {
   `,
     highlightsStyles('detail'),
     vippsOnlyStyles,
+    paymentMarksStyles,
   ]
 
   /** Stops reporting the taps on the buttons (`vio:cta-click`). */
@@ -3332,6 +3334,7 @@ export class VioProductDetail extends LitElement {
             ? renderVippsOnlyNote()
             : ''}
 
+          ${this.availableQuantity > 0 ? renderPaymentMarks(this.availableMethods) : ''}
           ${this.renderSellerNote()}
           </div>
 

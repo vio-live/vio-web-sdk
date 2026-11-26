@@ -16,6 +16,34 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **«Du sparer» and the price before, in the cart and the checkout.** A product whose shop cut its price (a «før-pris»
+  in Commerce, `compare_at`) now shows that price struck through over what the line costs — in the cart, in the
+  checkout's summary and on the receipt — and «Du sparer 95,96 Kr» right over the buttons that pay: above «Til kassen»
+  in the cart, at the top of the payment section in the checkout (so also above Kustom's own buy button). The discount
+  code counts in it too. What is paid does not change. README → *Price cuts and payment logos*.
+- **Payment logos under the buy buttons of a brand paid with Kustom.** Klarna, Vipps, Visa, Mastercard, Apple Pay,
+  Google Pay and Kustom's mark, under «Kjøp nå» in the product detail and under «Til kassen» in the cart — only when
+  the brand's way to pay is Kustom. Same README section.
+- A cart line carries `compareAtPrice`; `lineBeforeTotal`, `lineSavings`, `cartSavingsTotal`, `compareAtFromPrice`
+  are exported; `addManual` takes `compareAtPrice`. Theme: `savingsDisplay`, `savingsColor`, `savingsBg`,
+  `paymentMarksDisplay`. Parts: `cart-savings`, `checkout-savings`, `payment-marks`, `payment-mark`,
+  `payment-marks-provider`.
+
+### Changed
+- **A line with a discount code draws its two prices one over the other**, the struck-through one on top, instead of
+  side by side: two prices in a row squeezed the product's name on a phone. Cart, checkout summary and receipt.
+
+### ⚠️ Upgrade notes
+- Nothing to do in the host. Both show by themselves: «Du sparer» for products with a «før-pris» above their price in
+  Commerce, the logos for brands paid with Kustom. Check the pages of such brands once after bumping.
+- To hide either: `applyVioTheme({ savingsDisplay: 'none' })` / `applyVioTheme({ paymentMarksDisplay: 'none' })`.
+- The logos are the six Kustom's checkout takes in Norway, for every Kustom brand. A Kustom brand that does not take
+  one of them would show a logo too many — hide the strip on its pages until the list can be set per brand.
+- The bundle grows about 5 kB compressed (the logos are inline: no request, nothing to allow in a CSP).
+- A cart kept in the browser from before the upgrade gets its «før-pris» with Commerce's next answer about the cart
+  (the drawer refreshes it on opening).
+
 ## 0.41.2 — 2026-11-25
 
 ### Changed

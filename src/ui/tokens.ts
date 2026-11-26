@@ -239,6 +239,14 @@ export interface VioThemeOverrides {
   detailShippingReturnsDisplay?: string
   /** The brand's promises in the cart, under the ways to pay: `grid` (default, shown when the brand has some) or `none`. */
   cartHighlightsDisplay?: string
+  /** The payment logos under the buy buttons of a brand paid with Kustom (product detail and cart): `flex` (default) or `none` (hidden). */
+  paymentMarksDisplay?: string
+  /** «Du sparer …» over the way to pay, in the cart and the checkout: `flex` (default) or `none` (hidden; the struck-through prices stay). */
+  savingsDisplay?: string
+  /** Colour of «Du sparer …» (default a green, `#1a7f4b`); its background is a tint of it unless `savingsBg` says otherwise. */
+  savingsColor?: string
+  /** Background of «Du sparer …» (default a 10 % tint of `savingsColor`). */
+  savingsBg?: string
   /** `<vio-product-carousel>`: `carousel` (default, one row) or `list` (cards one under the other). Its `layout` attribute wins. */
   carouselLayout?: string
   /** Thumbnail size (default `64px`). One row, scrolls sideways. */
@@ -356,6 +364,10 @@ const THEME_KEY_TO_CSS_VAR: Record<keyof VioThemeOverrides, string> = {
   detailHighlightsDisplay: '--vio-detail-highlights-display',
   detailShippingReturnsDisplay: '--vio-detail-shipping-returns-display',
   cartHighlightsDisplay: '--vio-cart-highlights-display',
+  paymentMarksDisplay: '--vio-payment-marks-display',
+  savingsDisplay: '--vio-savings-display',
+  savingsColor: '--vio-savings-color',
+  savingsBg: '--vio-savings-bg',
   detailThumbSize: '--vio-detail-thumb-size',
   detailThumbGap: '--vio-detail-thumb-gap',
   detailThumbRadius: '--vio-detail-thumb-radius',

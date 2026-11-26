@@ -197,6 +197,15 @@ export {
   isGiftOnlyCart,
   type DiscountedLine,
 } from './cart/discount.js'
+// What the shopper saves on a line and on the cart — the shop's own price cut («før-pris») and the discount code together.
+export {
+  compareAtFromPrice,
+  lineCompareAt,
+  lineBeforeTotal,
+  lineSavings,
+  cartSavingsTotal,
+  type SavingsLine,
+} from './cart/savings.js'
 // Origins: where each unit of a line came from (pure helpers, for hosts and tests).
 export { lineOrigins, normalizeOrigin, sameOrigin } from './cart/cart-manager.js'
 // The cart split per campaign — the rule behind begin_checkout / purchase and `Vio.cartSlices()`.

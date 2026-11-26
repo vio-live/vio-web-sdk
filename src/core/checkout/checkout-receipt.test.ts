@@ -119,6 +119,16 @@ describe('receiptFromCheckout', () => {
     ).not.toHaveProperty('discount')
   })
 
+  it('a line the shop had cut the price of keeps its «før-pris»; it changes nothing of what was charged', () => {
+    const cut = line({ price: { amount: 1038.4, amount_incl_taxes: 1298, compare_at: 1599.2, compare_at_incl_taxes: 1999, currency_code: 'NOK' } })
+    const plain = line({ id: 'li-2', price: { amount: 80, amount_incl_taxes: 100, compare_at: 0, compare_at_incl_taxes: 0, currency_code: 'NOK' } })
+    const r = receiptFromCheckout({ cart: { currency: 'NOK', line_items: [cut, plain] }, totals: { currency_code: 'NOK', total: 1398 } }, 7)!
+    expect(r.items[0]).toEqual(expect.objectContaining({ unitPrice: 1298, compareAtPrice: 1999 }))
+    expect('compareAtPrice' in r.items[1]!).toBe(false)
+    expect(r.total).toBe(1398)
+    expect(r.discount).toBeUndefined()
+  })
+
   it('nothing to print: null', () => {
     expect(receiptFromCheckout({ status: 'SUCCESS' }, 7)).toBeNull()
     expect(receiptFromCheckout({ cart: { line_items: [] } }, 7)).toBeNull()

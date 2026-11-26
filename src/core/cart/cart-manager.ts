@@ -63,6 +63,7 @@ import {
 } from './discount-code.js'
 
 import { cartDiscountTotal, cartListTotal, cartNetTotal, isGiftLine, serverLineDiscount } from './discount.js'
+import { compareAtFromPrice } from './savings.js'
 
 /**
  * How many times in a row the page's code is asked for on the same cart with
@@ -144,6 +145,8 @@ export interface AddManualOptions {
   brand: string
   name: string
   unitPrice: number
+  /** What one unit cost before the shop's price cut (its «før-pris»); kept only when above `unitPrice`. */
+  compareAtPrice?: number
   currency: string
   imageUrl: string
   quantity?: number
@@ -615,7 +618,13 @@ export class CartManager extends EventTarget {
       line_items?: Array<{
         id: string
         quantity: number
-        price?: { amount?: number; amount_incl_taxes?: number | null; discount?: number | string | null } | null
+        price?: {
+          amount?: number
+          amount_incl_taxes?: number | null
+          discount?: number | string | null
+          compare_at?: number | null
+          compare_at_incl_taxes?: number | null
+        } | null
       }>
     },
     settling?: Promise<unknown>,
@@ -643,6 +652,15 @@ export class CartManager extends EventTarget {
     if (price != null && price !== line.unitPrice) {
       line.unitPrice = price
       changed = true
+    }
+    // The «før-pris» this answer says of the line, against the price it says.
+    if (server.price && price != null) {
+      const compareAt = compareAtFromPrice(server.price, price)
+      if (compareAt !== line.compareAtPrice) {
+        if (compareAt !== undefined) line.compareAtPrice = compareAt
+        else delete line.compareAtPrice
+        changed = true
+      }
     }
     if (!changed) return
     this.persist()
@@ -904,6 +922,9 @@ export class CartManager extends EventTarget {
           currency_code?: string
           /** What the cart's discount code takes off the line (all its units); 0 or null without one. */
           discount?: number | string | null
+          /** What one unit cost before the shop's cut — its «før-pris»; 0 or null without one. */
+          compare_at?: number | null
+          compare_at_incl_taxes?: number | null
         } | null
         shipping?: unknown
         available_shippings?: unknown[]
@@ -1003,6 +1024,11 @@ export class CartManager extends EventTarget {
         // What the discount code takes off the line — for the quantity the
         // line is heading to, when that is not the one this answer knew.
         const discount = serverLineDiscount(li.price?.discount, unitPrice, intended ?? li.quantity, li.quantity)
+        // The «før-pris»: what Commerce says of the line now (a cut that ended
+        // is gone with it); the local one only when the answer has no price.
+        const compareAtPrice = li.price
+          ? compareAtFromPrice(li.price, unitPrice)
+          : compareAtFromPrice({ compare_at: matchedLocal?.compareAtPrice }, unitPrice)
 
         const line: CartLineItem = {
           id: li.id,
@@ -1018,6 +1044,7 @@ export class CartManager extends EventTarget {
             : matchedLocal?.name || '',
           unitPrice,
           ...(discount > 0 ? { discount } : {}),
+          ...(compareAtPrice !== undefined ? { compareAtPrice } : {}),
           currency: li.price?.currency_code || backendCart.currency || matchedLocal?.currency || 'NOK',
           imageUrl,
           quantity: intended ?? li.quantity,
@@ -1098,6 +1125,7 @@ export class CartManager extends EventTarget {
       brand: opts.product.brand ?? '',
       name,
       unitPrice,
+      compareAtPrice: compareAtFromPrice(price, unitPrice),
       currency: price.currency_code,
       imageUrl,
       quantity: opts.quantity,
@@ -1131,7 +1159,14 @@ export class CartManager extends EventTarget {
       if (isGiftLine(existing)) return existing
       existing.quantity += qty
       addOriginQuantity(existing, opts.origin, qty)
+      // The «før-pris» as the page knows it now, for a line that had none
+      // (a cart kept from before lines carried it).
+      if (existing.compareAtPrice === undefined) {
+        const compareAt = compareAtFromPrice({ compare_at: opts.compareAtPrice }, existing.unitPrice)
+        if (compareAt !== undefined) existing.compareAtPrice = compareAt
+      }
     } else {
+      const compareAt = compareAtFromPrice({ compare_at: opts.compareAtPrice }, opts.unitPrice)
       const item: CartLineItem = {
         id: lineId(),
         productId: opts.productId,
@@ -1140,6 +1175,7 @@ export class CartManager extends EventTarget {
         brand: opts.brand,
         name: opts.name,
         unitPrice: opts.unitPrice,
+        ...(compareAt !== undefined ? { compareAtPrice: compareAt } : {}),
         currency: opts.currency,
         imageUrl: opts.imageUrl,
         quantity: qty,

@@ -18,8 +18,6 @@ export const DISCOUNT_TEXT = {
   discountRow: 'Rabatt',
   /** The cart's total when the shipping is not known yet (worked out in the checkout). */
   totalBeforeShipping: 'Totalt uten frakt',
-  /** What the shopper saves on the cart — the shop's own price cuts and the discount code together — right over the way to pay («Du sparer 120 Kr»). */
-  savings: 'Du sparer',
 
   // ── A gift ────────────────────────────────────────────────────────────────
   /** The redirect overlay while the campaign's gift is being put in the cart, right before Vipps opens. */

@@ -1,14 +1,13 @@
 // @vitest-environment jsdom
 /**
- * The cart drawer and what the shopper saves (Boots, 2026-11-26: «vise
- * tydelig i handlekurven og checkout hva de sparer eller før og etter pris …
- * rett før de trykker kjøp»).
+ * The cart drawer and a product the shop has cut the price of (Boots,
+ * 2026-11-26: «vise tydelig i handlekurven og checkout … før og etter pris»).
  *
- * A line whose product the shop has cut the price of (`compareAtPrice`)
- * shows the price before struck through, then what it costs. «Du sparer»
- * says the cuts and the discount code together, right over the buttons that
- * pay. What is paid does not change: «Sum» and «Totalt» are what they were.
- * A cart that saves nothing is drawn as it always was.
+ * A line whose product has a «før-pris» (`compareAtPrice`) shows the price
+ * before struck through, over what it costs — and that is all: no «Du
+ * sparer» row adds the cuts up (Angelo, 2026-11-26). What is paid does not
+ * change: «Sum» and «Totalt» are what they were. A cart without a cut is
+ * drawn as it always was.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, unmountAll, settle } from '../test-harness.js'
@@ -33,7 +32,6 @@ async function cart(items: Array<Record<string, unknown>>, extra: Record<string,
 const text = (node: Element | null | undefined) => node?.textContent?.replace(/\s+/g, ' ').trim()
 const row = (el: HTMLElement, sel: string) => text(el.shadowRoot!.querySelector(sel))
 const lines = (el: HTMLElement) => [...el.shadowRoot!.querySelectorAll<HTMLElement>('.item')]
-const savings = (el: HTMLElement) => el.shadowRoot!.querySelector<HTMLElement>('.savings-row')
 
 beforeEach(() => {
   vi.spyOn(Vio.checkout, 'getAvailablePaymentMethods').mockResolvedValue([{ name: 'Vipps' }] as any)
@@ -64,28 +62,26 @@ describe('a line the shop has cut the price of', () => {
     const [cream] = lines(el)
     expect(text(cream!.querySelector('.item-price s'))).toBe('479,80 Kr')
     expect(text(cream!.querySelector('.item-price .net-price'))).toBe('287,88 Kr')
-    expect(row(el, '.savings-row')).toBe('Du sparer 191,92 Kr')
   })
 
-  it('a «før-pris» that is not above the price is no cut: a plain price, nothing saved', async () => {
+  it('a «før-pris» that is not above the price is no cut: a plain price', async () => {
     const el = await cart([{ ...CREAM, compareAtPrice: 143.94 }, { ...BALM, compareAtPrice: 50 }])
     expect(el.shadowRoot!.querySelector('.item-price s')).toBeNull()
-    expect(savings(el)).toBeNull()
+    expect(lines(el).map((l) => text(l.querySelector('.item-price')))).toEqual(['143,94 Kr', '84,95 Kr'])
+  })
+
+  it('with a discount code too: the «før-pris» struck through, over what the line costs with the code', async () => {
+    // 10 % off the cream by the code (14.39), on top of the shop's cut.
+    const el = await cart([{ ...CREAM, discount: 14.39, shipping: rate(0) }, BALM], { discountCode: 'BW10' })
+    const [cream] = lines(el)
+    expect(text(cream!.querySelector('.item-price s'))).toBe('239,90 Kr')
+    expect(text(cream!.querySelector('.item-price .net-price'))).toBe('129,55 Kr')
+    // The «Rabatt» row is the code alone, as before.
+    expect(row(el, '.discount-row')).toBe('Rabatt (BW10) −14,39 Kr')
   })
 })
 
-describe('«Du sparer»', () => {
-  it('what the shop’s cuts take off, right over the buttons that pay', async () => {
-    const el = await cart([{ ...CREAM, shipping: rate(49) }, BALM])
-    expect(row(el, '.savings-row')).toBe('Du sparer 95,96 Kr')
-    expect(savings(el)!.getAttribute('part')).toBe('cart-savings')
-    // After the rows that add up, before «Til kassen».
-    const order = [...el.shadowRoot!.querySelectorAll('.subtotal-row, .shipping-row, .total-row, .savings-row, .checkout-btn')].map(
-      (n) => n.className,
-    )
-    expect(order).toEqual(['subtotal-row', 'shipping-row', 'total-row', 'savings-row', 'checkout-btn'])
-  })
-
+describe('the footer', () => {
   it('what is paid does not change: «Sum» and «Totalt» are the prices of today', async () => {
     const el = await cart([{ ...CREAM, shipping: rate(49) }, BALM])
     expect(row(el, '.subtotal-row')).toBe('Sum 228,89 Kr')
@@ -93,24 +89,15 @@ describe('«Du sparer»', () => {
     expect(el.shadowRoot!.querySelector('.discount-row')).toBeNull()
   })
 
-  it('the cuts and a discount code together; the «Rabatt» row stays the code alone', async () => {
-    // 10 % off the cream by the code (14.39), on top of the shop's cut (95.96).
-    const el = await cart([{ ...CREAM, discount: 14.39, shipping: rate(0) }, BALM], { discountCode: 'BW10' })
-    const [cream] = lines(el)
-    expect(text(cream!.querySelector('.item-price s'))).toBe('239,90 Kr')
-    expect(text(cream!.querySelector('.item-price .net-price'))).toBe('129,55 Kr')
-    expect(row(el, '.discount-row')).toBe('Rabatt (BW10) −14,39 Kr')
-    expect(row(el, '.savings-row')).toBe('Du sparer 110,35 Kr')
+  it('no row adds the cuts up: the rows are the ones a cart always had, then «Til kassen»', async () => {
+    const el = await cart([{ ...CREAM, shipping: rate(49) }, BALM])
+    expect(el.shadowRoot!.textContent).not.toMatch(/Du sparer/i)
+    const order = [...el.shadowRoot!.querySelectorAll('.footer > div, .footer > .checkout-btn')].map((n) => n.className)
+    expect(order).toEqual(['subtotal-row', 'shipping-row', 'total-row', 'checkout-btn'])
   })
 
-  it('a discount code alone counts too', async () => {
-    const el = await cart([{ ...BALM, unitPrice: 100, discount: 10 }], { discountCode: 'BW10' })
-    expect(row(el, '.savings-row')).toBe('Du sparer 10 Kr')
-  })
-
-  it('a cart that saves nothing has no such row, and is drawn as it always was', async () => {
+  it('a cart without a cut is drawn as it always was', async () => {
     const el = await cart([BALM, { ...BALM, id: 'b2', productId: 7, unitPrice: 349 }])
-    expect(savings(el)).toBeNull()
     expect(el.shadowRoot!.querySelector('.item-price s, .item-price .net-price')).toBeNull()
     expect(lines(el).map((l) => text(l.querySelector('.item-price')))).toEqual(['84,95 Kr', '349 Kr'])
   })

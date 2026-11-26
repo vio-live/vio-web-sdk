@@ -1,17 +1,21 @@
 /**
- * How a discount code shows in the cart, the checkout's summary and the
+ * How a lower price shows in the cart, the checkout's summary and the
  * receipt — shared, so the three say the same thing the same way:
  *
- * - a line the code takes something off: its list price struck through, then
+ * - a line that costs less than it did — the shop's own price cut (its
+ *   «før-pris») or the discount code: the price before struck through, then
  *   what it costs — «Gratis» when the code gives it away;
  * - a «Rabatt» row with what the code takes off, between «Sum» (the list
- *   prices) and «Totalt» (what is paid), so the rows add up.
+ *   prices) and «Totalt» (what is paid), so the rows add up;
+ * - «Du sparer» with both together, right over the way to pay (cart and
+ *   checkout; `--vio-savings-display: none` hides it).
  *
- * A line without a discount is printed exactly as before.
+ * A line with neither is printed exactly as before.
  */
 import { css, html } from 'lit'
 import { formatPrice } from '../core/types.js'
-import { isGiftLine, lineDiscount, lineListTotal, lineNetTotal } from '../core/cart/discount.js'
+import { isGiftLine, lineNetTotal } from '../core/cart/discount.js'
+import { cartSavingsTotal, lineBeforeTotal, lineSavings, type SavingsLine } from '../core/cart/savings.js'
 import { DISCOUNT_TEXT, discountRowLabel } from './discount-texts.js'
 
 /** The part of a line its price is drawn from. */
@@ -19,22 +23,40 @@ export interface PricedLine {
   unitPrice: number
   quantity: number
   discount?: number
+  /** What one unit cost before the shop's own price cut; counts only when above `unitPrice`. */
+  compareAtPrice?: number
   currency?: string
 }
 
 /**
- * The price of a line. Without a discount: `unitPrice × quantity`, as it
- * always was (a plain string). With one: the list price struck through (said
- * «Ordinær pris …» to a screen reader) and what the line costs — «Gratis»
- * for a gift.
+ * The price of a line. When it costs what it always did: `unitPrice ×
+ * quantity`, as it always was (a plain string). When it costs less — the
+ * shop cut its price (`compareAtPrice`) or the discount code takes something
+ * off: the price before struck through (said «Ordinær pris …» to a screen
+ * reader) and what the line costs — «Gratis» for a gift.
  */
 export function renderLinePrice(line: PricedLine, fallbackCurrency?: string) {
   const currency = line.currency || fallbackCurrency
-  if (!(lineDiscount(line) > 0)) return formatPrice(line.unitPrice * line.quantity, currency)
-  const list = formatPrice(lineListTotal(line), currency)
+  if (!(lineSavings(line) > 0)) return formatPrice(line.unitPrice * line.quantity, currency)
+  const before = formatPrice(lineBeforeTotal(line), currency)
   const net = isGiftLine(line) ? DISCOUNT_TEXT.free : formatPrice(lineNetTotal(line), currency)
-  return html`<span class="list-price" part="line-list-price"><span class="vh">${DISCOUNT_TEXT.listPrice} </span><s>${list}</s></span>
+  return html`<span class="list-price" part="line-list-price"><span class="vh">${DISCOUNT_TEXT.listPrice} </span><s>${before}</s></span>
     <span class="net-price" part="line-net-price">${net}</span>`
+}
+
+/**
+ * «Du sparer 120 Kr» — what the shopper saves on these lines, the shop's own
+ * price cuts and the discount code together — or nothing when they save
+ * nothing. It goes right over the way to pay, in the cart and the checkout.
+ * `part` names it for the host (`cart-savings`, `summary-savings`…).
+ */
+export function renderSavings(lines: ReadonlyArray<SavingsLine> | null | undefined, currency?: string, part = 'savings') {
+  const amount = cartSavingsTotal(lines)
+  if (!(amount > 0)) return ''
+  return html`<div class="savings-row" part=${part} role="note">
+    <span class="savings-label">${DISCOUNT_TEXT.savings}</span>
+    <span class="savings-value">${formatPrice(amount, currency)}</span>
+  </div>`
 }
 
 /** What a «Rabatt» row says: its label (with the code, when known) and its amount, as a minus. */
@@ -164,14 +186,39 @@ export const vippsOnlyStyles = css`
 
 /** Styles of the pieces above; add to the component's own. */
 export const discountStyles = css`
+  /* The price before, over what the line costs: two prices side by side
+     squeeze the product's name on a phone. */
   .list-price {
-    margin-right: 6px;
+    display: block;
+    margin-bottom: 1px;
+    font-size: 0.9em;
     font-weight: 400;
     color: var(--vio-color-text-tertiary, #999);
     white-space: nowrap;
+    text-align: right;
   }
   .list-price s { text-decoration: line-through; }
-  .net-price { white-space: nowrap; }
+  .net-price {
+    display: block;
+    white-space: nowrap;
+    text-align: right;
+  }
+  /* «Du sparer 120 Kr», over the way to pay. */
+  .savings-row {
+    display: var(--vio-savings-display, flex);
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    margin: 0 0 var(--vio-space-md, 16px);
+    padding: 9px 12px;
+    border-radius: var(--vio-radius-md, 4px);
+    background: var(--vio-savings-bg, color-mix(in srgb, var(--vio-savings-color, #1a7f4b) 10%, transparent));
+    color: var(--vio-savings-color, #1a7f4b);
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .savings-row .savings-value { white-space: nowrap; }
   /* Read out, not shown. */
   .vh {
     position: absolute;

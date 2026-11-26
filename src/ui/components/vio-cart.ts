@@ -24,6 +24,7 @@ import { buyerRefOf, type PaymentSuccessResult } from '../../core/analytics/anal
 import type { CartChangeDetail } from '../../core/cart/cart-manager.js'
 import type { SponsorCartState } from '../../core/cart/types.js'
 import { isMethodEnabled, isEmbeddedMethod } from '../../core/checkout/method-taxonomy.js'
+import { paymentMarksStyles, renderPaymentMarks } from '../payment-marks.js'
 import { DialogFocus } from '../dialog-focus.js'
 import { BottomSheet } from '../bottom-sheet.js'
 import { resolveSponsorIdentity, sponsorDetail } from '../sponsor-identity.js'
@@ -40,6 +41,7 @@ import {
   methodTakesDiscounts,
   renderDiscountDeadEnd,
   renderLinePrice,
+  renderSavings,
   renderVippsOnlyNote,
   vippsOnlyStyles,
   type OfferedMethod,
@@ -143,6 +145,7 @@ export class VioCart extends LitElement {
       name: string
       quantity: number
       unitPrice: number
+      compareAtPrice?: number
       currency: string
     }>
     total: number
@@ -605,6 +608,7 @@ export class VioCart extends LitElement {
     highlightsStyles('cart'),
     discountStyles,
     discountFieldStyles,
+    paymentMarksStyles,
     vippsOnlyStyles,
   ]
 
@@ -820,6 +824,7 @@ export class VioCart extends LitElement {
           name: it.name,
           quantity: it.quantity,
           unitPrice: it.unitPrice,
+          ...(it.compareAtPrice !== undefined ? { compareAtPrice: it.compareAtPrice } : {}),
           currency: it.currency,
         })
       }
@@ -1220,6 +1225,7 @@ export class VioCart extends LitElement {
                 </div>
                 ${this.renderDiscountRow()}
                 ${this.renderShippingRows()}
+                ${renderSavings([...this.carts.values()].flatMap((cart) => cart.items), this.primaryCurrency, 'cart-savings')}
                 ${this.renderCartNotice()}
                 <button
                   class="checkout-btn"
@@ -1310,6 +1316,7 @@ export class VioCart extends LitElement {
                         </button>
                       `
                   : ''}
+                ${renderPaymentMarks(this.availableMethods)}
                 ${this.renderBrandHighlights()}
               </div>
             `}
@@ -1410,7 +1417,7 @@ export class VioCart extends LitElement {
             (it) => html`
               <div class="order-row">
                 <span>${it.brand ? `${it.brand} ` : ''}${it.name} ×${it.quantity}</span>
-                <span>${formatPrice(it.unitPrice * it.quantity, it.currency)}</span>
+                <span>${renderLinePrice(it)}</span>
               </div>
             `,
           )}

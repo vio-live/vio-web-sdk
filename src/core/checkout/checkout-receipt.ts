@@ -18,10 +18,11 @@
 
 import type { CartLineItem } from '../cart/types.js'
 import { cartDiscountTotal, cartNetTotal, serverLineDiscount } from '../cart/discount.js'
+import { compareAtFromPrice } from '../cart/savings.js'
 
 /** What the receipt prints, as the checkout says it. */
 export interface CheckoutReceipt {
-  /** The lines, each with its list price and what the discount code took off it (`discount`). */
+  /** The lines, each with its list price, what the discount code took off it (`discount`) and its «før-pris» when the checkout says one (`compareAtPrice`). */
   items: CartLineItem[]
   /** Empty when the checkout names none. */
   currency: string
@@ -79,6 +80,7 @@ export function receiptFromCheckout(checkout: unknown, sponsorId: number): Check
     const unitPrice = amount(li?.price?.amount_incl_taxes) ?? amount(li?.price?.amount) ?? 0
     const quantity = Number(li?.quantity) || 0
     const discount = serverLineDiscount(li?.price?.discount, unitPrice, quantity)
+    const compareAtPrice = compareAtFromPrice(li?.price, unitPrice)
     return {
       id,
       cartItemId: id,
@@ -89,6 +91,7 @@ export function receiptFromCheckout(checkout: unknown, sponsorId: number): Check
       name: title && variant ? `${title} — ${variant}` : title || variant,
       unitPrice,
       ...(discount > 0 ? { discount } : {}),
+      ...(compareAtPrice !== undefined ? { compareAtPrice } : {}),
       currency: text(li?.price?.currency_code) || currency,
       imageUrl: imageOf(li?.image),
       quantity,

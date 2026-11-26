@@ -69,6 +69,7 @@ import {
   methodTakesDiscounts,
   renderDiscountDeadEnd,
   renderLinePrice,
+  renderSavings,
   renderVippsOnlyNote,
   vippsOnlyStyles,
   type OfferedMethod,
@@ -4628,6 +4629,11 @@ export class VioCheckout extends LitElement {
             <div class="section-label">
               ${needsOurForm ? 'Steg 2' : 'Betaling'}
             </div>
+            ${
+              // Right over the ways to pay — and over an embedded checkout's
+              // own buy button, which the summary below it never reaches.
+              renderSavings(this.items, this.checkoutState?.currency, 'checkout-savings')
+            }
             ${this.shippingBlocked
               ? this.renderShippingBlocked()
               : method

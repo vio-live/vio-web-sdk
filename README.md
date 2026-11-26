@@ -976,11 +976,14 @@ Also settable as CSS only: `--vio-detail-logo-max-width` (`220px`), `--vio-detai
   `seller-terms`, `seller-refund`, `description`, `highlights`, `highlight`, `shipping-returns`,
   `slide`, `image-dots`, `carousel-arrow`, `added-toast` (`added-toast-checkout`,
   `added-toast-continue`).
-- `<vio-cart>`: `cart-shipping`, `cart-total`, `cart-discount` (the «Rabatt» row), `cart-notice`,
-  `cart-gift-note`.
+- `<vio-cart>`: `cart-shipping`, `cart-total`, `cart-discount` (the «Rabatt» row), `cart-savings`
+  («Du sparer»), `cart-notice`, `cart-gift-note`.
 - `<vio-checkout>`: `sponsor`, `confirmation`, `confirm-title`, `confirm-sponsor`, `confirm-details`,
-  `summary-discount`, `summary-gift-note`, `confirm-discount`.
-- Both, with a discount code: `line-list-price` (struck through), `line-net-price`; and the
+  `summary-discount`, `summary-gift-note`, `confirm-discount`, `checkout-savings` («Du sparer»).
+- `<vio-product-detail>` and `<vio-cart>`, for a brand paid with Kustom: `payment-marks` (the strip
+  of logos), `payment-mark` (each logo), `payment-marks-provider` (Kustom's mark).
+- Both, on a line that costs less than it did (a price cut or a discount code): `line-list-price`
+  (struck through), `line-net-price`; and the
   «Rabattkode» field: `discount-field`, `discount-input`, `discount-apply`, `discount-code`,
   `discount-remove`, `discount-error`; and `vipps-only-note` (only Vipps with a code on the
   cart).
@@ -1017,6 +1020,8 @@ whole page through `applyVioTheme` (theme key → custom property). The element 
 | `vipps-cart-payment` | `vippsCartPayment` | `express` (default) · `checkout` | «Kjøp nå med Vipps» when the brand's cart already has lines: the product is added and the **whole cart** goes to Vipps Express, the line under the button saying «Betaler hele handlekurven · n varer · total»; or (`checkout`) the checkout opens first, Vipps preselected. Also on `<vio-cart>` (its Vipps button) |
 | — | `detailShippingReturnsDisplay` | `block` (default) · `none` | «Frakt & retur»: one row per carrier (logo or icon, carrier, how it delivers, price), the delivery time, the right of withdrawal and the brand's pages |
 | — | `cartHighlightsDisplay` | `grid` (default) · `none` | The brand's promises in the cart, under the ways to pay |
+| — | `paymentMarksDisplay` | `flex` (default) · `none` | The payment logos under the buy buttons of a brand paid with Kustom, in the detail and the cart — see [Price cuts and payment logos](#price-cuts-and-payment-logos--said-before-the-buy-button-042) |
+| — | `savingsDisplay` | `flex` (default) · `none` | «Du sparer …» over the way to pay, in the cart and the checkout (the struck-through prices stay). Its colour: `savingsColor` (default `#1a7f4b`), `savingsBg` (default a 10 % tint of it) |
 
 The sheet closes with a pull down from its top bar, or from anywhere while its content is at the top.
 
@@ -1228,6 +1233,61 @@ document.addEventListener('vio:cart-updated', (e) => {
 
 `items` are copies of the lines (`CartLineItem[]`). A host that draws its own cart or badge
 redraws it from this event; `<vio-cart>` and the badge wired to `Vio.cart`'s `change` need nothing.
+
+## Price cuts and payment logos — said before the buy button (0.42)
+
+Two things a shopper wants to know right before paying, in the cart and the checkout as much as
+on the product: what they save, and how they can pay.
+
+### «Før-pris» and «Du sparer»
+
+A product whose shop has cut its price carries the price before in Commerce (`price.compare_at`,
+taxes included in `compare_at_incl_taxes`) — the struck-through price the product detail already
+shows. Since 0.42 the **cart**, the **checkout's summary** and the **receipt** show it too, and
+both the cart and the checkout say what is saved:
+
+- **A line that costs less than it did** — its price before struck through, over what it costs.
+  The same drawing a discount code already had; a line with both shows the «før-pris» struck
+  through and what it costs with the code.
+- **«Du sparer 95,96 Kr»** — the shop's cuts and the discount code together, the code's gift
+  included — right over the buttons that pay: above «Til kassen» in the cart, and at the top of
+  the payment section in the checkout, so it is also above an embedded checkout's own buy button
+  (Kustom, Qliro, Walley, Nexi), which the summary under the widget never reaches. Said once per
+  screen; nothing when nothing is saved.
+- **What is paid does not change.** «Sum» and «Totalt» are the prices of today, as before; the
+  «Rabatt» row is still the discount code alone.
+
+Nothing to set up: it shows for every product that has a «før-pris» above its price in Commerce
+(set by the shop's import — Shopify, Woo, a feed — or in the dashboard), and for nothing else.
+The SDK never works out a «før-pris» of its own. `savingsDisplay: 'none'` hides «Du sparer»
+(the struck-through prices stay); `savingsColor` / `savingsBg` colour it.
+
+A line (`CartLineItem`) keeps `compareAtPrice`, what one unit cost before, only while it is above
+`unitPrice`: taken from the product when it is added, and from Commerce's own answer about the
+cart after that — a cut that ended goes with it. `addManual({ …, compareAtPrice })` takes it for a
+host's own line. `lineBeforeTotal`, `lineSavings`, `cartSavingsTotal` and `compareAtFromPrice`
+(exported, pure) do the sums for a host that draws its own cart.
+
+### The payment logos under the buy buttons — Kustom
+
+Kustom's embedded checkout is one generic button from the outside («Kjøp nå», «Til kassen») and
+Klarna, Vipps, cards and the wallets on the inside. For a brand paid with **Kustom** — and only
+then — the product detail and the cart show, under their buy buttons, the logos Kustom's own
+checkout shows under its buy button: **Klarna, Vipps, Visa, Mastercard, Apple Pay, Google Pay**
+and Kustom's mark. Every other way to pay has its own branded button and gets no strip; nothing
+shows while the brand's ways to pay are not known yet, or for a product that is sold out.
+
+- The artwork is Kustom's own (its partner marketing toolkit), inline in the SDK: no request, no
+  image host to allow in a CSP. About 5 kB compressed.
+- The list is the SDK's — what Kustom's checkout takes in Norway. Kustom does not tell a page
+  which methods a merchant has switched on without its own script and a domain registered in the
+  merchant's Kustom Portal (Kustom Elements), so the SDK cannot ask. A Kustom brand that does
+  not take one of the six would show a logo too many: hide the strip for that page with
+  `paymentMarksDisplay: 'none'` (`--vio-payment-marks-display`) until the list can be set per
+  brand.
+- `--vio-payment-mark-height` (`24px`) sizes the logos; `--vio-payment-marks-color` colours
+  Kustom's mark (`#161616`); `--vio-payment-mark-border` the hairline around the white logos.
+  `::part(payment-marks)` for the rest.
 
 ## Discount codes — the brand's code, and the gift it brings
 

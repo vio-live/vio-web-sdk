@@ -16,6 +16,25 @@ and *when*, and links there.
 
 ## Unreleased
 
+### Added
+- **`snapshotUrl()`** in `@vio-live/web-sdk/preload`: the address of the surface's snapshot script, for a host that
+  renders on a server and writes the `<script async>` in its HTML — the snapshot then starts with the page, not after
+  the host's JavaScript. The SDK already used a tag with that address found on the page. README → *Loading fast*.
+
+### Changed
+- **`getByIds()` while the snapshot is still loading waits up to 350 ms before it also asks GraphQL.** Until now both
+  were asked at once and the first answer won: on an article with 18 blocks that was 18 GraphQL requests thrown away,
+  all answered by the snapshot first (Boots, 2026-11-27). A snapshot that says it cannot answer sends the question to
+  GraphQL at once; after the wait both run as before.
+- **`getByIds()` calls made in the same turn are sent as one GraphQL request** when they ask the same thing (currency,
+  country, image size, `useCache`) for different ids — at most 50 ids per request. Each caller gets its own products.
+
+### ⚠️ Upgrade notes
+- A `getByIds()` that was **joined** with others returns its products **in the order it asked for them**, leaving out
+  the ids the API does not return. A call on its own still gets the API's answer untouched. Code that maps the answer
+  by id (as the README does) sees no difference.
+- Nothing to change in a host. To gain the most: write the snapshot's `<script async>` in the HTML (`snapshotUrl()`).
+
 ## 0.42.0 — 2026-11-26
 
 ### Added

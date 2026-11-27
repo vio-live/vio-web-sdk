@@ -7,6 +7,7 @@ import {
   snapshotProducts,
   snapshotState,
   startSnapshot,
+  snapshotUrl,
   resetSnapshots,
   SNAPSHOT_MAX_AGE_MS,
   SNAPSHOT_TIMEOUT_MS,
@@ -118,6 +119,25 @@ describe('startSnapshot (the script on the page)', () => {
   })
 
   const script = () => document.head.querySelector('script') as HTMLScriptElement | null
+
+  it('snapshotUrl gives the address of the script, and a tag the page already carries with it is the one used', async () => {
+    const url = await snapshotUrl({ apiKey: KEY, environment: 'production' })
+    expect(url).toBe(`${PROD_BASE}${HASH}.web.js`)
+    expect(await snapshotUrl({ apiKey: KEY, environment: 'production', platform: 'vev' })).toBe(`${PROD_BASE}${HASH}.vev.js`)
+    expect(await snapshotUrl({ apiKey: KEY, environment: 'production', platform: 'ios' })).toBeNull()
+    expect(await snapshotUrl({ apiKey: ' ', environment: 'production' })).toBeNull()
+    // The host's server wrote the tag in the HTML.
+    const own = document.createElement('script')
+    own.async = true
+    own.src = url!
+    document.head.appendChild(own)
+    const p = startSnapshot({ apiKey: KEY, environment: 'production' })
+    await vi.waitFor(() => expect(snapshotState({ apiKey: KEY, environment: 'production' }).status).toBe('pending'))
+    expect(document.head.querySelectorAll('script')).toHaveLength(1)
+    ;(window as { __vioSnapshots?: Record<string, unknown> }).__vioSnapshots = { [`${HASH}.web`]: doc() }
+    window.dispatchEvent(new CustomEvent('vio:snapshot', { detail: `${HASH}.web` }))
+    expect(await p).not.toBeNull()
+  })
 
   it('loads <base><hash>.<platform>.js of the environment and resolves on its event', async () => {
     const p = startSnapshot({ apiKey: KEY, environment: 'production', platform: 'web' })

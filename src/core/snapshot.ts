@@ -245,6 +245,30 @@ export function readSnapshot(json: unknown): SurfaceSnapshot | null {
   }
 }
 
+/**
+ * The address of a target's snapshot script — for a host that renders its
+ * pages on a server and wants the snapshot to start with the HTML, not after
+ * its own JavaScript:
+ *
+ *   <link rel="preconnect" href="https://container.vio.live">
+ *   <script async src="${await snapshotUrl({ apiKey, environment: 'production' })}"></script>
+ *
+ * The SDK (and `preloadVio`) pick up a script tag with this address that is
+ * already on the page instead of adding their own. Works in a browser and in
+ * Node 20+ (it needs `crypto.subtle`); null when there is no snapshot for the
+ * target or the name cannot be computed.
+ */
+export async function snapshotUrl(target: SnapshotTarget): Promise<string | null> {
+  try {
+    const t = resolveTarget(target)
+    if (!t) return null
+    const hash = await sha256Hex(t.key)
+    return hash ? `${t.base}${hash.slice(0, 32)}.${t.platform}.js` : null
+  } catch {
+    return null
+  }
+}
+
 /** Generated under `SNAPSHOT_MAX_AGE_MS` ago (a clock a little ahead is fine). */
 export function isFresh(snapshot: SurfaceSnapshot | null, now = Date.now()): snapshot is SurfaceSnapshot {
   return !!snapshot && snapshot.generatedAt > 0 && now - snapshot.generatedAt < SNAPSHOT_MAX_AGE_MS

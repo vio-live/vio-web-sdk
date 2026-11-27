@@ -185,18 +185,59 @@ describe('Vio + CDN snapshot', () => {
     expect((await b)[0]!.title).toBe('live')
   })
 
-  it('getByIds while the snapshot loads: whichever answers first', async () => {
-    Vio.init({ apiKey: key, environment: 'production' })
-    await vi.waitFor(() => expect(script()).not.toBeNull())
-    // The host sets the bootstrap itself (as Replit does) before the snapshot arrives.
+  /** The host sets the bootstrap itself (as Replit does) before the snapshot arrives. */
+  const hostBootstrap = () => {
     ;(Vio as unknown as { cachedBootstrap: unknown }).cachedBootstrap = {
       primarySponsor: sponsorBlock('snap-channel-key', 487),
       campaigns: [],
     }
-    const pending = Vio.commerceFor(10).channel.product.getByIds({ product_ids: [421638] })
+  }
+
+  it('getByIds while the snapshot loads: the snapshot arriving within the wait answers, and GraphQL is never asked', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    hostBootstrap()
+    const commerce = Vio.commerceFor(10)
+    const blocks = [commerce.channel.product.getByIds({ product_ids: [421638] }), commerce.channel.product.getByIds({ product_ids: [421579, 421638] })]
+    await new Promise((r) => setTimeout(r, 50))
+    expect(state.graphql).toHaveLength(0)
+    publish('web')
+    const [a, b] = await Promise.all(blocks)
+    expect(a!.map((p) => p.id)).toEqual([421638])
+    expect(b!.map((p) => p.id)).toEqual([421579, 421638])
+    await new Promise((r) => setTimeout(r, 400))
+    expect(state.graphql).toHaveLength(0)
+  })
+
+  it('getByIds while the snapshot loads: after the wait GraphQL is asked too, and whichever answers first', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    hostBootstrap()
+    const fromSnapshot = Vio.commerceFor(10).channel.product.getByIds({ product_ids: [421638] })
     await vi.waitFor(() => expect(state.graphql).toHaveLength(1))
     publish('web')
-    expect((await pending)[0]!.title).toBe('Skin Sip')
+    expect((await fromSnapshot)[0]!.title).toBe('Skin Sip')
+  })
+
+  it('getByIds while the snapshot loads: a snapshot that cannot answer sends the question to GraphQL at once', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    hostBootstrap()
+    const pending = Vio.commerceFor(10).channel.product.getByIds({ product_ids: [1] })
+    publish('web')
+    await vi.waitFor(() => expect(state.graphql).toHaveLength(1), { timeout: 200 })
+    state.graphql[0]!.resolve({ Channel: { GetProductsByIds: [{ id: 1, title: 'live' }] } })
+    expect((await pending)[0]!.title).toBe('live')
+  })
+
+  it('getByIds while the snapshot loads: a snapshot that never comes leaves the API’s answer', async () => {
+    Vio.init({ apiKey: key, environment: 'production' })
+    await vi.waitFor(() => expect(script()).not.toBeNull())
+    hostBootstrap()
+    const pending = Vio.commerceFor(10).channel.product.getByIds({ product_ids: [421638] })
+    await vi.waitFor(() => expect(state.graphql).toHaveLength(1))
+    state.graphql[0]!.resolve({ Channel: { GetProductsByIds: [{ id: 421638, title: 'live' }] } })
+    expect((await pending)[0]!.title).toBe('live')
   })
 
   it('getShippingRates answers from the snapshot without asking GraphQL', async () => {

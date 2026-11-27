@@ -16,6 +16,8 @@ and *when*, and links there.
 
 ## Unreleased
 
+## 0.43.0 — 2026-11-27
+
 ### Added
 - **`snapshotUrl()`** in `@vio-live/web-sdk/preload`: the address of the surface's snapshot script, for a host that
   renders on a server and writes the `<script async>` in its HTML — the snapshot then starts with the page, not after

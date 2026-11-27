@@ -16,7 +16,10 @@ and *when*, and links there.
 
 ## Unreleased
 
-## 0.43.0 — 2026-11-27
+## 0.43.1 — 2026-11-27
+
+> 0.43.0 never reached npm: an interrupted publish left the version number taken in the registry. 0.43.1 is the
+> same code, and the first version with these changes.
 
 ### Added
 - **`snapshotUrl()`** in `@vio-live/web-sdk/preload`: the address of the surface's snapshot script, for a host that

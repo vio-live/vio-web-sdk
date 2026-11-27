@@ -250,7 +250,35 @@ export interface GetProductsByIdsOptions {
   shipping_country_code?: string | null
 }
 
+/**
+ * How long `getByIds` waits for a source that is still loading (the CDN
+ * snapshot) before it also asks the API. The snapshot usually lands within a
+ * few hundred ms of the SDK starting; asking the API at once meant one wasted
+ * GraphQL request per block of an article (Boots, 2026-11-27: 18 of them, all
+ * answered by the snapshot first). After the wait both run, as before.
+ */
+export const SOURCE_GRACE_MS = 350
+/** The most ids one joined request asks for; more are split. */
+export const JOINED_REQUEST_MAX_IDS = 50
+
+type ProductVariables = {
+  productIds: number[]
+  currency: string
+  imageSize: string
+  useCache: boolean
+  shippingCountryCode: string
+}
+
+interface JoinedCall {
+  ids: number[]
+  resolve: (products: Product[]) => void
+  reject: (error: unknown) => void
+}
+
 class ChannelProduct {
+  /** `getByIds` calls of the same turn waiting to go out as one request, by what they ask besides the ids. */
+  private readonly joining = new Map<string, { variables: ProductVariables; calls: JoinedCall[] }>()
+
   constructor(
     private readonly client: GraphQLClient,
     private readonly source?: ProductSource,
@@ -272,10 +300,7 @@ class ChannelProduct {
       shippingCountryCode: options.shipping_country_code ?? getGlobalCountryCode(),
     }
 
-    const ask = () =>
-      this.client
-        .request<{ Channel: { GetProductsByIds: Product[] } }>(GET_PRODUCTS_BY_IDS, variables)
-        .then((data) => data.Channel?.GetProductsByIds ?? [])
+    const ask = () => this.askApi(variables)
 
     let fromSource: Product[] | null | Promise<Product[] | null> = null
     try {
@@ -292,9 +317,69 @@ class ChannelProduct {
     }
     if (Array.isArray(fromSource)) return fromSource
     if (fromSource && typeof (fromSource as Promise<unknown>).then === 'function') {
-      return firstOf(fromSource as Promise<Product[] | null>, ask())
+      return afterGrace(fromSource as Promise<Product[] | null>, ask)
     }
     return ask()
+  }
+
+  /**
+   * Ask the API for the products — joined with the other `getByIds` of the
+   * same turn that ask the same thing for other ids (an article asks once per
+   * block): one request for all of them, and each caller gets its own
+   * products, in the order it asked. A call on its own goes out exactly as
+   * before and gets the API's answer untouched.
+   */
+  private askApi(variables: ProductVariables): Promise<Product[]> {
+    const key = JSON.stringify([variables.currency, variables.imageSize, variables.useCache, variables.shippingCountryCode])
+    return new Promise<Product[]>((resolve, reject) => {
+      let group = this.joining.get(key)
+      if (!group) {
+        group = { variables, calls: [] }
+        this.joining.set(key, group)
+        setTimeout(() => this.sendJoined(key), 0)
+      }
+      group.calls.push({ ids: variables.productIds, resolve, reject })
+    })
+  }
+
+  private request(variables: ProductVariables): Promise<Product[]> {
+    return this.client
+      .request<{ Channel: { GetProductsByIds: Product[] } }>(GET_PRODUCTS_BY_IDS, variables)
+      .then((data) => data.Channel?.GetProductsByIds ?? [])
+  }
+
+  private sendJoined(key: string): void {
+    const group = this.joining.get(key)
+    this.joining.delete(key)
+    if (!group || group.calls.length === 0) return
+    if (group.calls.length === 1) {
+      const only = group.calls[0]!
+      this.request(group.variables).then(only.resolve, only.reject)
+      return
+    }
+    const ids = Array.from(new Set(group.calls.flatMap((c) => c.ids)))
+    const chunks: number[][] = []
+    for (let i = 0; i < ids.length; i += JOINED_REQUEST_MAX_IDS) chunks.push(ids.slice(i, i + JOINED_REQUEST_MAX_IDS))
+    const found = new Map<number, Product>()
+    const failed = new Map<number, unknown>()
+    void Promise.all(
+      chunks.map((chunk) =>
+        this.request({ ...group.variables, productIds: chunk }).then(
+          (products) => {
+            for (const p of products) if (p && !found.has(Number(p.id))) found.set(Number(p.id), p)
+          },
+          (error) => {
+            for (const id of chunk) failed.set(id, error)
+          },
+        ),
+      ),
+    ).then(() => {
+      for (const call of group.calls) {
+        const broken = call.ids.find((id) => failed.has(id))
+        if (broken !== undefined) call.reject(failed.get(broken))
+        else call.resolve(call.ids.map((id) => found.get(id)).filter((p): p is Product => !!p))
+      }
+    })
   }
 
   /**
@@ -446,9 +531,42 @@ export function shippingRatesFor(
 }
 
 /**
+ * A source still loading gets `graceMs` to answer on its own: its products
+ * are returned without asking the API; if it says it cannot answer, the API
+ * is asked at once. After the wait the API is asked too and the first of the
+ * two answers (`firstOf`).
+ */
+function afterGrace(
+  source: Promise<Product[] | null>,
+  ask: () => Promise<Product[]>,
+  graceMs = SOURCE_GRACE_MS,
+): Promise<Product[]> {
+  return new Promise((resolve, reject) => {
+    let decided = false
+    const timer = setTimeout(() => {
+      if (decided) return
+      decided = true
+      firstOf(source, ask()).then(resolve, reject)
+    }, graceMs)
+    const fromApi = () => {
+      if (decided) return
+      decided = true
+      clearTimeout(timer)
+      ask().then(resolve, reject)
+    }
+    source.then((value) => {
+      if (decided) return
+      if (!Array.isArray(value)) return fromApi()
+      decided = true
+      clearTimeout(timer)
+      resolve(value)
+    }, fromApi)
+  })
+}
+
+/**
  * The source's products when they come before the API's answer; the API's
- * otherwise (and the source's if the API then fails). The API is asked either
- * way while the source is still loading.
+ * otherwise (and the source's if the API then fails).
  */
 function firstOf(source: Promise<Product[] | null>, api: Promise<Product[]>): Promise<Product[]> {
   return new Promise((resolve, reject) => {

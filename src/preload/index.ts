@@ -9,3 +9,4 @@
  * connections the first paint needs. `Vio.init()` then uses that load.
  */
 export { preloadVio, type PreloadOptions } from '../core/preload.js'
+export { snapshotUrl, type SnapshotTarget } from '../core/snapshot.js'

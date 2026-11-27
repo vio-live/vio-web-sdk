@@ -139,6 +139,25 @@ preloadVio({ apiKey: '…', environment: 'production', platform: 'web' })
 Vio.init({ apiKey: '…', environment: 'production', platform: 'web' })
 ```
 
+A host that renders its pages on a server goes one step further and writes the snapshot's
+script in the HTML itself, so it starts with the page and not after the host's JavaScript.
+`snapshotUrl()` gives its address (in a browser or in Node 20+); the SDK and `preloadVio`
+use a tag with that address that is already on the page instead of adding their own:
+
+```ts
+import { snapshotUrl } from '@vio-live/web-sdk/preload'
+const src = await snapshotUrl({ apiKey: '…', environment: 'production' }) // once, at start-up
+// in the <head> of every page that carries Vio products:
+//   <link rel="preconnect" href="https://container.vio.live">
+//   <script async src="${src}"></script>
+```
+
+While the snapshot is still loading, `getByIds()` gives it a moment (350 ms) before it
+also asks GraphQL — the snapshot nearly always answers within it, and the request is never
+made. When GraphQL is asked, the `getByIds()` calls of the same turn that differ only in
+their ids (an article asks once per block) go out as **one request**; each caller gets its
+own products, in the order it asked. A call on its own is sent and answered as before.
+
 `./ui` defines the cards at once and the product detail, the cart and the checkout a
 moment later, in their own chunk. A `show()` on one of them already in the document, or a
 card click, is kept until it is defined. Code that creates one and calls `show()` straight
